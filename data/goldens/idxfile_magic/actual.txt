@@ -1,0 +1,2 @@
+# pack idx version 2 magic (ff t O c)
+magic_hex: ff744f63

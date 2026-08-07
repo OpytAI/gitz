@@ -1,0 +1,26 @@
+# API inventory: plumbing/format/config (phase 2)
+package: plumbing/format/config
+phase: 2
+require:
+  types:
+    - Config
+    - Section
+    - Decoder
+    - Encoder
+  functions:
+    - New
+  constants:
+    - NoSubsection
+  semantic:
+    - config.Config
+    - config.Section
+    - config.Decoder
+    - config.Encoder
+    - config.NoSubsection
+zig_map:
+  Config: config.Config
+  Section: config.Section
+  Decoder: config.Decoder
+  Encoder: config.Encoder
+  New: Config.init
+  NoSubsection: config.NoSubsection

@@ -1,0 +1,43 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/format/idxfile — pack idx v2 encode/decode/build.
+zig_library(
+    name = "idxfile",
+    main = "root.zig",
+    srcs = [
+        "decoder.zig",
+        "encoder.zig",
+        "idxfile.zig",
+        "fixture.zig",
+        "writer.zig",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/hash",
+    ],
+)
+
+zig_test(
+    name = "idxfile_test",
+    size = "small",
+    main = "root.zig",
+    srcs = [
+        "decoder.zig",
+        "encoder.zig",
+        "idxfile.zig",
+        "fixture.zig",
+        "writer.zig",
+    ],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/hash",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

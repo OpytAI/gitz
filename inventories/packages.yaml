@@ -13,7 +13,7 @@
 
 pin: v5.19.2
 # Feature branch: enforce phase-1 packages. Bump on develop only after merge review.
-current_phase: 1
+current_phase: 2
 
 packages:
   # --- Phase 1: foundation ---

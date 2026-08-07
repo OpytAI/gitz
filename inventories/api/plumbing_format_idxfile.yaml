@@ -1,0 +1,21 @@
+# API inventory: plumbing/format/idxfile (phase 2)
+package: plumbing/format/idxfile
+phase: 2
+require:
+  types:
+    - MemoryIndex
+    - Decoder
+    - Encoder
+  functions: []
+  constants:
+    - VersionSupported
+  semantic:
+    - idxfile.MemoryIndex
+    - idxfile.Decoder
+    - idxfile.Encoder
+    - idxfile.VersionSupported
+zig_map:
+  MemoryIndex: idxfile.MemoryIndex
+  Decoder: idxfile.Decoder
+  Encoder: idxfile.Encoder
+  VersionSupported: idxfile.VersionSupported

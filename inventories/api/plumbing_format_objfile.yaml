@@ -1,0 +1,20 @@
+# API inventory: plumbing/format/objfile (phase 2)
+package: plumbing/format/objfile
+phase: 2
+require:
+  types:
+    - Reader
+    - Writer
+  functions:
+    - NewReader
+    - NewWriter
+  constants: []
+  semantic:
+    - objfile.Reader
+    - objfile.Writer
+    - objfile.open
+zig_map:
+  Reader: objfile.Reader
+  Writer: objfile.Writer
+  NewReader: Reader.open
+  NewWriter: Writer.open

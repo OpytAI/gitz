@@ -14,15 +14,15 @@ packages:
   max_missing: 0
 
 api:
-  # Phase-1 foundation seeds + sha1cd.
-  min_files: 9
+  # Phase-1 + phase-2 leaf codecs API files.
+  min_files: 13
   # For due API files (phase ≤ current): zig_map coverage of require names.
   # Phase 1: due API packages should map zig_map names into sources.
   min_mapped_ratio: 0.5
 
 goldens:
-  # Smoke + phase-1 Class A suites (filemode, binary_vlq, hash_oid).
-  min_count: 4
+  # Through phase-2 Class A suites.
+  min_count: 8
 
 allowlists:
   # Entries with remove_by_phase <= current_phase must not remain.

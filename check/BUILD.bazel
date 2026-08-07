@@ -131,9 +131,23 @@ test_suite(
     ],
 )
 
+# Phase 2 leaf codecs.
+test_suite(
+    name = "phase_2_packages",
+    tests = [
+        "//src/plumbing/format/pktline:pktline_test",
+        "//src/plumbing/format/objfile:objfile_test",
+        "//src/plumbing/format/config:config_test",
+        "//src/plumbing/format/idxfile:idxfile_test",
+    ],
+)
+
 test_suite(
     name = "phase_2",
-    tests = [":phase_1"],
+    tests = [
+        ":phase_1",
+        ":phase_2_packages",
+    ],
 )
 
 test_suite(

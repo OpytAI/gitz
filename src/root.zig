@@ -21,6 +21,12 @@ pub const sync = @import("utils/sync");
 pub const ioutil = @import("ioutil");
 pub const trace = @import("trace");
 
+// Phase 2 leaf codecs.
+pub const pktline = @import("pktline");
+pub const objfile = @import("objfile");
+pub const config_format = @import("config");
+pub const idxfile = @import("idxfile");
+
 test "identity" {
     try std.testing.expectEqualStrings("gitz", name);
     try std.testing.expectEqualStrings("v5.19.2", go_git_pin);
@@ -36,4 +42,12 @@ test "phase1 foundation surface" {
     var empty = ioutil.newReaderFromBuf(&.{});
     try std.testing.expectError(error.EmptyReader, ioutil.nonEmptyReader(&empty));
     try std.testing.expect(!trace.enabled(trace.general));
+}
+
+test "phase2 leaf codec surface" {
+    try std.testing.expectEqual(@as(usize, 65516), pktline.MaxPayloadSize);
+    try std.testing.expectEqual(@as(u32, 2), idxfile.VersionSupported);
+    _ = objfile.Reader.open;
+    _ = objfile.Writer.open;
+    _ = config_format.Config.init;
 }

@@ -1,0 +1,37 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# Git config file format codec (go-git plumbing/format/config).
+zig_library(
+    name = "config",
+    main = "root.zig",
+    srcs = [
+        "common.zig",
+        "decoder.zig",
+        "encoder.zig",
+        "format.zig",
+        "option.zig",
+        "section.zig",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "config_test",
+    size = "small",
+    main = "root.zig",
+    srcs = [
+        "common.zig",
+        "decoder.zig",
+        "encoder.zig",
+        "format.zig",
+        "option.zig",
+        "section.zig",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

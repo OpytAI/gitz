@@ -1,0 +1,4 @@
+name: pktline_flush
+type: static_contains
+actual: actual.txt
+expected: expected.txt

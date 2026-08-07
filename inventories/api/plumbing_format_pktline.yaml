@@ -1,0 +1,22 @@
+# API inventory: plumbing/format/pktline (phase 2)
+package: plumbing/format/pktline
+phase: 2
+require:
+  types:
+    - Encoder
+    - Scanner
+  functions:
+    - NewEncoder
+    - NewScanner
+  constants:
+    - MaxPayloadSize
+  semantic:
+    - pktline.Encoder
+    - pktline.Scanner
+    - pktline.MaxPayloadSize
+zig_map:
+  Encoder: pktline.Encoder
+  Scanner: pktline.Scanner
+  NewEncoder: Encoder.init
+  NewScanner: Scanner.init
+  MaxPayloadSize: pktline.MaxPayloadSize

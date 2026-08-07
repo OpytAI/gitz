@@ -1,0 +1,4 @@
+name: config_section_header
+type: static_contains
+actual: actual.txt
+expected: expected.txt

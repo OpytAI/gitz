@@ -1,0 +1,4 @@
+name: objfile_empty_blob_oid
+type: static_contains
+actual: actual.txt
+expected: expected.txt

@@ -1,0 +1,21 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/format/pktline — pkt-line encoder and scanner.
+zig_library(
+    name = "pktline",
+    main = "root.zig",
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "pktline_test",
+    size = "small",
+    main = "root.zig",
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)
