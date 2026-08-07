@@ -1,0 +1,4 @@
+name: hash_oid_empty_blob
+type: static_contains
+actual: actual.txt
+expected: expected.txt

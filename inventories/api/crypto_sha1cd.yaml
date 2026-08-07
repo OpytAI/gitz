@@ -1,0 +1,22 @@
+# API inventory: pure Zig sha1cd (go-git uses github.com/pjbgf/sha1cd)
+package: github.com/pjbgf/sha1cd
+phase: 1
+require:
+  types:
+    - Sha1cd
+  functions:
+    - New
+    - Sum
+  constants:
+    - Size
+    - BlockSize
+  semantic:
+    - sha1cd.Sha1cd
+    - sha1cd.sum
+    - sha1cd.collisionDetected
+zig_map:
+  New: Sha1cd.init
+  Sum: sum
+  Size: Size
+  BlockSize: BlockSize
+  Sha1cd: Sha1cd

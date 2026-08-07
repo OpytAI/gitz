@@ -1,0 +1,39 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git `plumbing` package root: Hash, ObjectType, MemoryObject, Reference, errors.
+zig_library(
+    name = "plumbing",
+    main = "root.zig",
+    srcs = [
+        "error.zig",
+        "hash.zig",
+        "memory.zig",
+        "object.zig",
+        "reference.zig",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing/hash",
+    ],
+)
+
+zig_test(
+    name = "plumbing_test",
+    main = "root.zig",
+    srcs = [
+        "error.zig",
+        "hash.zig",
+        "memory.zig",
+        "object.zig",
+        "reference.zig",
+    ],
+    deps = [
+        "//src/plumbing/hash",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

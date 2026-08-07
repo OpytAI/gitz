@@ -1,0 +1,4 @@
+name: filemode_octal_table
+type: text_equals
+actual: actual.txt
+expected: expected.txt

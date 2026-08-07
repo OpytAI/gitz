@@ -1,0 +1,27 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+_SHA1CD_SRCS = [
+    "block.zig",
+    "ubc.zig",
+    "ubc_const.zig",
+    "collision_vectors.zig",
+]
+
+zig_library(
+    name = "sha1cd",
+    main = "root.zig",
+    srcs = _SHA1CD_SRCS,
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "sha1cd_test",
+    main = "root.zig",
+    srcs = _SHA1CD_SRCS,
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

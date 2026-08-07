@@ -12,7 +12,8 @@
 #   test_only — helpers / suites; not production library surface
 
 pin: v5.19.2
-current_phase: g
+# Feature branch: enforce phase-1 packages. Bump on develop only after merge review.
+current_phase: 1
 
 packages:
   # --- Phase 1: foundation ---
@@ -20,6 +21,12 @@ packages:
     zig: src/plumbing/hash
     phase: 1
     status: required
+  # go-git depends on github.com/pjbgf/sha1cd; pure Zig port (no C) for wasm.
+  - go: github.com/pjbgf/sha1cd
+    zig: src/crypto/sha1cd
+    phase: 1
+    status: required
+    notes: "collision-detecting SHA-1; pure Zig (Stevens/Shumow algorithm)"
   - go: plumbing
     zig: src/plumbing
     phase: 1

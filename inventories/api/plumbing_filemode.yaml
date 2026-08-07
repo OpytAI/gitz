@@ -24,10 +24,10 @@ require:
     - filemode.Submodule
 zig_map:
   FileMode: filemode.FileMode
-  Empty: filemode.empty
-  Dir: filemode.dir
-  Regular: filemode.regular
-  Deprecated: filemode.deprecated
-  Executable: filemode.executable
-  Symlink: filemode.symlink
-  Submodule: filemode.submodule
+  Empty: filemode.Empty
+  Dir: filemode.Dir
+  Regular: filemode.Regular
+  Deprecated: filemode.Deprecated
+  Executable: filemode.Executable
+  Symlink: filemode.Symlink
+  Submodule: filemode.Submodule

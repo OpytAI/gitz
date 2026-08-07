@@ -1,0 +1,20 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# Leaf ANSI color string constants (go-git plumbing/color).
+zig_library(
+    name = "color",
+    main = "root.zig",
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "color_test",
+    main = "root.zig",
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,29 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git utils/binary — Git VLQ + big-endian integer helpers.
+zig_library(
+    name = "binary",
+    main = "root.zig",
+    srcs = [
+        "read.zig",
+        "write.zig",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "binary_test",
+    size = "small",
+    main = "root.zig",
+    srcs = [
+        "read.zig",
+        "write.zig",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

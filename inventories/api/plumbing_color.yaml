@@ -25,12 +25,12 @@ require:
     - color.Cyan
     - color.White
 zig_map:
-  Reset: color.reset
-  Bold: color.bold
-  Red: color.red
-  Green: color.green
-  Yellow: color.yellow
-  Blue: color.blue
-  Magenta: color.magenta
-  Cyan: color.cyan
-  White: color.white
+  Reset: color.Reset
+  Bold: color.Bold
+  Red: color.Red
+  Green: color.Green
+  Yellow: color.Yellow
+  Blue: color.Blue
+  Magenta: color.Magenta
+  Cyan: color.Cyan
+  White: color.White

@@ -1,0 +1,12 @@
+# go-git plumbing empty blob OID (phase 1 Class A)
+# SHA-1 of git object header+body for type blob size 0: "blob 0\0"
+# Source: go-git/plumbing/hash_test.go TestComputeHash
+# ComputeHash(BlobObject, []byte("")) == e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+payload:
+  type: blob
+  size: 0
+  body: empty
+header: "blob 0\0"
+oid_hex: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+# Additional known vector from same test (not required for empty-blob pin):
+# ComputeHash(BlobObject, "Hello, World!\n") == 8ab686eafeb1f44702738c8b0f24f2567c36da6d

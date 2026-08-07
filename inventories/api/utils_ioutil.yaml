@@ -8,8 +8,8 @@ require:
     - NewReaderFromBuf
   constants: []
   semantic:
-    - ioutil.non_empty_reader
-    - ioutil.new_reader_from_buf
+    - ioutil.nonEmptyReader
+    - ioutil.newReaderFromBuf
 zig_map:
   NonEmptyReader: ioutil.nonEmptyReader
   NewReaderFromBuf: ioutil.newReaderFromBuf

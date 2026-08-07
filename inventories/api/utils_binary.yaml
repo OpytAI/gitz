@@ -12,12 +12,12 @@ require:
     - WriteUint64
   constants: []
   semantic:
-    - binary.read_variable_width_int
-    - binary.write_variable_width_int
-    - binary.read_u32
-    - binary.write_u32
-    - binary.read_u64
-    - binary.write_u64
+    - binary.readVariableWidthInt
+    - binary.writeVariableWidthInt
+    - binary.readUint32
+    - binary.writeUint32
+    - binary.readUint64
+    - binary.writeUint64
 zig_map:
   ReadVariableWidthInt: binary.readVariableWidthInt
   WriteVariableWidthInt: binary.writeVariableWidthInt

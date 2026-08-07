@@ -1,24 +1,54 @@
 load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
 
-# Core library root. Subpackages (plumbing/, storage/, …) will be added as the port grows.
+# Core library root — re-exports Phase 1 foundation packages.
 zig_library(
     name = "gitz",
     main = "root.zig",
     visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/hash",
+        "//src/plumbing/filemode",
+        "//src/plumbing/color",
+        "//src/utils/binary",
+        "//src/utils/sync",
+        "//src/utils/ioutil",
+        "//src/utils/trace",
+    ],
 )
 
-# Unit tests embedded in root.zig (and later package tests).
 zig_test(
     name = "gitz_test",
     main = "root.zig",
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/hash",
+        "//src/plumbing/filemode",
+        "//src/plumbing/color",
+        "//src/utils/binary",
+        "//src/utils/sync",
+        "//src/utils/ioutil",
+        "//src/utils/trace",
+    ],
 )
 
-# Full src tree for file/API inventory checkers (//check:*).
+# Full src tree for file/API inventory checkers.
+# Note: Bazel package borders mean parent globs do not see child packages.
 filegroup(
     name = "src_tree",
     srcs = glob(
-        ["**/*"],
+        ["*"],
         allow_empty = True,
-    ),
+    ) + [
+        "//src/plumbing:package_srcs",
+        "//src/plumbing/hash:package_srcs",
+        "//src/plumbing/filemode:package_srcs",
+        "//src/plumbing/color:package_srcs",
+        "//src/crypto/sha1cd:package_srcs",
+        "//src/utils/binary:package_srcs",
+        "//src/utils/sync:package_srcs",
+        "//src/utils/ioutil:package_srcs",
+        "//src/utils/trace:package_srcs",
+    ],
     visibility = ["//visibility:public"],
 )

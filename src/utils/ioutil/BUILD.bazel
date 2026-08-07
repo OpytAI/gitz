@@ -1,0 +1,22 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# Port of go-git utils/ioutil — I/O helpers (peek, fixed readers, checkClose).
+zig_library(
+    name = "ioutil",
+    main = "root.zig",
+    import_name = "ioutil",
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "ioutil_test",
+    size = "small",
+    main = "root.zig",
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

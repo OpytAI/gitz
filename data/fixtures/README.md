@@ -6,6 +6,8 @@ Vendored binary and repository fixtures for Class A–C goldens.
 
 ```text
 data/fixtures/
+  sha1cd/         # SHA-1 collision vectors (sha-mbles; Phase 1)
+                  # mirrored in src/crypto/sha1cd/collision_vectors.zig for tests
   packs/          # .pack / .idx samples (Phase 3+)
   repos/          # small on-disk git repos (Phase 6+)
   indexes/        # .git/index samples (Phase 5+)

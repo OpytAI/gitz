@@ -1,0 +1,4 @@
+name: binary_vlq_vectors
+type: text_equals
+actual: actual.txt
+expected: expected.txt

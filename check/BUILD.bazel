@@ -108,9 +108,27 @@ test_suite(
 # Merge-complete means: suite green AND inventories/packages.yaml current_phase
 # bumped so file/api inventory require non-hollow packages for phase <= N.
 # Expand each suite with package unit tests as phases land.
+# Phase 1 foundation package unit tests + gate bundle.
+test_suite(
+    name = "phase_1_packages",
+    tests = [
+        "//src/plumbing:plumbing_test",
+        "//src/plumbing/hash:hash_test",
+        "//src/plumbing/filemode:filemode_test",
+        "//src/plumbing/color:color_test",
+        "//src/utils/binary:binary_test",
+        "//src/utils/sync:sync_test",
+        "//src/utils/ioutil:ioutil_test",
+        "//src/utils/trace:trace_test",
+    ],
+)
+
 test_suite(
     name = "phase_1",
-    tests = [":phase_g"],
+    tests = [
+        ":phase_g",
+        ":phase_1_packages",
+    ],
 )
 
 test_suite(

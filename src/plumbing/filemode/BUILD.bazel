@@ -1,0 +1,20 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# Git tree entry file modes (go-git plumbing/filemode).
+zig_library(
+    name = "filemode",
+    main = "root.zig",
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "filemode_test",
+    main = "root.zig",
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

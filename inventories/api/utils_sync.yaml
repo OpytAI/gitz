@@ -10,10 +10,10 @@ require:
     - PutZlibWriter
   constants: []
   semantic:
-    - sync.get_bytes_buffer
-    - sync.put_bytes_buffer
-    - sync.get_zlib_writer
-    - sync.put_zlib_writer
+    - sync.getBytesBuffer
+    - sync.putBytesBuffer
+    - sync.getZlibWriter
+    - sync.putZlibWriter
 zig_map:
   GetBytesBuffer: sync.getBytesBuffer
   PutBytesBuffer: sync.putBytesBuffer

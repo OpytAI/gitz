@@ -1,0 +1,9 @@
+# go-git utils/binary Git VLQ (WriteVariableWidthInt / ReadVariableWidthInt)
+# Format is offset VLQ: 1-octet max 127; 2-octet min is 128 (not 0).
+# Vectors from go-git utils/binary write_test.go / read_test.go plus boundaries.
+# Columns: value_dec  encode_hex  notes
+0 00 single-octet
+19 13 go-git TestWriteVariableWidthIntShort / TestReadVariableWidthIntShort
+127 7f single-octet max
+128 8000 two-octet min (0x80 0x00)
+366 816e go-git TestWriteVariableWidthInt / TestReadVariableWidthInt (0x81 0x6e)

@@ -1,0 +1,21 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+zig_library(
+    name = "hash",
+    main = "root.zig",
+    visibility = ["//visibility:public"],
+    deps = ["//src/crypto/sha1cd"],
+)
+
+zig_test(
+    name = "hash_test",
+    main = "root.zig",
+    deps = ["//src/crypto/sha1cd"],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

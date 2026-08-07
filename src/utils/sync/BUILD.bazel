@@ -1,0 +1,35 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# Package path is utils/sync. Import as `@import("utils/sync")` — not bare
+# `sync` — to avoid confusion with language-level synchronization primitives.
+zig_library(
+    name = "sync",
+    import_name = "utils/sync",
+    main = "root.zig",
+    srcs = [
+        "free_list.zig",
+        "bytes.zig",
+        "zlib.zig",
+        "bufio.zig",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "sync_test",
+    size = "small",
+    main = "root.zig",
+    srcs = [
+        "free_list.zig",
+        "bytes.zig",
+        "zlib.zig",
+        "bufio.zig",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

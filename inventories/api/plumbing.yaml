@@ -21,4 +21,4 @@ zig_map:
   ObjectType: plumbing.ObjectType
   MemoryObject: plumbing.MemoryObject
   Reference: plumbing.Reference
-  ZeroHash: plumbing.zero_hash
+  ZeroHash: plumbing.ZeroHash

@@ -1,0 +1,20 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+zig_library(
+    name = "trace",
+    main = "root.zig",
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "trace_test",
+    size = "small",
+    main = "root.zig",
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

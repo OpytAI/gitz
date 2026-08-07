@@ -14,15 +14,15 @@ packages:
   max_missing: 0
 
 api:
-  # Phase-1 foundation seeds (hash, plumbing, filemode, color, binary, sync, ioutil, trace).
-  min_files: 8
+  # Phase-1 foundation seeds + sha1cd.
+  min_files: 9
   # For due API files (phase ≤ current): zig_map coverage of require names.
-  # 0.0 while current_phase is g (no due API packages). Raise when phases advance.
-  min_mapped_ratio: 0.0
+  # Phase 1: due API packages should map zig_map names into sources.
+  min_mapped_ratio: 0.5
 
 goldens:
-  # At least one smoke golden registered under data/goldens.
-  min_count: 1
+  # Smoke + phase-1 Class A suites (filemode, binary_vlq, hash_oid).
+  min_count: 4
 
 allowlists:
   # Entries with remove_by_phase <= current_phase must not remain.
