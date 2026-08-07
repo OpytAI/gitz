@@ -14,17 +14,17 @@ packages:
   max_missing: 0
 
 api:
-  # Count of inventories/api/*.yaml (phase-1 foundation + phase-2 leaf codecs).
+  # Count of inventories/api/*.yaml (phases 1–2 + packfile phase 3).
   # Bump when adding API inventory files.
-  min_files: 13
+  min_files: 14
   # For due API files (phase ≤ current): zig_map coverage of require names.
   # Phase 1: due API packages should map zig_map names into sources.
   min_mapped_ratio: 0.5
 
 goldens:
   # Number of Class A golden case dirs (data/goldens/**/meta.yaml).
-  # Phase 1 foundation + phase 2 leaf codecs: 11 suites.
-  min_count: 11
+  # Phase 1–2: 11 suites; phase 3 pack-read adds ≥2 (scanner / PatchDelta).
+  min_count: 14
 
 allowlists:
   # Entries with remove_by_phase <= current_phase must not remain.

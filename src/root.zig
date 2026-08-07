@@ -27,6 +27,9 @@ pub const objfile = @import("objfile");
 pub const config_format = @import("config");
 pub const idxfile = @import("idxfile");
 
+// Phase 3 packfile read.
+pub const packfile = @import("packfile");
+
 test "identity" {
     try std.testing.expectEqualStrings("gitz", name);
     try std.testing.expectEqualStrings("v5.19.2", go_git_pin);
@@ -50,4 +53,14 @@ test "phase2 leaf codec surface" {
     _ = objfile.Reader.open;
     _ = objfile.Writer.open;
     _ = config_format.Config.init;
+}
+
+test "phase3 packfile read surface" {
+    try std.testing.expectEqual(@as(u32, 2), packfile.VersionSupported);
+    try std.testing.expectEqualSlices(u8, "PACK", &packfile.signature);
+    _ = packfile.Scanner.init;
+    _ = packfile.Parser.init;
+    _ = packfile.Packfile.init;
+    _ = packfile.patchDelta;
+    _ = packfile.applyDelta;
 }

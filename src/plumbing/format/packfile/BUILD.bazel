@@ -1,0 +1,52 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/format/packfile — pack read path (encoder deferred phase 5).
+zig_library(
+    name = "packfile",
+    main = "root.zig",
+    srcs = [
+        "error.zig",
+        "common.zig",
+        "scanner.zig",
+        "patch_delta.zig",
+        "parser.zig",
+        "packfile.zig",
+        "basic_pack.zig",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/format/idxfile",
+        "//src/utils/binary",
+        "//src/utils/sync",
+        "//src/utils/ioutil",
+    ],
+)
+
+zig_test(
+    name = "packfile_test",
+    size = "small",
+    main = "root.zig",
+    srcs = [
+        "error.zig",
+        "common.zig",
+        "scanner.zig",
+        "patch_delta.zig",
+        "parser.zig",
+        "packfile.zig",
+        "basic_pack.zig",
+    ],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/format/idxfile",
+        "//src/utils/binary",
+        "//src/utils/sync",
+        "//src/utils/ioutil",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

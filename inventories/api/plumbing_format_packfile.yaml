@@ -1,0 +1,57 @@
+# API inventory: plumbing/format/packfile (phase 3 — read path)
+# Encoder, DiffDelta, deltaSelector, WritePackfile deferred to phase 5 (not required here).
+# Go NewScanner/NewParser/NewPackfile → Zig *.init; PatchDelta/ApplyDelta → patchDelta/applyDelta.
+# No dual snake_case exports.
+package: plumbing/format/packfile
+phase: 3
+require:
+  types:
+    - Scanner
+    - ObjectHeader
+    - Parser
+    - Observer
+    - Packfile
+  functions:
+    - NewScanner
+    - NewParser
+    - NewPackfile
+    - PatchDelta
+    - ApplyDelta
+  constants:
+    - VersionSupported
+  semantic:
+    - Scanner
+    - Scanner.init
+    - Scanner.initSeekable
+    - Scanner.header
+    - Scanner.nextObjectHeader
+    - Scanner.nextObject
+    - Scanner.seekObjectHeader
+    - Scanner.checksum
+    - ObjectHeader
+    - Parser
+    - Parser.init
+    - Parser.parse
+    - Observer
+    - ObjectStore
+    - Packfile
+    - Packfile.init
+    - Packfile.get
+    - Packfile.getByOffset
+    - Packfile.id
+    - Packfile.close
+    - patchDelta
+    - applyDelta
+    - VersionSupported
+zig_map:
+  Scanner: Scanner
+  ObjectHeader: ObjectHeader
+  Parser: Parser
+  Observer: Observer
+  Packfile: Packfile
+  NewScanner: Scanner.init
+  NewParser: Parser.init
+  NewPackfile: Packfile.init
+  PatchDelta: patchDelta
+  ApplyDelta: applyDelta
+  VersionSupported: VersionSupported

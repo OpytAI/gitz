@@ -1,0 +1,10 @@
+# go-git PatchDelta known vector (FuzzPatchDelta seed)
+# Source: go-git plumbing/format/packfile/delta_test.go
+# f.Add([]byte("some value"), []byte("\n\f\fsomenewvalue"))
+# Delta layout: srcSz LEB128=10 (0x0a), targetSz LEB128=12 (0x0c),
+# insert cmd size=12 (0x0c) + payload "somenewvalue".
+src_ascii: some value
+src_hex: 736f6d652076616c7565
+delta_hex: 0a0c0c736f6d656e657776616c7565
+result_ascii: somenewvalue
+result_hex: 736f6d656e657776616c7565

@@ -37,14 +37,32 @@ pub const MemoryObject = struct {
         return self.cached_hash;
     }
 
-    /// Append bytes; updates size to content length (go-git `Write`).
+    /// go-git `(*MemoryObject).SetType`.
+    pub fn setType(self: *MemoryObject, t: ObjectType) void {
+        self.object_type = t;
+    }
+
+    /// go-git `(*MemoryObject).SetSize` — declared size only; does not resize content.
+    pub fn setSize(self: *MemoryObject, n: i64) void {
+        self.size = n;
+    }
+
+    /// Append bytes; updates `size` to content length (go-git `Write`).
     pub fn write(self: *MemoryObject, p: []const u8) std.mem.Allocator.Error!usize {
         try self.content.appendSlice(self.allocator, p);
         self.size = @intCast(self.content.items.len);
         return p.len;
     }
 
-    /// Current content bytes (go-git reader over the object buffer).
+    /// Replace content, set size, clear cached hash (pack inflate / ApplyDelta).
+    pub fn setContent(self: *MemoryObject, data: []const u8) std.mem.Allocator.Error!void {
+        self.content.clearRetainingCapacity();
+        try self.content.appendSlice(self.allocator, data);
+        self.size = @intCast(data.len);
+        self.cached_hash = ZeroHash;
+    }
+
+    /// Content bytes (go-git reader over the object buffer).
     pub fn readerBytes(self: *const MemoryObject) []const u8 {
         return self.content.items;
     }

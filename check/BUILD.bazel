@@ -150,9 +150,20 @@ test_suite(
     ],
 )
 
+# Phase 3 packfile read path.
+test_suite(
+    name = "phase_3_packages",
+    tests = [
+        "//src/plumbing/format/packfile:packfile_test",
+    ],
+)
+
 test_suite(
     name = "phase_3",
-    tests = [":phase_2"],
+    tests = [
+        ":phase_2",
+        ":phase_3_packages",
+    ],
 )
 
 test_suite(

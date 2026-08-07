@@ -1,0 +1,4 @@
+name: patch_delta_simple
+type: file_equals
+actual: actual.txt
+expected: expected.txt
