@@ -1,27 +1,26 @@
-//! Index storer contract + phase-4 stub (go-git `plumbing/storer/index.go`).
+//! IndexStorer method-set docs + lightweight test helper
+//! (go-git `plumbing/storer/index.go`).
 //!
-//! Full `plumbing/format/index` codec is phase 5. Until then, storages hold a
-//! minimal stub (version + mod time) so Reference/Object suites can compile.
+//! Production backends (`storage/memory`) use `plumbing/format/index.Index`.
+//! `IndexStub` remains only for storer package unit tests that need a tiny
+//! stand-in without depending on the full codec.
 //!
 //! # IndexStorer method set
 //!
 //! | Method | go-git | Role |
 //! |--------|--------|------|
-//! | `setIndex(idx: *IndexStub) !void` | `SetIndex(*index.Index) error` | Store index (ownership policy is backend-specific). |
-//! | `index() !*IndexStub` | `Index() (*index.Index, error)` | Current index; create empty default if missing. |
-//!
-//! go-git uses `plumbing/format/index.Index`. Phase 4 maps that to `IndexStub`.
-//! Phase 5 replaces the stub with the real index type.
+//! | `setIndex(idx)` | `SetIndex(*index.Index) error` | Store index (ownership is backend-specific). |
+//! | `index()` | `Index() (*index.Index, error)` | Current index; create empty default if missing. |
 //!
 //! No PackfileWriter (or other optional object traits) live here — see `root.zig`.
 
 const std = @import("std");
 
-/// Minimal index placeholder until phase 5 (full index codec).
+/// Tiny stand-in for storer-package tests only (not a full dircache).
 pub const IndexStub = struct {
     /// Index file version (go-git default is 2).
     version: u32 = 2,
-    /// Last modification time, unix seconds (optional metadata).
+    /// Last modification time, unix seconds.
     mod_time_sec: i64 = 0,
 
     pub fn init() IndexStub {

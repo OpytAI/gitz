@@ -51,6 +51,8 @@ pub const ConfigError = config_mod.Error;
 
 pub const IndexStorage = index_mod.IndexStorage;
 pub const Index = index_mod.Index;
+pub const Entry = index_mod.Entry;
+pub const Time = index_mod.Time;
 
 test {
     _ = error_mod;

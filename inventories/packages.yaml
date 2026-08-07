@@ -13,7 +13,7 @@
 
 pin: v5.19.2
 # Feature branch: enforce phase-4 packages. Bump on develop only after merge review.
-current_phase: 4
+current_phase: 5
 
 packages:
   # --- Phase 1: foundation ---
@@ -80,7 +80,7 @@ packages:
     zig: src/plumbing/format/packfile
     phase: 3
     status: required
-    notes: "encoder symbols phase 5; allowlist until then"
+    notes: "read + write path (phase 5 encoder)"
 
   # --- Phase 4: storer + memory ---
   - go: plumbing/storer

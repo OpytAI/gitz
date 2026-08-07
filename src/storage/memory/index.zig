@@ -1,99 +1,141 @@
-//! Minimal index storage (go-git `IndexStorage`).
+//! In-memory index storage (go-git `storage/memory` `IndexStorage`).
 //!
-//! Full `plumbing/format/index` codec is phase 5. Phase 4 holds version +
-//! mod_time (same surface as `plumbing/storer.IndexStub`) so BaseStorageSuite
-//! SetIndex/Index checks pass.
+//! Holds a heap `*index_format.Index` (full dircache model from
+//! `plumbing/format/index`). `setIndex` takes ownership of the pointer and
+//! stamps `mod_time` (go-git sets `ModTime = time.Now()` for racy-git checks).
 
 const std = @import("std");
+const index_format = @import("index");
 
-/// Minimal index stub (go-git `index.Index` subset: Version + ModTime).
-/// Phase 5 replaces this with the full index format type.
-pub const Index = struct {
-    version: u32 = 2,
-    /// Set when stored via `setIndex` (go-git sets `ModTime = time.Now()`).
-    /// `null` means zero / unset (go-git `time.Time{}.IsZero()`).
-    mod_time: ?i64 = null,
+const Allocator = std.mem.Allocator;
 
-    pub fn modTimeIsZero(self: *const Index) bool {
-        return self.mod_time == null;
-    }
-};
+/// Full index type (go-git `plumbing/format/index.Index`).
+pub const Index = index_format.Index;
+pub const Entry = index_format.Entry;
+pub const Time = index_format.Time;
 
 /// go-git `IndexStorage`.
 pub const IndexStorage = struct {
-    /// Stored index (field name avoids clash with method `index`).
-    stored: ?Index = null,
+    allocator: Allocator,
+    /// Owned index pointer (field name avoids clash with method `index`).
+    stored: ?*Index = null,
 
-    pub fn init() IndexStorage {
-        return .{};
+    pub fn init(allocator: Allocator) IndexStorage {
+        return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *IndexStorage) void {
-        self.* = .{};
-    }
-
-    /// go-git `SetIndex` — stores a copy and stamps `mod_time` (simulates fs mtime).
-    pub fn setIndex(self: *IndexStorage, idx: Index) void {
-        var copy = idx;
-        copy.mod_time = milliNow();
-        self.stored = copy;
-    }
-
-    /// Milliseconds since Unix epoch. Falls back to `1` if the clock is unavailable
-    /// (keeps mod-time non-zero so racy-git style checks still see a stamp).
-    fn milliNow() i64 {
-        // Prefer std.time when present; Zig 0.16 removed milliTimestamp.
-        if (@hasDecl(std.time, "nanoTimestamp")) {
-            const ns = std.time.nanoTimestamp();
-            if (ns > 0) return @intCast(@divTrunc(ns, 1_000_000));
+        if (self.stored) |idx| {
+            idx.deinit();
+            self.allocator.destroy(idx);
+            self.stored = null;
         }
-        var ts: std.posix.timespec = undefined;
-        const rc = std.posix.system.clock_gettime(.REALTIME, &ts);
-        if (rc != 0) return 1;
-        const sec_ms = @as(i64, @intCast(ts.sec)) * 1000;
-        const nsec_ms = @divTrunc(@as(i64, @intCast(ts.nsec)), 1_000_000);
-        return sec_ms + nsec_ms;
+        self.* = undefined;
     }
 
-    /// go-git `Index` — returns default empty index (version 2) when unset.
-    pub fn index(self: *IndexStorage) *Index {
-        if (self.stored == null) {
-            self.stored = .{ .version = 2 };
+    /// go-git `SetIndex` — takes ownership of `idx` and stamps `mod_time`.
+    /// Previous stored index (if any) is freed.
+    pub fn setIndex(self: *IndexStorage, idx: *Index) void {
+        idx.mod_time = timeNow();
+        if (self.stored) |old| {
+            if (old != idx) {
+                old.deinit();
+                self.allocator.destroy(old);
+            }
         }
-        return &self.stored.?;
+        self.stored = idx;
+    }
+
+    /// go-git `Index` — returns stored index or a default empty v2 index.
+    pub fn index(self: *IndexStorage) Allocator.Error!*Index {
+        if (self.stored) |idx| return idx;
+        const idx = try self.allocator.create(Index);
+        idx.* = Index.init(self.allocator);
+        idx.version = 2;
+        self.stored = idx;
+        return idx;
     }
 };
+
+fn timeNow() Time {
+    // Prefer std.time when present; Zig 0.16 removed milliTimestamp.
+    if (@hasDecl(std.time, "nanoTimestamp")) {
+        const ns = std.time.nanoTimestamp();
+        if (ns > 0) {
+            const sec: i64 = @intCast(@divTrunc(ns, 1_000_000_000));
+            const nsec: i32 = @intCast(@rem(ns, 1_000_000_000));
+            return Time.unix(sec, nsec);
+        }
+    }
+    var ts: std.posix.timespec = undefined;
+    const rc = std.posix.system.clock_gettime(.REALTIME, &ts);
+    if (rc != 0) return Time.unix(1, 0);
+    return Time.unix(@intCast(ts.sec), @intCast(ts.nsec));
+}
 
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
 
 test "IndexStorage default version 2 zero mod time" {
-    var store = IndexStorage.init();
+    const allocator = std.testing.allocator;
+    var store = IndexStorage.init(allocator);
     defer store.deinit();
 
-    const idx = store.index();
+    const idx = try store.index();
     try std.testing.expectEqual(@as(u32, 2), idx.version);
-    try std.testing.expect(idx.modTimeIsZero());
+    try std.testing.expect(idx.mod_time.isZero());
 }
 
-test "IndexStorage setIndex stamps mod_time" {
-    var store = IndexStorage.init();
+test "IndexStorage setIndex stamps mod_time and takes ownership" {
+    const allocator = std.testing.allocator;
+    var store = IndexStorage.init(allocator);
     defer store.deinit();
 
-    store.setIndex(.{ .version = 2 });
-    const idx = store.index();
-    try std.testing.expectEqual(@as(u32, 2), idx.version);
-    try std.testing.expect(!idx.modTimeIsZero());
+    const idx = try allocator.create(Index);
+    idx.* = Index.init(allocator);
+    idx.version = 2;
+    store.setIndex(idx);
+
+    const got = try store.index();
+    try std.testing.expect(got == idx);
+    try std.testing.expectEqual(@as(u32, 2), got.version);
+    try std.testing.expect(!got.mod_time.isZero());
 }
 
 test "IndexStorage setIndex overwrites previous" {
-    var store = IndexStorage.init();
+    const allocator = std.testing.allocator;
+    var store = IndexStorage.init(allocator);
     defer store.deinit();
 
-    store.setIndex(.{ .version = 2 });
-    store.setIndex(.{ .version = 3 });
-    const idx = store.index();
-    try std.testing.expectEqual(@as(u32, 3), idx.version);
-    try std.testing.expect(!idx.modTimeIsZero());
+    const a = try allocator.create(Index);
+    a.* = Index.init(allocator);
+    a.version = 2;
+    store.setIndex(a);
+
+    const b = try allocator.create(Index);
+    b.* = Index.init(allocator);
+    b.version = 3;
+    store.setIndex(b);
+
+    const got = try store.index();
+    try std.testing.expect(got == b);
+    try std.testing.expectEqual(@as(u32, 3), got.version);
+    try std.testing.expect(!got.mod_time.isZero());
+}
+
+test "IndexStorage holds entries from format/index" {
+    const allocator = std.testing.allocator;
+    var store = IndexStorage.init(allocator);
+    defer store.deinit();
+
+    const idx = try allocator.create(Index);
+    idx.* = Index.init(allocator);
+    idx.version = 2;
+    _ = try idx.add("foo.txt");
+    store.setIndex(idx);
+
+    const got = try store.index();
+    try std.testing.expectEqual(@as(usize, 1), got.entries.items.len);
+    try std.testing.expectEqualStrings("foo.txt", got.entries.items[0].name);
 }

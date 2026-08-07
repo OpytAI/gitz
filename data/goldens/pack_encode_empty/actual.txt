@@ -1,0 +1,15 @@
+# Empty packfile encode Class A golden (phase 5)
+# go-git: plumbing/format/packfile Encoder.Encode([], packWindow)
+# Source: encoder_test.go TestCorrectPackHeader
+# Layout: PACK | version 2 | object_count 0 | SHA-1 trailer (32 bytes total)
+# pack_hash is SHA-1 of the 12-byte header (returned by Encode / pack checksum)
+package: plumbing/format/packfile
+case: encode_empty
+signature: PACK
+signature_hex: 5041434b
+version: 2
+objects: 0
+header_hex: 5041434b0000000200000000
+pack_hash: 029d08823bd8a8eab510ad6ac75c823cfd3ed31e
+file_hex: 5041434b0000000200000000029d08823bd8a8eab510ad6ac75c823cfd3ed31e
+size_bytes: 32

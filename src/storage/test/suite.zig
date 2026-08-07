@@ -402,16 +402,19 @@ pub fn testSetConfigAndConfig(s: *BaseStorageSuite) !void {
 }
 
 pub fn testIndex(s: *BaseStorageSuite) !void {
-    const idx = s.storer.index();
+    const idx = try s.storer.index();
     try testing.expectEqual(@as(u32, 2), idx.version);
-    try testing.expect(idx.modTimeIsZero());
+    try testing.expect(idx.mod_time.isZero());
 }
 
 pub fn testSetIndexAndIndex(s: *BaseStorageSuite) !void {
-    s.storer.setIndex(.{ .version = 2 });
-    const idx = s.storer.index();
+    const fresh = try s.allocator.create(memory.Index);
+    fresh.* = memory.Index.init(s.allocator);
+    fresh.version = 2;
+    s.storer.setIndex(fresh);
+    const idx = try s.storer.index();
     try testing.expectEqual(@as(u32, 2), idx.version);
-    try testing.expect(!idx.modTimeIsZero());
+    try testing.expect(!idx.mod_time.isZero());
 }
 
 pub fn testSetConfigInvalid(s: *BaseStorageSuite) !void {

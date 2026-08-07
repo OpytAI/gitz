@@ -1,7 +1,7 @@
-//! Package packfile — Git packfile **read** path.
+//! Package packfile — Git packfile read **and** write path.
 //!
 //! Port of go-git v5.19.2 `plumbing/format/packfile` (scanner, delta apply,
-//! parser, Packfile+idx random access). Encoder / write path is phase 5.
+//! parser, Packfile+idx random access, delta create, encoder).
 //!
 //! # Construction
 //!
@@ -23,6 +23,11 @@ const scanner_mod = @import("scanner.zig");
 const patch_delta_mod = @import("patch_delta.zig");
 const parser_mod = @import("parser.zig");
 const packfile_mod = @import("packfile.zig");
+const object_to_pack_mod = @import("object_to_pack.zig");
+const delta_index_mod = @import("delta_index.zig");
+const diff_delta_mod = @import("diff_delta.zig");
+const delta_selector_mod = @import("delta_selector.zig");
+const encoder_mod = @import("encoder.zig");
 
 pub const Error = error_mod.Error;
 
@@ -45,6 +50,24 @@ pub const ObjectStore = parser_mod.ObjectStore;
 pub const Packfile = packfile_mod.Packfile;
 pub const ObjectIterator = packfile_mod.ObjectIterator;
 
+// --- Write path (phase 5) ---
+pub const ObjectToPack = object_to_pack_mod.ObjectToPack;
+pub const newObjectToPack = object_to_pack_mod.newObjectToPack;
+pub const newDeltaObjectToPack = object_to_pack_mod.newDeltaObjectToPack;
+
+pub const DeltaIndex = delta_index_mod.DeltaIndex;
+
+pub const diffDelta = diff_delta_mod.diffDelta;
+pub const getDelta = diff_delta_mod.getDelta;
+pub const getDeltaWithIndex = diff_delta_mod.getDeltaWithIndex;
+pub const diffDeltaWithIndex = diff_delta_mod.diffDeltaWithIndex;
+
+pub const DeltaSelector = delta_selector_mod.DeltaSelector;
+pub const Store = delta_selector_mod.Store;
+pub const freeObjectsToPack = delta_selector_mod.freeObjectsToPack;
+
+pub const Encoder = encoder_mod.Encoder;
+
 test {
     _ = @import("error.zig");
     _ = @import("common.zig");
@@ -52,6 +75,11 @@ test {
     _ = @import("patch_delta.zig");
     _ = @import("parser.zig");
     _ = @import("packfile.zig");
+    _ = @import("object_to_pack.zig");
+    _ = @import("delta_index.zig");
+    _ = @import("diff_delta.zig");
+    _ = @import("delta_selector.zig");
+    _ = @import("encoder.zig");
     _ = @import("basic_pack.zig");
     _ = @import("ref_delta_pack.zig");
     _ = @import("ref_delta_idx.zig");

@@ -1,5 +1,7 @@
-# API inventory: plumbing/format/packfile (phase 3 — full read path)
-# Encoder / DiffDelta / deltaSelector / WritePackfile deferred to phase 5.
+# API inventory: plumbing/format/packfile (phase 3 read + phase 5 encoder)
+# Encoder / DiffDelta / GetDelta / ObjectToPack land in phase 5.
+# Go NewEncoder maps to Zig Encoder.init; DiffDelta/GetDelta keep go names as zig_map
+# targets diffDelta/getDelta (package-root re-exports, same style as patchDelta).
 package: plumbing/format/packfile
 phase: 3
 require:
@@ -11,6 +13,8 @@ require:
     - ObjectStore
     - Packfile
     - ObjectIterator
+    - Encoder
+    - ObjectToPack
   functions:
     - NewScanner
     - NewParser
@@ -18,6 +22,9 @@ require:
     - PatchDelta
     - ApplyDelta
     - ReaderFromDelta
+    - NewEncoder
+    - DiffDelta
+    - GetDelta
   constants:
     - VersionSupported
   semantic:
@@ -56,6 +63,25 @@ require:
     - VersionSupported
     - signature
     - max_delta_chain_depth
+    # Phase 5 write path (package-root re-exports)
+    - Encoder
+    - Encoder.init
+    - Encoder.encode
+    - ObjectToPack
+    - ObjectToPack.isDelta
+    - ObjectToPack.backToOriginal
+    - ObjectToPack.isWritten
+    - ObjectToPack.markWantWrite
+    - ObjectToPack.wantWrite
+    - ObjectToPack.setOriginal
+    - ObjectToPack.saveOriginalMetadata
+    - ObjectToPack.cleanOriginal
+    - ObjectToPack.setDelta
+    - ObjectToPack.type
+    - ObjectToPack.hash
+    - ObjectToPack.size
+    - diffDelta
+    - getDelta
 zig_map:
   Scanner: Scanner
   ObjectHeader: ObjectHeader
@@ -71,3 +97,8 @@ zig_map:
   ApplyDelta: applyDelta
   ReaderFromDelta: readerFromDelta
   VersionSupported: VersionSupported
+  Encoder: Encoder
+  ObjectToPack: ObjectToPack
+  NewEncoder: Encoder.init
+  DiffDelta: diffDelta
+  GetDelta: getDelta

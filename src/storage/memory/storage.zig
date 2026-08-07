@@ -130,7 +130,7 @@ pub const Storage = struct {
             .config_storage = ConfigStorage.init(allocator),
             .object_storage = ObjectStorage.init(allocator),
             .shallow_storage = ShallowStorage.init(allocator),
-            .index_storage = IndexStorage.init(),
+            .index_storage = IndexStorage.init(allocator),
             .reference_storage = ReferenceStorage.init(allocator),
             .module_storage = ModuleStorage.init(allocator),
         };
@@ -247,12 +247,13 @@ pub const Storage = struct {
 
     // --- IndexStorer ---
 
-    pub fn setIndex(self: *Storage, idx: Index) void {
+    /// go-git `SetIndex` — takes ownership of `idx` (heap `*Index`).
+    pub fn setIndex(self: *Storage, idx: *Index) void {
         self.index_storage.setIndex(idx);
     }
 
-    /// go-git `Index` — returns default empty index when unset.
-    pub fn index(self: *Storage) *Index {
+    /// go-git `Index` — returns stored index or a default empty v2 index.
+    pub fn index(self: *Storage) Allocator.Error!*Index {
         return self.index_storage.index();
     }
 
@@ -336,12 +337,15 @@ test "Storage index and config go-git method names" {
     var s = Storage.init(allocator);
     defer s.deinit();
 
-    const idx = s.index();
+    const idx = try s.index();
     try std.testing.expectEqual(@as(u32, 2), idx.version);
-    try std.testing.expect(idx.modTimeIsZero());
+    try std.testing.expect(idx.mod_time.isZero());
 
-    s.setIndex(.{ .version = 2 });
-    try std.testing.expect(!s.index().modTimeIsZero());
+    const fresh = try allocator.create(Index);
+    fresh.* = Index.init(allocator);
+    fresh.version = 2;
+    s.setIndex(fresh);
+    try std.testing.expect(!(try s.index()).mod_time.isZero());
 
     const cfg = try s.config();
     try std.testing.expect(!cfg.is_bare);

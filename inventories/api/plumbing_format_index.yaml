@@ -1,0 +1,74 @@
+# API inventory: plumbing/format/index (phase 5)
+# Go NewDecoder/NewEncoder map to Zig Decoder.init / Encoder.init.
+# Semantic last-path tokens must appear in package-root *.zig (orchestrator re-exports).
+package: plumbing/format/index
+phase: 5
+require:
+  types:
+    - Index
+    - Entry
+    - Decoder
+    - Encoder
+    - Stage
+    - Tree
+    - TreeEntry
+    - ResolveUndo
+    - ResolveUndoEntry
+    - EndOfIndexEntry
+  functions:
+    - NewDecoder
+    - NewEncoder
+  constants:
+    - Merged
+    - AncestorMode
+    - OurMode
+    - TheirMode
+    - EncodeVersionSupported
+    - index_signature
+  semantic:
+    - Index
+    - Index.init
+    - Index.add
+    - Index.entry
+    - Index.remove
+    - Index.glob
+    - Index.skipUnless
+    - Entry
+    - Decoder
+    - Decoder.init
+    - Decoder.decode
+    - Encoder
+    - Encoder.init
+    - Encoder.encode
+    - Stage
+    - Tree
+    - TreeEntry
+    - ResolveUndo
+    - ResolveUndoEntry
+    - EndOfIndexEntry
+    - Merged
+    - AncestorMode
+    - OurMode
+    - TheirMode
+    - EncodeVersionSupported
+    - index_signature
+    - DecodeVersionSupported
+zig_map:
+  Index: Index
+  Entry: Entry
+  Decoder: Decoder
+  Encoder: Encoder
+  Stage: Stage
+  Tree: Tree
+  TreeEntry: TreeEntry
+  ResolveUndo: ResolveUndo
+  ResolveUndoEntry: ResolveUndoEntry
+  EndOfIndexEntry: EndOfIndexEntry
+  NewDecoder: Decoder.init
+  NewEncoder: Encoder.init
+  Merged: Merged
+  AncestorMode: AncestorMode
+  OurMode: OurMode
+  TheirMode: TheirMode
+  EncodeVersionSupported: EncodeVersionSupported
+  indexSignature: index_signature

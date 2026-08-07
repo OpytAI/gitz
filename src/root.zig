@@ -29,6 +29,8 @@ pub const idxfile = @import("idxfile");
 
 // Phase 3 packfile read.
 pub const packfile = @import("packfile");
+/// Git index (dircache) codec (go-git plumbing/format/index).
+pub const index_format = @import("index");
 
 // Phase 4 storer + cache + storage/memory.
 pub const storer = @import("storer");
@@ -70,6 +72,18 @@ test "phase3 packfile read surface" {
     _ = packfile.Packfile.init;
     _ = packfile.patchDelta;
     _ = packfile.applyDelta;
+}
+
+test "phase5 index and pack encoder surface" {
+    try std.testing.expectEqual(@as(u32, 4), index_format.EncodeVersionSupported);
+    try std.testing.expectEqualSlices(u8, "DIRC", &index_format.index_signature);
+    _ = index_format.Index.init;
+    _ = index_format.Decoder.init;
+    _ = index_format.Encoder.init;
+    _ = packfile.Encoder.init;
+    _ = packfile.diffDelta;
+    _ = packfile.getDelta;
+    _ = packfile.ObjectToPack;
 }
 
 test "phase4 storer memory cache surface" {

@@ -186,9 +186,21 @@ test_suite(
     ],
 )
 
+# Phase 5 index format + packfile write path.
+test_suite(
+    name = "phase_5_packages",
+    tests = [
+        "//src/plumbing/format/index:index_test",
+        "//src/plumbing/format/packfile:packfile_test",
+    ],
+)
+
 test_suite(
     name = "phase_5",
-    tests = [":phase_4"],
+    tests = [
+        ":phase_4",
+        ":phase_5_packages",
+    ],
 )
 
 test_suite(

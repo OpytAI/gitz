@@ -1,0 +1,15 @@
+# Empty Git index v2 (dircache) Class A golden (phase 5)
+# go-git: plumbing/format/index Encoder.Encode / Decoder.Decode
+# Layout: 12-byte header + 0 entries + 20-byte SHA-1 trailer (no extensions)
+# Header = signature DIRC | version 2 | entry_count 0 (network byte order)
+# Checksum = SHA-1(header) only when empty
+package: plumbing/format/index
+case: empty_v2
+signature: DIRC
+signature_hex: 44495243
+version: 2
+entry_count: 0
+header_hex: 444952430000000200000000
+checksum: 39d890139ee5356c7ef572216cebcd27aa41f9df
+file_hex: 44495243000000020000000039d890139ee5356c7ef572216cebcd27aa41f9df
+size_bytes: 32

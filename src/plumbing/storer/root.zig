@@ -52,8 +52,7 @@
 //!
 //! # IndexStorer method set
 //!
-//! See `index_stub.zig`. Methods: `setIndex(idx)`, `index()`. Phase 4 uses
-//! `IndexStub` until the full index codec lands in phase 5.
+//! See `index_stub.zig` (test helper). Production: `plumbing/format/index.Index`.
 //!
 //! # Combined storer (go-git `Storer`)
 //!
