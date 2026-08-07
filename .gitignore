@@ -1,0 +1,17 @@
+# Bazel
+/bazel-*
+/bazel-cache/
+user.bazelrc
+.bazelrc.user
+
+# Zig / IDE
+.zig-cache/
+zig-out/
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS
+.DS_Store
+Thumbs.db
