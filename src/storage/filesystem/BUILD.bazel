@@ -1,0 +1,70 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+_SRCS = [
+    "storage.zig",
+    "object.zig",
+    "reference.zig",
+    "index.zig",
+    "config.zig",
+    "shallow.zig",
+    "module.zig",
+    "deltaobject.zig",
+]
+
+_TEST_SRCS = _SRCS + [
+    "root.zig",
+    "tests.zig",
+]
+
+zig_library(
+    name = "filesystem",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "filesystem",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/fs",
+        "//src/plumbing",
+        "//src/plumbing/cache",
+        "//src/plumbing/format/config",
+        "//src/plumbing/format/objfile",
+        "//src/plumbing/format/index",
+        "//src/plumbing/format/idxfile",
+        "//src/plumbing/format/packfile",
+        "//src/storage/memory",
+        "//src/storage/filesystem/dotgit",
+        "//src/utils/sync",
+    ],
+)
+
+# Test binary main is tests.zig so the library root stays export-only and
+# dependents never try to load tests.zig from the library graph.
+zig_test(
+    name = "filesystem_test",
+    size = "small",
+    main = "tests.zig",
+    srcs = _TEST_SRCS,
+    deps = [
+        "//src/fs",
+        "//src/plumbing",
+        "//src/plumbing/cache",
+        "//src/plumbing/format/config",
+        "//src/plumbing/format/objfile",
+        "//src/plumbing/format/index",
+        "//src/plumbing/format/idxfile",
+        "//src/plumbing/format/packfile",
+        "//src/storage/memory",
+        "//src/storage/filesystem/dotgit",
+        "//src/storage:storage_suite",
+        "//src/utils/sync",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(
+        ["**/*"],
+        exclude = ["dotgit/**"],
+    ),
+    visibility = ["//visibility:public"],
+)

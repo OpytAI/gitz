@@ -1,0 +1,119 @@
+# API inventory: storage/filesystem (phase 6)
+# On-disk storer over DotGit + fs. NewStorage → newStorage (heap *Storage).
+# NewStorageWithOptions → newStorageWithOptions. Init → Storage.initLayout.
+# Construction is newStorage / newStorageWithOptions (Mem-backed composite).
+# Method names camelCase (setEncodedObject, packfileWriter, …).
+# Capabilities: PackfileWriter=true; DeltaObjectStorer=true; Transactioner=false.
+# StorageOs / ObjectStorageOs are Os specialisations (Mem is default export).
+# lazyWriter ports go-git ObjectStorage.LazyWriter (header+content deferred write).
+package: storage/filesystem
+phase: 6
+require:
+  types:
+    - Storage
+    - Options
+    - ConfigStorage
+    - ObjectStorage
+    - ShallowStorage
+    - IndexStorage
+    - ReferenceStorage
+    - ModuleStorage
+    - ObjectHashIter
+    - ReferenceSliceIter
+    - Index
+    - Config
+    - DotGit
+    - LazyWriter
+  functions:
+    - NewStorage
+    - NewStorageWithOptions
+    - NewObjectStorage
+    - NewObjectStorageWithOptions
+    - NewDeltaObject
+  constants: []
+  semantic:
+    - Storage
+    - Options
+    - ConfigStorage
+    - ObjectStorage
+    - ShallowStorage
+    - IndexStorage
+    - ReferenceStorage
+    - ModuleStorage
+    - ObjectHashIter
+    - ReferenceSliceIter
+    - Index
+    - Config
+    - DotGit
+    - LazyWriter
+    - Storage.deinit
+    - Storage.initLayout
+    - Storage.filesystem
+    - Storage.addAlternate
+    - newStorage
+    - newStorageWithOptions
+    - newObjectStorage
+    - newObjectStorageWithOptions
+    - newDeltaObject
+    - setDeltaObject
+    - filesystem
+    - addAlternate
+    - newEncodedObject
+    - setEncodedObject
+    - encodedObject
+    - iterEncodedObjects
+    - hasEncodedObject
+    - encodedObjectSize
+    - packfileWriter
+    - lazyWriter
+    - deltaObject
+    - reindex
+    - requireIndex
+    - close
+    - forEachObjectHash
+    - objectPacks
+    - looseObjectTime
+    - deleteLooseObject
+    - hashesWithPrefix
+    - deleteOldObjectPackAndIndex
+    - setReference
+    - checkAndSetReference
+    - reference
+    - iterReferences
+    - removeReference
+    - countLooseRefs
+    - packRefs
+    - setShallow
+    - shallow
+    - setIndex
+    - index
+    - setConfig
+    - config
+    - module
+    - ObjectHashIter.next
+    - ObjectHashIter.deinit
+    - ReferenceSliceIter.next
+    - ReferenceSliceIter.deinit
+    - implements_packfile_writer
+    - implements_delta_object_storer
+    - implements_transactioner
+zig_map:
+  Storage: Storage
+  Options: Options
+  ConfigStorage: ConfigStorage
+  ObjectStorage: ObjectStorage
+  ShallowStorage: ShallowStorage
+  IndexStorage: IndexStorage
+  ReferenceStorage: ReferenceStorage
+  ModuleStorage: ModuleStorage
+  ObjectHashIter: ObjectHashIter
+  ReferenceSliceIter: ReferenceSliceIter
+  Index: Index
+  Config: Config
+  DotGit: DotGit
+  LazyWriter: LazyWriter
+  NewStorage: newStorage
+  NewStorageWithOptions: newStorageWithOptions
+  NewObjectStorage: newObjectStorage
+  NewObjectStorageWithOptions: newObjectStorageWithOptions
+  NewDeltaObject: newDeltaObject

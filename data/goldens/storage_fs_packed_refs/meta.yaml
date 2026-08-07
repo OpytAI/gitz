@@ -1,0 +1,4 @@
+name: storage_fs_packed_refs
+type: file_equals
+actual: actual.txt
+expected: expected.txt

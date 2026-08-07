@@ -1,0 +1,106 @@
+# API inventory: storage/transactional (phase 6)
+# Two-storer demux: reads from base, writes to temporal; Commit merges temporal
+# into base. NewStorage → newStorage. Go Storage is an interface with Commit;
+# Zig uses a concrete Storage type with commit method.
+# Sub-storer constructors: NewObjectStorage → newObjectStorage, etc.
+# Method names camelCase (setEncodedObject, setReference, packfileWriter, …).
+# PackfileWriter capability follows temporal (memory: false).
+# MultiObjectIter / MultiReferenceIter concatenate base then temporal iterators.
+# Phase 6 scopes transactional over memory.Storage (base + temporal).
+package: storage/transactional
+phase: 6
+require:
+  types:
+    - Storage
+    - ObjectStorage
+    - ReferenceStorage
+    - IndexStorage
+    - ShallowStorage
+    - ConfigStorage
+    - MultiObjectIter
+    - MultiReferenceIter
+  functions:
+    - NewStorage
+    - NewObjectStorage
+    - NewReferenceStorage
+    - NewIndexStorage
+    - NewShallowStorage
+    - NewConfigStorage
+  constants: []
+  semantic:
+    - Storage
+    - ObjectStorage
+    - ReferenceStorage
+    - IndexStorage
+    - ShallowStorage
+    - ConfigStorage
+    - MultiObjectIter
+    - MultiReferenceIter
+    - newStorage
+    - newObjectStorage
+    - newReferenceStorage
+    - newIndexStorage
+    - newShallowStorage
+    - newConfigStorage
+    - Storage.init
+    - Storage.deinit
+    - Storage.commit
+    - Storage.module
+    - Storage.packfileWriter
+    - implements_packfile_writer
+    - setEncodedObject
+    - hasEncodedObject
+    - encodedObjectSize
+    - encodedObject
+    - iterEncodedObjects
+    - newEncodedObject
+    - addAlternate
+    - setReference
+    - checkAndSetReference
+    - reference
+    - iterReferences
+    - removeReference
+    - countLooseRefs
+    - packRefs
+    - setIndex
+    - index
+    - setShallow
+    - shallow
+    - setConfig
+    - config
+    - ObjectStorage.commit
+    - ObjectStorage.init
+    - ReferenceStorage.commit
+    - ReferenceStorage.init
+    - ReferenceStorage.deinit
+    - IndexStorage.commit
+    - IndexStorage.init
+    - ShallowStorage.commit
+    - ShallowStorage.init
+    - ConfigStorage.commit
+    - ConfigStorage.init
+    - MultiObjectIter.init
+    - MultiObjectIter.deinit
+    - MultiObjectIter.next
+    - MultiObjectIter.close
+    - MultiObjectIter.forEach
+    - MultiReferenceIter.init
+    - MultiReferenceIter.deinit
+    - MultiReferenceIter.next
+    - MultiReferenceIter.close
+    - MultiReferenceIter.forEach
+zig_map:
+  Storage: Storage
+  ObjectStorage: ObjectStorage
+  ReferenceStorage: ReferenceStorage
+  IndexStorage: IndexStorage
+  ShallowStorage: ShallowStorage
+  ConfigStorage: ConfigStorage
+  MultiObjectIter: MultiObjectIter
+  MultiReferenceIter: MultiReferenceIter
+  NewStorage: newStorage
+  NewObjectStorage: newObjectStorage
+  NewReferenceStorage: newReferenceStorage
+  NewIndexStorage: newIndexStorage
+  NewShallowStorage: newShallowStorage
+  NewConfigStorage: newConfigStorage

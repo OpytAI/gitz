@@ -1,0 +1,147 @@
+# API inventory: go-billy equivalent (phase 6)
+# External in go-git (`github.com/go-git/go-billy/v5`); gitz ports a pure-Zig
+# subset as `src/fs`: concrete Mem + Os backends with the same method sets.
+# Join → joinPath; File.Name → fileName. No Go interface type; call sites use anytype.
+# Os is a real host-backed backend (std.Io); Mem is the primary in-memory backend for tests.
+# path helpers (join, clean, baseName, parentRel) live under the path submodule.
+package: go-billy
+phase: 6
+require:
+  types:
+    - Mem
+    - MemFile
+    - Os
+    - OsFile
+    - FileInfo
+    - Error
+    - O
+    - Mode
+  functions: []
+  constants:
+    - ErrNotExist
+    - ErrExist
+    - ErrNotSupported
+    - ErrReadOnly
+    - ErrCrossedBoundary
+  semantic:
+    # Core types (package-root re-exports)
+    - Mem
+    - MemFile
+    - Os
+    - OsFile
+    - FileInfo
+    - Error
+    - O
+    - Mode
+    - path
+    # Open flags / mode bits
+    - O.RDONLY
+    - O.WRONLY
+    - O.RDWR
+    - O.CREATE
+    - O.EXCL
+    - O.TRUNC
+    - O.APPEND
+    - Mode.file
+    - Mode.dir
+    # Mem lifecycle + path helpers
+    - Mem.init
+    - Mem.deinit
+    - Mem.root
+    - Mem.joinPath
+    # Mem Basic / Dir / TempFile / Symlink / Chroot
+    - Mem.mkdirAll
+    - Mem.create
+    - Mem.open
+    - Mem.openFile
+    - Mem.stat
+    - Mem.lstat
+    - Mem.readDir
+    - Mem.freeReadDir
+    - Mem.remove
+    - Mem.rename
+    - Mem.tempFile
+    - Mem.chroot
+    - Mem.symlink
+    - Mem.readlink
+    # MemFile I/O
+    - MemFile.fileName
+    - MemFile.read
+    - MemFile.readAt
+    - MemFile.write
+    - MemFile.writeAt
+    - MemFile.seek
+    - MemFile.close
+    - MemFile.truncate
+    - MemFile.lock
+    - MemFile.unlock
+    # Os constructors (init path / temp dir / wrap open Dir)
+    - Os.init
+    - Os.initTemp
+    - Os.initFromDir
+    - Os.deinit
+    - Os.root
+    - Os.joinPath
+    # Os Basic / Dir / TempFile / Symlink / Chroot (host-backed)
+    - Os.mkdirAll
+    - Os.create
+    - Os.open
+    - Os.openFile
+    - Os.stat
+    - Os.lstat
+    - Os.readDir
+    - Os.freeReadDir
+    - Os.remove
+    - Os.rename
+    - Os.tempFile
+    - Os.chroot
+    - Os.symlink
+    - Os.readlink
+    # OsFile I/O
+    - OsFile.fileName
+    - OsFile.read
+    - OsFile.readAt
+    - OsFile.write
+    - OsFile.writeAt
+    - OsFile.seek
+    - OsFile.close
+    - OsFile.truncate
+    - OsFile.lock
+    - OsFile.unlock
+    # FileInfo
+    - FileInfo.isDir
+    - FileInfo.isSymlink
+    - FileInfo.isRegular
+    # path helpers
+    - path.join
+    - path.clean
+    - path.baseName
+    - path.parentRel
+    # Error set members (go-billy names)
+    - Error.NotExist
+    - Error.Exist
+    - Error.NotSupported
+    - Error.ReadOnly
+    - Error.CrossedBoundary
+    - Error.IsDir
+    - Error.NotDir
+    - Error.Closed
+    - Error.InvalidMode
+    - Error.NotLink
+    - Error.NoSpace
+    - Error.SystemResources
+    - Error.Unexpected
+zig_map:
+  Mem: Mem
+  MemFile: MemFile
+  Os: Os
+  OsFile: OsFile
+  FileInfo: FileInfo
+  Error: Error
+  O: O
+  Mode: Mode
+  ErrNotExist: Error.NotExist
+  ErrExist: Error.Exist
+  ErrNotSupported: Error.NotSupported
+  ErrReadOnly: Error.ReadOnly
+  ErrCrossedBoundary: Error.CrossedBoundary

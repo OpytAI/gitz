@@ -1,0 +1,17 @@
+# packed-refs sample (go-git storage/filesystem/dotgit)
+# Round-trip: write packed-refs file → DotGit.ref / refs() reads hash refs.
+# Line format: "<40-hex> <refname>" (go-git Reference.String / formatRefLineAlloc).
+# Optional header line is ignored by the parser (comment lines start with #).
+package: storage/filesystem/dotgit
+op: packed_refs_round_trip
+file: packed-refs
+sample: |
+  # pack-refs with: peeled fully-peeled sorted
+  e8d3ffab552895c19b9fcf7aa264d277cde33881 refs/heads/master
+  6ecf0ef2c2dffb796033e5a02219af86ec6584e5 refs/tags/v1
+refs:
+  - name: refs/heads/master
+    hash: e8d3ffab552895c19b9fcf7aa264d277cde33881
+  - name: refs/tags/v1
+    hash: 6ecf0ef2c2dffb796033e5a02219af86ec6584e5
+count: 2

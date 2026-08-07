@@ -24,7 +24,19 @@ zig_test(
     ],
 )
 
-# BaseStorageSuite over memory (go-git storage/test + storage/memory tests).
+# Shared BaseStorageSuite library (memory + filesystem runners import this).
+zig_library(
+    name = "storage_suite",
+    main = "test/suite.zig",
+    import_name = "storage_suite",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/storage/memory",
+        "//src/plumbing",
+        "//src/plumbing/format/index",
+    ],
+)
+
 zig_test(
     name = "suite_test",
     size = "small",
@@ -40,7 +52,11 @@ filegroup(
     name = "package_srcs",
     srcs = glob(
         ["**/*"],
-        exclude = ["memory/**"],
+        exclude = [
+            "memory/**",
+            "filesystem/**",
+            "transactional/**",
+        ],
     ),
     visibility = ["//visibility:public"],
 )

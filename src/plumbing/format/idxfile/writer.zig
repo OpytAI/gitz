@@ -42,9 +42,26 @@ pub const Writer = struct {
     }
 
     /// go-git `Index` — create or return the finished index.
+    ///
+    /// The returned pointer is owned by this Writer until `takeIndex` or `deinit`.
     pub fn getIndex(self: *Writer) (Error || Allocator.Error)!*MemoryIndex {
         if (self.cached_index) |idx| return idx;
         return self.createIndex();
+    }
+
+    /// Transfer ownership of the finished index as a heap-owned `*MemoryIndex`.
+    ///
+    /// After success, this Writer no longer owns the index (`deinit` will not
+    /// free it). Used by filesystem ObjectStorage Notify (go-git injects the
+    /// live idx into `s.index`; Zig needs an explicit ownership hand-off).
+    pub fn takeIndex(self: *Writer) (Error || Allocator.Error)!*MemoryIndex {
+        _ = try self.getIndex();
+        const owned = self.owned_index orelse return Error.IndexNotFinished;
+        const ptr = try self.allocator.create(MemoryIndex);
+        ptr.* = owned;
+        self.owned_index = null;
+        self.cached_index = null;
+        return ptr;
     }
 
     /// go-git `Add` — append object data if hash not yet seen.

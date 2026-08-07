@@ -207,9 +207,24 @@ test_suite(
     ],
 )
 
+# Phase 6: billy-equivalent fs + filesystem storage + transactional.
+test_suite(
+    name = "phase_6_packages",
+    tests = [
+        "//src/fs:fs_test",
+        "//src/storage/filesystem/dotgit:dotgit_test",
+        "//src/storage/filesystem:filesystem_test",
+        "//src/storage/transactional:transactional_test",
+        "//src/storage:suite_test",
+    ],
+)
+
 test_suite(
     name = "phase_6",
-    tests = [":phase_5"],
+    tests = [
+        ":phase_5",
+        ":phase_6_packages",
+    ],
 )
 
 test_suite(

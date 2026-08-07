@@ -1,0 +1,10 @@
+# DotGit.Initialize must-exist dirs (go-git storage/filesystem/dotgit)
+# Created under the .git filesystem root when missing.
+# Paths use / separator (billy Join("objects","info") → objects/info).
+package: storage/filesystem/dotgit
+op: initialize
+paths:
+  - objects/info
+  - objects/pack
+  - refs/heads
+  - refs/tags

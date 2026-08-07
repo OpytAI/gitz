@@ -110,6 +110,15 @@ pub const ObjectLru = struct {
         return entry.obj;
     }
 
+    /// Drop one key if present. Does not free the `*MemoryObject` (caller owns it).
+    pub fn remove(self: *ObjectLru, k: Hash) void {
+        const entry = self.cache.fetchRemove(k) orelse return;
+        self.ll.remove(&entry.value.node);
+        const size: FileSize = entry.value.obj.size;
+        if (self.actual_size >= size) self.actual_size -= size else self.actual_size = 0;
+        self.allocator.destroy(entry.value);
+    }
+
     /// go-git `Clear` — drop every entry. Stored objects are not freed.
     pub fn clear(self: *ObjectLru) void {
         var it = self.cache.iterator();

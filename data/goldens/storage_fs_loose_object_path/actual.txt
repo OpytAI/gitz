@@ -1,0 +1,11 @@
+# DotGit.objectPath loose layout (go-git storage/filesystem/dotgit)
+# Empty blob OID is SHA-1 of git object "blob 0\0".
+# Path: objects/<first 2 hex chars>/<remaining 38 hex chars>
+# joinPath: objects + hex[0..2] + hex[2..] (see DotGit.objectPath).
+package: storage/filesystem/dotgit
+op: objectPath
+type: blob
+size: 0
+body: empty
+oid: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+path: objects/e6/9de29bb2d1d6434b8b29ae775ad8c2e48c5391

@@ -6,7 +6,7 @@
 //!
 //! | go-git | Zig |
 //! |--------|-----|
-//! | `storage/memory/storage_test.go` (BaseStorageSuite) | `//src/storage:suite_test` (`test/suite.zig`) |
+//! | `storage/memory/storage_test.go` (BaseStorageSuite) | `//src/storage:suite_test` + `storage_suite` lib |
 //! | Unit edges (objects/tx/refs/config/index) | tests in this package (`object.zig`, `reference.zig`, …) |
 //!
 //! Memory does **not** implement PackfileWriter or DeltaObjectStorer (capability false).

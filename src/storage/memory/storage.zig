@@ -122,6 +122,10 @@ pub const Storage = struct {
     pub const implements_transactioner = true;
     pub const implements_packfile_writer = false;
     pub const implements_delta_object_storer = false;
+    /// go-git memory `SetIndex` takes ownership of the heap `*Index`.
+    pub const set_index_takes_ownership = true;
+    /// Memory refs borrow map keys; suite must not free them.
+    pub const reference_returns_owned = false;
 
     /// Initialize embedded storages (stack or heap). Prefer `newStorage` for heap.
     pub fn init(allocator: Allocator) Storage {

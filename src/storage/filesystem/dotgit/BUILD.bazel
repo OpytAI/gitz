@@ -1,0 +1,53 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git storage/filesystem/dotgit — .git layout, loose objects, refs, packed-refs.
+_SRCS = [
+    "error.zig",
+    "dotgit.zig",
+    "writers.zig",
+    "reader.zig",
+    "repository_filesystem.zig",
+]
+
+_TEST_SRCS = _SRCS + [
+    "root.zig",
+    "tests.zig",
+]
+
+zig_library(
+    name = "dotgit",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "dotgit",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/fs",
+        "//src/plumbing",
+        "//src/plumbing/format/objfile",
+        "//src/plumbing/format/packfile",
+        "//src/plumbing/format/idxfile",
+        "//src/utils/sync",
+    ],
+)
+
+# Test binary main is tests.zig so the library root stays export-only.
+zig_test(
+    name = "dotgit_test",
+    size = "small",
+    main = "tests.zig",
+    srcs = _TEST_SRCS,
+    deps = [
+        "//src/fs",
+        "//src/plumbing",
+        "//src/plumbing/format/objfile",
+        "//src/plumbing/format/packfile",
+        "//src/plumbing/format/idxfile",
+        "//src/utils/sync",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

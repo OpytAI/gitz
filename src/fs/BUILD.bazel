@@ -1,0 +1,30 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+_SRCS = [
+    "error.zig",
+    "fileinfo.zig",
+    "path.zig",
+    "mem.zig",
+    "os.zig",
+]
+
+zig_library(
+    name = "fs",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "fs",
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "fs_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

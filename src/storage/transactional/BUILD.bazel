@@ -1,0 +1,42 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git storage/transactional — demux reads (base) / writes (temporal) + Commit.
+_SRCS = [
+    "storage.zig",
+    "object.zig",
+    "reference.zig",
+    "index.zig",
+    "shallow.zig",
+    "config.zig",
+]
+
+zig_library(
+    name = "transactional",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "transactional",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/storage/memory",
+        "//src/plumbing",
+        "//src/plumbing/format/index",
+    ],
+)
+
+zig_test(
+    name = "transactional_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/storage/memory",
+        "//src/plumbing",
+        "//src/plumbing/format/index",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)
