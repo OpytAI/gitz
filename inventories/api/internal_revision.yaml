@@ -1,0 +1,18 @@
+# API inventory: internal/revision (phase 9)
+package: internal/revision
+phase: 9
+require:
+  types:
+    - Revisioner
+    - Parser
+  functions:
+    - newParserFromString
+  constants: []
+  semantic:
+    - Revisioner
+    - Parser
+    - newParserFromString
+zig_map:
+  Revisioner: Revisioner
+  Parser: Parser
+  NewParserFromString: newParserFromString

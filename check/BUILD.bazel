@@ -269,9 +269,34 @@ test_suite(
     ],
 )
 
+# Phase 9: diff / status shell (merkletrie, gitignore, pathutil, revision, …).
+test_suite(
+    name = "phase_9_packages",
+    tests = [
+        "//src/internal/pathutil:pathutil_test",
+        "//src/internal/path_util:path_util_test",
+        "//src/internal/url:url_test",
+        "//src/internal/reference:reference_test",
+        "//src/internal/revision:revision_test",
+        "//src/utils/diff:diff_test",
+        "//src/plumbing/format/diff:diff_test",
+        "//src/plumbing/format/gitignore:gitignore_test",
+        "//src/plumbing/format/gitattributes:gitattributes_test",
+        "//src/utils/merkletrie/noder:noder_test",
+        "//src/utils/merkletrie/internal/frame:frame_test",
+        "//src/utils/merkletrie/internal/fsnoder:fsnoder_test",
+        "//src/utils/merkletrie:merkletrie_test",
+        "//src/utils/merkletrie/index:index_test",
+        "//src/utils/merkletrie/filesystem:filesystem_test",
+    ],
+)
+
 test_suite(
     name = "phase_9",
-    tests = [":phase_8"],
+    tests = [
+        ":phase_8",
+        ":phase_9_packages",
+    ],
 )
 
 test_suite(

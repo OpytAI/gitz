@@ -1,0 +1,20 @@
+# API inventory: plumbing/format/diff (phase 9)
+package: plumbing/format/diff
+phase: 9
+require:
+  types:
+    - Operation
+    - UnifiedEncoder
+    - ColorConfig
+  functions:
+    - newUnifiedEncoder
+  constants: []
+  semantic:
+    - Operation
+    - UnifiedEncoder
+    - ColorConfig
+zig_map:
+  Operation: Operation
+  UnifiedEncoder: UnifiedEncoder
+  ColorConfig: ColorConfig
+  NewUnifiedEncoder: newUnifiedEncoder

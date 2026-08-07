@@ -1,0 +1,28 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git internal/url — scheme / SCP-like / local endpoint helpers.
+_SRCS = [
+    "url.zig",
+]
+
+zig_library(
+    name = "url",
+    import_name = "url",
+    main = "root.zig",
+    srcs = _SRCS,
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "url_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

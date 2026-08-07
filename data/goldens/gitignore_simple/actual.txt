@@ -1,0 +1,3 @@
+pattern:*.o
+path:foo.o
+result:exclude

@@ -1,0 +1,24 @@
+# API inventory: utils/merkletrie (phase 9)
+package: utils/merkletrie
+phase: 9
+require:
+  types:
+    - Action
+    - Change
+    - Changes
+    - Iter
+  functions:
+    - diffTree
+  constants: []
+  semantic:
+    - Action
+    - Change
+    - Changes
+    - diffTree
+    - Iter
+zig_map:
+  Action: Action
+  Change: Change
+  Changes: Changes
+  DiffTree: diffTree
+  Iter: Iter

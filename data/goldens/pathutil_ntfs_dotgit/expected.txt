@@ -1,0 +1,4 @@
+.git
+git~1
+.GIT....
+git~1:stream

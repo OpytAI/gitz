@@ -1,0 +1,30 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git internal/revision — git revision string parser (gitrevisions).
+_SRCS = [
+    "token.zig",
+    "scanner.zig",
+    "parser.zig",
+]
+
+zig_library(
+    name = "revision",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "revision",
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "revision_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

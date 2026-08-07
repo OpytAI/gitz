@@ -1,0 +1,5 @@
+name: diff_do_equal
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "utils/diff do equal inputs yields single equal hunk"

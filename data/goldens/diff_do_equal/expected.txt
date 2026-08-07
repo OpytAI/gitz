@@ -1,0 +1,4 @@
+src:a\nb
+dst:a\nb
+ops:equal
+text:a\nb

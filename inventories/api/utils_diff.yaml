@@ -1,0 +1,23 @@
+# API inventory: utils/diff (phase 9)
+package: utils/diff
+phase: 9
+require:
+  types:
+    - Diff
+    - Operation
+  functions:
+    - do
+    - doWithTimeout
+    - dst
+    - src
+  constants: []
+  semantic:
+    - do
+    - doWithTimeout
+    - Diff
+zig_map:
+  Do: do
+  DoWithTimeout: doWithTimeout
+  Dst: dst
+  Src: src
+  Diff: Diff

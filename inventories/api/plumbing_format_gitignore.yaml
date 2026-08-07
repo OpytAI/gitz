@@ -1,0 +1,23 @@
+# API inventory: plumbing/format/gitignore (phase 9)
+package: plumbing/format/gitignore
+phase: 9
+require:
+  types:
+    - Pattern
+    - Matcher
+    - MatchResult
+  functions:
+    - parsePattern
+    - newMatcher
+  constants: []
+  semantic:
+    - Pattern
+    - Matcher
+    - parsePattern
+    - newMatcher
+zig_map:
+  Pattern: Pattern
+  Matcher: Matcher
+  MatchResult: MatchResult
+  ParsePattern: parsePattern
+  NewMatcher: newMatcher

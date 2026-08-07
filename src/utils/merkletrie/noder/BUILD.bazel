@@ -1,0 +1,27 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+_SRCS = [
+    "noder.zig",
+    "path.zig",
+]
+
+zig_library(
+    name = "noder",
+    import_name = "noder",
+    main = "root.zig",
+    srcs = _SRCS,
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "noder_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

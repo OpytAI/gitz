@@ -1,0 +1,5 @@
+name: gitignore_simple
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "gitignore parsePattern(\"*.o\").match([\"foo.o\"]) => exclude"

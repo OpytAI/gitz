@@ -1,0 +1,20 @@
+# API inventory: internal/url (phase 9)
+package: internal/url
+phase: 9
+require:
+  functions:
+    - matchesScheme
+    - matchesScpLike
+    - findScpLikeComponents
+    - isLocalEndpoint
+  types: []
+  constants: []
+  semantic:
+    - matchesScheme
+    - matchesScpLike
+    - isLocalEndpoint
+zig_map:
+  MatchesScheme: matchesScheme
+  MatchesScpLike: matchesScpLike
+  FindScpLikeComponents: findScpLikeComponents
+  IsLocalEndpoint: isLocalEndpoint

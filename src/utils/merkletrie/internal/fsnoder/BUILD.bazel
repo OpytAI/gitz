@@ -1,0 +1,34 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+_SRCS = [
+    "dir.zig",
+    "file.zig",
+    "new.zig",
+]
+
+zig_library(
+    name = "fsnoder",
+    import_name = "fsnoder",
+    main = "root.zig",
+    srcs = _SRCS,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/utils/merkletrie/noder",
+    ],
+)
+
+zig_test(
+    name = "fsnoder_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/utils/merkletrie/noder",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

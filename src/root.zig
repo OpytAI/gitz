@@ -48,6 +48,21 @@ pub const transport_client = @import("client");
 pub const transport_server = @import("server");
 pub const transport_common = @import("transport_common");
 
+// Phase 9 diff / status shell.
+pub const pathutil = @import("pathutil");
+pub const path_util = @import("path_util");
+pub const internal_url = @import("url");
+pub const internal_reference = @import("internal_reference");
+pub const revision = @import("revision");
+pub const utils_diff = @import("diff");
+pub const format_diff = @import("format_diff");
+pub const gitignore = @import("gitignore");
+pub const gitattributes = @import("gitattributes");
+pub const merkletrie = @import("merkletrie");
+pub const noder = @import("noder");
+pub const merkletrie_index = @import("merkletrie_index");
+pub const merkletrie_filesystem = @import("merkletrie_filesystem");
+
 test "identity" {
     try std.testing.expectEqualStrings("gitz", name);
     try std.testing.expectEqualStrings("v5.19.2", go_git_pin);

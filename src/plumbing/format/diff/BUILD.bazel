@@ -1,0 +1,40 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/format/diff — unified diff types + encoder + color config.
+_SRCS = [
+    "patch.zig",
+    "colorconfig.zig",
+    "unified_encoder.zig",
+]
+
+zig_library(
+    name = "diff",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "format_diff",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/color",
+        "//src/plumbing/filemode",
+    ],
+)
+
+zig_test(
+    name = "diff_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/color",
+        "//src/plumbing/filemode",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

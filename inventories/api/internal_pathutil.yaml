@@ -1,0 +1,23 @@
+# API inventory: internal/pathutil (phase 9)
+package: internal/pathutil
+phase: 9
+require:
+  functions:
+    - isNTFSDotGit
+    - windowsValidPath
+    - isHFSDotGit
+    - isDotGitName
+    - validTreePath
+  types: []
+  constants: []
+  semantic:
+    - isNTFSDotGit
+    - windowsValidPath
+    - isHFSDotGit
+    - validTreePath
+zig_map:
+  IsNTFSDotGit: isNTFSDotGit
+  WindowsValidPath: windowsValidPath
+  IsHFSDotGit: isHFSDotGit
+  IsDotGitName: isDotGitName
+  ValidTreePath: validTreePath

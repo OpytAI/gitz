@@ -1,0 +1,12 @@
+# API inventory: utils/merkletrie/index (phase 9)
+package: utils/merkletrie/index
+phase: 9
+require:
+  functions:
+    - newRootNode
+  types: []
+  constants: []
+  semantic:
+    - newRootNode
+zig_map:
+  NewRootNode: newRootNode

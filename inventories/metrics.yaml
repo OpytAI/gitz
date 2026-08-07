@@ -14,9 +14,11 @@ packages:
   max_missing: 0
 
 api:
-  # Count of inventories/api/*.yaml (phases 1–8).
+  # Count of inventories/api/*.yaml (phases 1–9).
   # Phase 8 adds: packp, capability, sideband, transport, client, server, internal/common.
-  min_files: 35
+  # Phase 9 adds: merkletrie(+noder/index/filesystem/frame), gitignore, gitattributes,
+  # format/diff, utils/diff, pathutil, path_util, revision, url, internal/reference.
+  min_files: 49
   # For due API files (phase ≤ current): zig_map coverage of require names.
   # Phase 1: due API packages should map zig_map names into sources.
   min_mapped_ratio: 0.5
@@ -32,7 +34,9 @@ goldens:
   # Phase 8: packp_advrefs_empty + packp_advrefs_with_head + packp_ulreq_simple
   # + packp_report_status_ok + sideband_channel_byte + sideband_pack_channel
   # + transport_endpoint_http + transport_endpoint_scp (37).
-  min_count: 37
+  # Phase 9: pathutil_ntfs_dotgit + gitignore_simple + revision_parse +
+  # diff_do_equal + merkletrie_empty (42).
+  min_count: 42
 
 
 allowlists:

@@ -1,0 +1,28 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git utils/diff — line-oriented Myers diffs (pure Zig; no sergi/go-diff C).
+zig_library(
+    name = "diff",
+    import_name = "diff",
+    main = "root.zig",
+    srcs = [
+        "myers.zig",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "diff_test",
+    size = "small",
+    main = "root.zig",
+    srcs = [
+        "myers.zig",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

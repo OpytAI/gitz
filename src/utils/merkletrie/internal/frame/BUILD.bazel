@@ -1,0 +1,34 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+_SRCS = [
+    "frame.zig",
+]
+
+zig_library(
+    name = "frame",
+    import_name = "frame",
+    main = "root.zig",
+    srcs = _SRCS,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/utils/merkletrie/noder",
+        "//src/utils/merkletrie/internal/fsnoder",
+    ],
+)
+
+zig_test(
+    name = "frame_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/utils/merkletrie/noder",
+        "//src/utils/merkletrie/internal/fsnoder",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

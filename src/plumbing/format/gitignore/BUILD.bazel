@@ -1,0 +1,36 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+_SRCS = [
+    "pattern.zig",
+    "matcher.zig",
+    "dir.zig",
+]
+
+zig_library(
+    name = "gitignore",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "gitignore",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/fs",
+        "//src/plumbing/format/config",
+    ],
+)
+
+zig_test(
+    name = "gitignore_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/fs",
+        "//src/plumbing/format/config",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

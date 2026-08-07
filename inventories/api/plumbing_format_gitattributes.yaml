@@ -1,0 +1,22 @@
+# API inventory: plumbing/format/gitattributes (phase 9)
+package: plumbing/format/gitattributes
+phase: 9
+require:
+  types:
+    - Attribute
+    - Pattern
+    - Matcher
+  functions:
+    - parsePattern
+    - newMatcher
+  constants: []
+  semantic:
+    - Attribute
+    - Pattern
+    - Matcher
+zig_map:
+  Attribute: Attribute
+  Pattern: Pattern
+  Matcher: Matcher
+  ParsePattern: parsePattern
+  NewMatcher: newMatcher

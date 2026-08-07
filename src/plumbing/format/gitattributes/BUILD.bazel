@@ -1,0 +1,37 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+_SRCS = [
+    "attributes.zig",
+    "pattern.zig",
+    "matcher.zig",
+    "dir.zig",
+]
+
+zig_library(
+    name = "gitattributes",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "gitattributes",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/fs",
+        "//src/plumbing/format/config",
+    ],
+)
+
+zig_test(
+    name = "gitattributes_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/fs",
+        "//src/plumbing/format/config",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,42 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+_SRCS = [
+    "node.zig",
+]
+
+zig_library(
+    name = "filesystem",
+    import_name = "merkletrie_filesystem",
+    main = "root.zig",
+    srcs = _SRCS,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/utils/merkletrie",
+        "//src/utils/merkletrie/noder",
+        "//src/plumbing",
+        "//src/plumbing/filemode",
+        "//src/plumbing/format/index",
+        "//src/fs",
+    ],
+)
+
+zig_test(
+    name = "filesystem_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/utils/merkletrie",
+        "//src/utils/merkletrie/noder",
+        "//src/plumbing",
+        "//src/plumbing/filemode",
+        "//src/plumbing/format/index",
+        "//src/fs",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

@@ -1,0 +1,48 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+_SRCS = [
+    "change.zig",
+    "iter.zig",
+    "doubleiter.zig",
+    "difftree.zig",
+]
+
+zig_library(
+    name = "merkletrie",
+    import_name = "merkletrie",
+    main = "root.zig",
+    srcs = _SRCS,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/utils/merkletrie/noder",
+        "//src/utils/merkletrie/internal/frame",
+        "//src/utils/merkletrie/internal/fsnoder",
+    ],
+)
+
+zig_test(
+    name = "merkletrie_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/utils/merkletrie/noder",
+        "//src/utils/merkletrie/internal/frame",
+        "//src/utils/merkletrie/internal/fsnoder",
+    ],
+)
+
+# Parent globs must exclude nested packages (noder, internal, index, filesystem).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(
+        ["**/*"],
+        exclude = [
+            "noder/**",
+            "internal/**",
+            "index/**",
+            "filesystem/**",
+        ],
+    ),
+    visibility = ["//visibility:public"],
+)

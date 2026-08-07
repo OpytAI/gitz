@@ -1,0 +1,12 @@
+# API inventory: internal/path_util (phase 9)
+package: internal/path_util
+phase: 9
+require:
+  functions:
+    - replaceTildeWithHome
+  types: []
+  constants: []
+  semantic:
+    - replaceTildeWithHome
+zig_map:
+  ReplaceTildeWithHome: replaceTildeWithHome
