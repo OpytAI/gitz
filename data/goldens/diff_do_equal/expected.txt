@@ -1,4 +1,48 @@
+# go-git utils/diff Do (line-oriented Myers)
+# Source: go-git/utils/diff/diff_ext_test.go doTests
+# Operation Type: -1=delete, 0=equal, 1=insert (diffmatchpatch.Operation)
+# Text uses \n for newlines in single-line dump fields
+#
+# --- equal: identical non-empty ---
+case:equal_a_nb
 src:a\nb
 dst:a\nb
-ops:equal
-text:a\nb
+ops:0
+text0:a\nb
+#
+# --- equal: single char ---
+case:equal_a
+src:a
+dst:a
+ops:0
+text0:a
+#
+# --- equal: empty both ---
+case:equal_empty
+src:
+dst:
+ops:
+#
+# --- insert only ---
+case:insert_only
+src:
+dst:abc\ncba
+ops:1
+text0:abc\ncba
+#
+# --- delete only ---
+case:delete_only
+src:abc\ncba
+dst:
+ops:-1
+text0:abc\ncba
+#
+# --- non-equal Myers multi-op (doTests[4]) ---
+case:myers_mixed
+src:abc\nbcd\ncde
+dst:000\nabc\n111\nBCD\n
+ops:1,0,-1,1
+text0:000\n
+text1:abc\n
+text2:bcd\ncde
+text3:111\nBCD\n

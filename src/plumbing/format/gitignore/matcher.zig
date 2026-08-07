@@ -40,7 +40,8 @@ pub fn newMatcher(ps: []const Pattern) Matcher {
 const testing = std.testing;
 const parsePattern = pattern_mod.parsePattern;
 
-test "Matcher Match" {
+test "Matcher_Match" {
+    // go-git TestMatcher_Match — later include (!volcano) overrides earlier exclude
     const gpa = testing.allocator;
     var p0 = try parsePattern(gpa, "**/middle/v[uo]l?ano", &.{});
     defer p0.deinit();
@@ -50,4 +51,10 @@ test "Matcher Match" {
     const m = newMatcher(&ps);
     try testing.expect(m.match(&.{ "head", "middle", "vulkano" }, false));
     try testing.expect(!m.match(&.{ "head", "middle", "volcano" }, false));
+}
+
+test "Matcher_Match empty patterns never exclude" {
+    const m = newMatcher(&.{});
+    try testing.expect(!m.match(&.{"any"}, false));
+    try testing.expect(!m.match(&.{ "a", "b" }, true));
 }

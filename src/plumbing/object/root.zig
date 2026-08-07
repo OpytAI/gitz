@@ -14,6 +14,8 @@ const object_mod = @import("object.zig");
 const walker_mod = @import("commit_walker.zig");
 const merge_base_mod = @import("merge_base.zig");
 const change_mod = @import("change.zig");
+const tree_noder_mod = @import("tree_noder.zig");
+const change_adaptor_mod = @import("change_adaptor.zig");
 const difftree_mod = @import("difftree.zig");
 const rename_mod = @import("rename.zig");
 const similarity_mod = @import("similarity.zig");
@@ -96,6 +98,10 @@ pub const diffTree = difftree_mod.diffTree;
 pub const diffTreeWithOptions = difftree_mod.diffTreeWithOptions;
 pub const detectRenames = rename_mod.detectRenames;
 
+pub const TreeNoder = tree_noder_mod.TreeNoder;
+pub const TreeNoderSession = tree_noder_mod.TreeNoderSession;
+pub const newTreeRootNode = tree_noder_mod.newTreeRootNode;
+
 pub const Patch = patch_mod.Patch;
 pub const FilePatch = patch_mod.FilePatch;
 pub const FileStats = patch_mod.FileStats;
@@ -119,6 +125,8 @@ test {
     _ = walker_mod;
     _ = merge_base_mod;
     _ = change_mod;
+    _ = tree_noder_mod;
+    _ = change_adaptor_mod;
     _ = difftree_mod;
     _ = rename_mod;
     _ = similarity_mod;

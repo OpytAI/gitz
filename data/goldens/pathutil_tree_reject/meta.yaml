@@ -1,0 +1,5 @@
+name: pathutil_tree_reject
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "ValidTreePath reject/accept from go-git tree_test.go (NTFS disguise + HFS ZWNJ). Full IsHFSDot* tables remain unit-only in hfs.zig (not a separate golden)."

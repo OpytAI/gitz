@@ -2,4 +2,4 @@ name: gitignore_simple
 type: file_equals
 actual: actual.txt
 expected: expected.txt
-note: "gitignore parsePattern(\"*.o\").match([\"foo.o\"]) => exclude"
+note: "ParsePattern.Match vectors from go-git plumbing/format/gitignore/pattern_test.go (classic *.o, inclusion !, wildcards, ** globs). Dir loaders (ReadPatterns/LoadGlobal/System) stay unit-only in dir.zig."

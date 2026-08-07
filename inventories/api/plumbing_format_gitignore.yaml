@@ -9,15 +9,24 @@ require:
   functions:
     - parsePattern
     - newMatcher
+    - ReadPatterns
+    - LoadGlobalPatterns
+    - LoadSystemPatterns
   constants: []
   semantic:
     - Pattern
     - Matcher
     - parsePattern
     - newMatcher
+    - readPatterns
+    - loadGlobalPatterns
+    - loadSystemPatterns
 zig_map:
   Pattern: Pattern
   Matcher: Matcher
   MatchResult: MatchResult
   ParsePattern: parsePattern
   NewMatcher: newMatcher
+  ReadPatterns: readPatterns
+  LoadGlobalPatterns: loadGlobalPatterns
+  LoadSystemPatterns: loadSystemPatterns

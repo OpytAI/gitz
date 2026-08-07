@@ -1,20 +1,19 @@
 //! Diff two trees (go-git `DiffTree` / `DiffTreeWithOptions`).
 //!
-//! Recursive two-pointer walk of sorted tree entries (same observable results
-//! as go-git's merkletrie DiffTree for content-addressed git trees). Rename
-//! detection is optional via `rename.zig`.
+//! Path: NewTreeRootNode → merkletrie.DiffTreeContext → newChanges → optional DetectRenames.
 
 const std = @import("std");
-const plumbing = @import("plumbing");
-const filemode = @import("filemode");
+const noder = @import("noder");
+const merkletrie = @import("merkletrie");
 const tree_mod = @import("tree.zig");
 const change_mod = @import("change.zig");
 const rename_mod = @import("rename.zig");
+const tree_noder_mod = @import("tree_noder.zig");
+const change_adaptor_mod = @import("change_adaptor.zig");
 const error_mod = @import("error.zig");
 
 const Allocator = std.mem.Allocator;
 const Tree = tree_mod.Tree;
-const TreeEntry = tree_mod.TreeEntry;
 const Change = change_mod.Change;
 const Changes = change_mod.Changes;
 const Error = error_mod.Error;
@@ -37,18 +36,29 @@ pub fn diffTreeWithOptions(
     b: ?*Tree,
     opts: DiffTreeOptions,
 ) DiffError!Changes {
-    var list: std.ArrayList(*Change) = .empty;
-    errdefer {
-        for (list.items) |c| c.destroy(allocator);
-        list.deinit(allocator);
-    }
+    var session = tree_noder_mod.TreeNoderSession.init(allocator);
+    defer session.deinit();
 
-    try diffRecursive(allocator, a, b, "", &list);
+    const from = try tree_noder_mod.newTreeRootNode(&session, a);
+    const to = try tree_noder_mod.newTreeRootNode(&session, b);
 
-    var changes: Changes = .{
-        .items = try list.toOwnedSlice(allocator),
-        .allocator = allocator,
+    var mt_changes = merkletrie.diffTreeContext(
+        allocator,
+        .{},
+        from.asNoder(),
+        to.asNoder(),
+        hashEqual,
+    ) catch |err| {
+        if (err == merkletrie.DiffError.Canceled) return Error.Canceled;
+        return err;
     };
+
+    // Adapt while TreeNoders still live in the session arena. newChanges
+    // deinit's mt_changes (Path node slices only). Loaded subtrees stay in
+    // each root Tree.path_cache (caller-owned); session deinit frees only the
+    // arena of TreeNoder shells. ChangeEntry.tree therefore remains valid for
+    // the lifetime of the DiffTree input roots (same idea as go-git Tree.t).
+    var changes = try change_adaptor_mod.newChanges(allocator, &mt_changes);
 
     if (opts.detect_renames) {
         // detectRenames takes ownership of `changes` (including on error).
@@ -59,205 +69,61 @@ pub fn diffTreeWithOptions(
     return changes;
 }
 
-fn diffRecursive(
-    allocator: Allocator,
-    a: ?*Tree,
-    b: ?*Tree,
-    path_prefix: []const u8,
-    out: *std.ArrayList(*Change),
-) DiffError!void {
-    const a_ents: []const TreeEntry = if (a) |ta| ta.entries.items else &.{};
-    const b_ents: []const TreeEntry = if (b) |tb| tb.entries.items else &.{};
+fn hashEqual(a: noder.Noder, b: noder.Noder) bool {
+    return std.mem.eql(u8, a.hash(), b.hash());
+}
 
-    var i: usize = 0;
-    var j: usize = 0;
-    while (i < a_ents.len or j < b_ents.len) {
-        if (i < a_ents.len and (j >= b_ents.len or nameLess(a_ents[i].name, b_ents[j].name))) {
-            try handleOnlyLeft(allocator, a.?, a_ents[i], path_prefix, out);
-            i += 1;
-        } else if (j < b_ents.len and (i >= a_ents.len or nameLess(b_ents[j].name, a_ents[i].name))) {
-            try handleOnlyRight(allocator, b.?, b_ents[j], path_prefix, out);
-            j += 1;
-        } else {
-            try handleBoth(allocator, a.?, a_ents[i], b.?, b_ents[j], path_prefix, out);
-            i += 1;
-            j += 1;
+// ---------------------------------------------------------------------------
+// Tests (representative DiffTree cases; memory trees, no go-git fixtures)
+// ---------------------------------------------------------------------------
+
+const memory = @import("memory");
+const Storage = memory.Storage;
+const storer = @import("storer");
+const filemode = @import("filemode");
+const plumbing = @import("plumbing");
+
+fn putBlob(store: *Storage, content: []const u8) !plumbing.Hash {
+    const blob = try store.newEncodedObject();
+    blob.setType(.blob);
+    _ = try blob.write(content);
+    return try store.setEncodedObject(blob);
+}
+
+fn putTree(store: *Storage, tree: *Tree) !plumbing.Hash {
+    tree.sortEntries();
+    const obj = try store.newEncodedObject();
+    try tree.encode(obj);
+    return try store.setEncodedObject(obj);
+}
+
+const Expect = struct {
+    action: change_mod.Action,
+    name: []const u8,
+};
+
+fn expectChanges(changes: *Changes, expected: []const Expect) !void {
+    try std.testing.expectEqual(expected.len, changes.items.len);
+    changes.sort();
+    for (changes.items, expected) |c, e| {
+        try std.testing.expectEqual(e.action, try c.action());
+        try std.testing.expectEqualStrings(e.name, c.name());
+        switch (e.action) {
+            .insert => {
+                try std.testing.expect(c.from.tree == null);
+                try std.testing.expect(c.to.tree != null);
+            },
+            .delete => {
+                try std.testing.expect(c.from.tree != null);
+                try std.testing.expect(c.to.tree == null);
+            },
+            .modify => {
+                try std.testing.expect(c.from.tree != null);
+                try std.testing.expect(c.to.tree != null);
+            },
         }
     }
 }
-
-fn nameLess(a: []const u8, b: []const u8) bool {
-    return std.mem.order(u8, a, b) == .lt;
-}
-
-fn handleBoth(
-    allocator: Allocator,
-    tree_a: *Tree,
-    ea: TreeEntry,
-    tree_b: *Tree,
-    eb: TreeEntry,
-    path_prefix: []const u8,
-    out: *std.ArrayList(*Change),
-) DiffError!void {
-    const full = try joinPath(allocator, path_prefix, ea.name);
-    defer allocator.free(full);
-
-    const a_dir = ea.mode == filemode.Dir;
-    const b_dir = eb.mode == filemode.Dir;
-
-    if (a_dir and b_dir) {
-        // Equal content-addressed dirs need no walk.
-        if (ea.hash.eql(eb.hash) and ea.mode == eb.mode) return;
-        const sub_a = try openSub(tree_a, ea);
-        defer freeSub(allocator, sub_a);
-        const sub_b = try openSub(tree_b, eb);
-        defer freeSub(allocator, sub_b);
-        try diffRecursive(allocator, sub_a, sub_b, full, out);
-        return;
-    }
-
-    if (ea.hash.eql(eb.hash) and ea.mode == eb.mode) return;
-
-    if (!a_dir and !b_dir) {
-        try pushModify(allocator, out, tree_a, ea, tree_b, eb, full);
-    } else {
-        // Type change: delete old side, insert new side.
-        try pushDelete(allocator, out, tree_a, ea, full);
-        try pushInsert(allocator, out, tree_b, eb, full);
-    }
-}
-
-fn handleOnlyLeft(
-    allocator: Allocator,
-    tree_a: *Tree,
-    ea: TreeEntry,
-    path_prefix: []const u8,
-    out: *std.ArrayList(*Change),
-) DiffError!void {
-    const full = try joinPath(allocator, path_prefix, ea.name);
-    defer allocator.free(full);
-    if (ea.mode == filemode.Dir) {
-        const sub = try openSub(tree_a, ea);
-        defer freeSub(allocator, sub);
-        try diffRecursive(allocator, sub, null, full, out);
-    } else {
-        try pushDelete(allocator, out, tree_a, ea, full);
-    }
-}
-
-fn handleOnlyRight(
-    allocator: Allocator,
-    tree_b: *Tree,
-    eb: TreeEntry,
-    path_prefix: []const u8,
-    out: *std.ArrayList(*Change),
-) DiffError!void {
-    const full = try joinPath(allocator, path_prefix, eb.name);
-    defer allocator.free(full);
-    if (eb.mode == filemode.Dir) {
-        const sub = try openSub(tree_b, eb);
-        defer freeSub(allocator, sub);
-        try diffRecursive(allocator, null, sub, full, out);
-    } else {
-        try pushInsert(allocator, out, tree_b, eb, full);
-    }
-}
-
-fn joinPath(allocator: Allocator, prefix: []const u8, name: []const u8) Allocator.Error![]u8 {
-    if (prefix.len == 0) return try allocator.dupe(u8, name);
-    return try std.fmt.allocPrint(allocator, "{s}/{s}", .{ prefix, name });
-}
-
-fn openSub(parent: *Tree, e: TreeEntry) DiffError!*Tree {
-    const s = parent.storer orelse return error.ObjectNotFound;
-    return tree_mod.getTree(parent.allocator, s, e.hash) catch |err| switch (err) {
-        error.OutOfMemory => return error.OutOfMemory,
-        error.ObjectNotFound => return error.ObjectNotFound,
-        error.UnsupportedObject => return error.UnsupportedObject,
-        else => return error.MalformedTree,
-    };
-}
-
-fn freeSub(allocator: Allocator, t: *Tree) void {
-    tree_mod.freeTree(allocator, t);
-}
-
-fn pushInsert(
-    allocator: Allocator,
-    out: *std.ArrayList(*Change),
-    tree: *Tree,
-    e: TreeEntry,
-    full: []const u8,
-) Allocator.Error!void {
-    const c = try allocator.create(Change);
-    errdefer allocator.destroy(c);
-    const name_owned = try allocator.dupe(u8, full);
-    errdefer allocator.free(name_owned);
-    c.* = .{
-        .from = .{},
-        .to = .{
-            .name = name_owned,
-            .tree = tree,
-            .tree_entry = e,
-        },
-    };
-    try out.append(allocator, c);
-}
-
-fn pushDelete(
-    allocator: Allocator,
-    out: *std.ArrayList(*Change),
-    tree: *Tree,
-    e: TreeEntry,
-    full: []const u8,
-) Allocator.Error!void {
-    const c = try allocator.create(Change);
-    errdefer allocator.destroy(c);
-    const name_owned = try allocator.dupe(u8, full);
-    errdefer allocator.free(name_owned);
-    c.* = .{
-        .from = .{
-            .name = name_owned,
-            .tree = tree,
-            .tree_entry = e,
-        },
-        .to = .{},
-    };
-    try out.append(allocator, c);
-}
-
-fn pushModify(
-    allocator: Allocator,
-    out: *std.ArrayList(*Change),
-    tree_a: *Tree,
-    ea: TreeEntry,
-    tree_b: *Tree,
-    eb: TreeEntry,
-    full: []const u8,
-) Allocator.Error!void {
-    const c = try allocator.create(Change);
-    errdefer allocator.destroy(c);
-    const name_owned = try allocator.dupe(u8, full);
-    errdefer allocator.free(name_owned);
-    // Single path allocation shared by both sides.
-    c.* = .{
-        .from = .{
-            .name = name_owned,
-            .tree = tree_a,
-            .tree_entry = ea,
-        },
-        .to = .{
-            .name = name_owned,
-            .tree = tree_b,
-            .tree_entry = eb,
-        },
-    };
-    try out.append(allocator, c);
-}
-
-// ---------------------------------------------------------------------------
-// Tests
-// ---------------------------------------------------------------------------
 
 test "diffTree empty trees" {
     const gpa = std.testing.allocator;
@@ -266,19 +132,13 @@ test "diffTree empty trees" {
     try std.testing.expectEqual(@as(usize, 0), changes.items.len);
 }
 
+// go-git: empty → tree (insert README-style single file)
 test "diffTree insert file" {
     const gpa = std.testing.allocator;
-    const memory = @import("memory");
-    const Storage = memory.Storage;
-    const storer = @import("storer");
 
     var store = Storage.init(gpa);
     defer store.deinit();
-
-    const blob = try store.newEncodedObject();
-    blob.setType(.blob);
-    _ = try blob.write("hello");
-    const bh = try store.setEncodedObject(blob);
+    const bh = try putBlob(&store, "hello");
 
     var tb = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
     defer tb.deinit();
@@ -287,28 +147,66 @@ test "diffTree insert file" {
 
     var changes = try diffTree(gpa, null, &tb);
     defer changes.deinit();
-    try std.testing.expectEqual(@as(usize, 1), changes.items.len);
-    try std.testing.expect((try changes.items[0].action()) == .insert);
-    try std.testing.expectEqualStrings("hello.txt", changes.items[0].name());
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .insert, .name = "hello.txt" },
+    });
+}
+
+// go-git: tree → empty (delete)
+test "diffTree delete file" {
+    const gpa = std.testing.allocator;
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const bh = try putBlob(&store, "bye");
+
+    var ta = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer ta.deinit();
+    try ta.appendEntry("README", filemode.Regular, bh);
+    ta.sortEntries();
+
+    var changes = try diffTree(gpa, &ta, null);
+    defer changes.deinit();
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .delete, .name = "README" },
+    });
+}
+
+// go-git: identical trees → no changes
+test "diffTree identical trees empty" {
+    const gpa = std.testing.allocator;
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const bh = try putBlob(&store, "x");
+
+    var ta = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer ta.deinit();
+    try ta.appendEntry("f", filemode.Regular, bh);
+    ta.sortEntries();
+
+    var tb = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer tb.deinit();
+    try tb.appendEntry("f", filemode.Regular, bh);
+    tb.sortEntries();
+
+    var changes = try diffTree(gpa, &ta, &tb);
+    defer changes.deinit();
+    try std.testing.expectEqual(@as(usize, 0), changes.items.len);
+
+    // Same tree pointer both sides
+    var same = try diffTree(gpa, &ta, &ta);
+    defer same.deinit();
+    try std.testing.expectEqual(@as(usize, 0), same.items.len);
 }
 
 test "diffTree modify content" {
     const gpa = std.testing.allocator;
-    const memory = @import("memory");
-    const Storage = memory.Storage;
-    const storer = @import("storer");
 
     var store = Storage.init(gpa);
     defer store.deinit();
-
-    const b1 = try store.newEncodedObject();
-    b1.setType(.blob);
-    _ = try b1.write("a");
-    const h1 = try store.setEncodedObject(b1);
-    const b2 = try store.newEncodedObject();
-    b2.setType(.blob);
-    _ = try b2.write("b");
-    const h2 = try store.setEncodedObject(b2);
+    const h1 = try putBlob(&store, "a");
+    const h2 = try putBlob(&store, "b");
 
     var ta = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
     defer ta.deinit();
@@ -322,31 +220,74 @@ test "diffTree modify content" {
 
     var changes = try diffTree(gpa, &ta, &tb);
     defer changes.deinit();
-    try std.testing.expectEqual(@as(usize, 1), changes.items.len);
-    try std.testing.expect((try changes.items[0].action()) == .modify);
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .modify, .name = "f" },
+    });
 }
 
-test "diffTree nested insert" {
+// go-git multi-file insert (gem-builder style flat tree)
+test "diffTree multi file insert sorted" {
     const gpa = std.testing.allocator;
-    const memory = @import("memory");
-    const Storage = memory.Storage;
-    const storer = @import("storer");
 
     var store = Storage.init(gpa);
     defer store.deinit();
+    const h_r = try putBlob(&store, "r");
+    const h_b = try putBlob(&store, "b");
+    const h_e = try putBlob(&store, "e");
 
-    const blob = try store.newEncodedObject();
-    blob.setType(.blob);
-    _ = try blob.write("x");
-    const bh = try store.setEncodedObject(blob);
+    var tb = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer tb.deinit();
+    try tb.appendEntry("README", filemode.Regular, h_r);
+    try tb.appendEntry("gem_builder.rb", filemode.Regular, h_b);
+    try tb.appendEntry("gem_eval.rb", filemode.Regular, h_e);
+    tb.sortEntries();
+
+    var changes = try diffTree(gpa, null, &tb);
+    defer changes.deinit();
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .insert, .name = "README" },
+        .{ .action = .insert, .name = "gem_builder.rb" },
+        .{ .action = .insert, .name = "gem_eval.rb" },
+    });
+}
+
+test "diffTree multi file delete sorted" {
+    const gpa = std.testing.allocator;
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const h_r = try putBlob(&store, "r");
+    const h_b = try putBlob(&store, "b");
+    const h_e = try putBlob(&store, "e");
+
+    var ta = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer ta.deinit();
+    try ta.appendEntry("README", filemode.Regular, h_r);
+    try ta.appendEntry("gem_builder.rb", filemode.Regular, h_b);
+    try ta.appendEntry("gem_eval.rb", filemode.Regular, h_e);
+    ta.sortEntries();
+
+    var changes = try diffTree(gpa, &ta, null);
+    defer changes.deinit();
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .delete, .name = "README" },
+        .{ .action = .delete, .name = "gem_builder.rb" },
+        .{ .action = .delete, .name = "gem_eval.rb" },
+    });
+}
+
+// go-git nested paths (ts3-style examples/)
+test "diffTree nested insert" {
+    const gpa = std.testing.allocator;
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const bh = try putBlob(&store, "x");
 
     var sub = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
     defer sub.deinit();
     try sub.appendEntry("inner.txt", filemode.Regular, bh);
-    sub.sortEntries();
-    const sub_obj = try store.newEncodedObject();
-    try sub.encode(sub_obj);
-    const sub_h = try store.setEncodedObject(sub_obj);
+    const sub_h = try putTree(&store, &sub);
 
     var root = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
     defer root.deinit();
@@ -355,7 +296,287 @@ test "diffTree nested insert" {
 
     var changes = try diffTree(gpa, null, &root);
     defer changes.deinit();
-    try std.testing.expectEqual(@as(usize, 1), changes.items.len);
-    try std.testing.expectEqualStrings("dir/inner.txt", changes.items[0].name());
-    try std.testing.expect((try changes.items[0].action()) == .insert);
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .insert, .name = "dir/inner.txt" },
+    });
+}
+
+test "diffTree nested delete" {
+    const gpa = std.testing.allocator;
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const bh = try putBlob(&store, "x");
+
+    var sub = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer sub.deinit();
+    try sub.appendEntry("bot.go", filemode.Regular, bh);
+    const sub_h = try putTree(&store, &sub);
+
+    var root = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer root.deinit();
+    try root.appendEntry("examples", filemode.Dir, sub_h);
+    try root.appendEntry("helpers.go", filemode.Regular, bh);
+    root.sortEntries();
+
+    var changes = try diffTree(gpa, &root, null);
+    defer changes.deinit();
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .delete, .name = "examples/bot.go" },
+        .{ .action = .delete, .name = "helpers.go" },
+    });
+}
+
+// go-git: modify one file + insert others (gem-builder commit chain style)
+test "diffTree modify and insert mix" {
+    const gpa = std.testing.allocator;
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const h_old = try putBlob(&store, "old eval");
+    const h_new = try putBlob(&store, "new eval");
+    const h_test = try putBlob(&store, "test");
+    const h_sec = try putBlob(&store, "sec");
+
+    var ta = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer ta.deinit();
+    try ta.appendEntry("gem_eval.rb", filemode.Regular, h_old);
+    ta.sortEntries();
+
+    var tb = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer tb.deinit();
+    try tb.appendEntry("gem_eval.rb", filemode.Regular, h_new);
+    try tb.appendEntry("gem_eval_test.rb", filemode.Regular, h_test);
+    try tb.appendEntry("security.rb", filemode.Regular, h_sec);
+    tb.sortEntries();
+
+    var changes = try diffTree(gpa, &ta, &tb);
+    defer changes.deinit();
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .modify, .name = "gem_eval.rb" },
+        .{ .action = .insert, .name = "gem_eval_test.rb" },
+        .{ .action = .insert, .name = "security.rb" },
+    });
+}
+
+// File → directory type change: merkletrie recursively expands nested files
+// (go-git DiffTree: delete file + insert nested paths, not only top entry).
+test "diffTree type change file to dir" {
+    const gpa = std.testing.allocator;
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const file_h = try putBlob(&store, "was-file");
+    const inner_h = try putBlob(&store, "now-dir");
+    const nested_h = try putBlob(&store, "deep");
+
+    var nested = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer nested.deinit();
+    try nested.appendEntry("deep.txt", filemode.Regular, nested_h);
+    const nested_tree_h = try putTree(&store, &nested);
+
+    var sub = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer sub.deinit();
+    try sub.appendEntry("child", filemode.Regular, inner_h);
+    try sub.appendEntry("sub", filemode.Dir, nested_tree_h);
+    const sub_h = try putTree(&store, &sub);
+
+    var ta = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer ta.deinit();
+    try ta.appendEntry("path", filemode.Regular, file_h);
+    ta.sortEntries();
+
+    var tb = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer tb.deinit();
+    try tb.appendEntry("path", filemode.Dir, sub_h);
+    tb.sortEntries();
+
+    var changes = try diffTree(gpa, &ta, &tb);
+    defer changes.deinit();
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .delete, .name = "path" },
+        .{ .action = .insert, .name = "path/child" },
+        .{ .action = .insert, .name = "path/sub/deep.txt" },
+    });
+    // Delete side was a regular file; inserts are nested file paths.
+    for (changes.items) |c| {
+        switch (try c.action()) {
+            .delete => try std.testing.expect(c.from.tree_entry.mode == filemode.Regular),
+            .insert => try std.testing.expect(filemode.isFile(c.to.tree_entry.mode)),
+            .modify => try std.testing.expect(false),
+        }
+    }
+}
+
+// Mode-only change (same content hash, different mode) is a modify
+test "diffTree mode change is modify" {
+    const gpa = std.testing.allocator;
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const bh = try putBlob(&store, "script");
+
+    var ta = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer ta.deinit();
+    try ta.appendEntry("run", filemode.Regular, bh);
+    ta.sortEntries();
+
+    var tb = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer tb.deinit();
+    try tb.appendEntry("run", filemode.Executable, bh);
+    tb.sortEntries();
+
+    var changes = try diffTree(gpa, &ta, &tb);
+    defer changes.deinit();
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .modify, .name = "run" },
+    });
+}
+
+// Nested dir equal content-addressed → no walk / no changes
+test "diffTree equal nested dirs skipped" {
+    const gpa = std.testing.allocator;
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const bh = try putBlob(&store, "same");
+
+    var sub = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer sub.deinit();
+    try sub.appendEntry("f", filemode.Regular, bh);
+    const sub_h = try putTree(&store, &sub);
+
+    var ta = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer ta.deinit();
+    try ta.appendEntry("d", filemode.Dir, sub_h);
+    ta.sortEntries();
+
+    var tb = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer tb.deinit();
+    try tb.appendEntry("d", filemode.Dir, sub_h);
+    tb.sortEntries();
+
+    var changes = try diffTree(gpa, &ta, &tb);
+    defer changes.deinit();
+    try std.testing.expectEqual(@as(usize, 0), changes.items.len);
+}
+
+// Nested dir content change
+test "diffTree nested content modify" {
+    const gpa = std.testing.allocator;
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const h1 = try putBlob(&store, "v1");
+    const h2 = try putBlob(&store, "v2");
+
+    var sub_a = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer sub_a.deinit();
+    try sub_a.appendEntry("f", filemode.Regular, h1);
+    const ha = try putTree(&store, &sub_a);
+
+    var sub_b = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer sub_b.deinit();
+    try sub_b.appendEntry("f", filemode.Regular, h2);
+    const hb = try putTree(&store, &sub_b);
+
+    var ta = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer ta.deinit();
+    try ta.appendEntry("d", filemode.Dir, ha);
+    ta.sortEntries();
+
+    var tb = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer tb.deinit();
+    try tb.appendEntry("d", filemode.Dir, hb);
+    tb.sortEntries();
+
+    var changes = try diffTree(gpa, &ta, &tb);
+    defer changes.deinit();
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .modify, .name = "d/f" },
+    });
+}
+
+// DiffTreeWithOptions rename detection on exact blob rename
+test "diffTreeWithOptions detect exact rename" {
+    const gpa = std.testing.allocator;
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const bh = try putBlob(&store, "shared-body");
+
+    var ta = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer ta.deinit();
+    try ta.appendEntry("old.rb", filemode.Regular, bh);
+    ta.sortEntries();
+
+    var tb = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer tb.deinit();
+    try tb.appendEntry("new.rb", filemode.Regular, bh);
+    tb.sortEntries();
+
+    var changes = try diffTreeWithOptions(gpa, &ta, &tb, .{
+        .detect_renames = true,
+        .rename_score = 50,
+        .only_exact_renames = true,
+    });
+    defer changes.deinit();
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .modify, .name = "old.rb" },
+    });
+    try std.testing.expectEqualStrings("old.rb", changes.items[0].from.name);
+    try std.testing.expectEqualStrings("new.rb", changes.items[0].to.name);
+}
+
+// Without rename detection: delete + insert
+test "diffTree without rename stays delete insert" {
+    const gpa = std.testing.allocator;
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const bh = try putBlob(&store, "shared-body");
+
+    var ta = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer ta.deinit();
+    try ta.appendEntry("old.rb", filemode.Regular, bh);
+    ta.sortEntries();
+
+    var tb = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer tb.deinit();
+    try tb.appendEntry("new.rb", filemode.Regular, bh);
+    tb.sortEntries();
+
+    var changes = try diffTree(gpa, &ta, &tb);
+    defer changes.deinit();
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .insert, .name = "new.rb" },
+        .{ .action = .delete, .name = "old.rb" },
+    });
+}
+
+// Replace one file with another (different names and content)
+test "diffTree replace file set" {
+    const gpa = std.testing.allocator;
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const h_a = try putBlob(&store, "aaa");
+    const h_b = try putBlob(&store, "bbb");
+
+    var ta = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer ta.deinit();
+    try ta.appendEntry("a.txt", filemode.Regular, h_a);
+    ta.sortEntries();
+
+    var tb = Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer tb.deinit();
+    try tb.appendEntry("b.txt", filemode.Regular, h_b);
+    tb.sortEntries();
+
+    var changes = try diffTree(gpa, &ta, &tb);
+    defer changes.deinit();
+    try expectChanges(&changes, &[_]Expect{
+        .{ .action = .delete, .name = "a.txt" },
+        .{ .action = .insert, .name = "b.txt" },
+    });
 }

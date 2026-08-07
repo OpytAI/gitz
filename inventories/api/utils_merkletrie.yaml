@@ -9,16 +9,37 @@ require:
     - Iter
   functions:
     - diffTree
+    - DiffTreeContext
+    - NewInsert
+    - NewDelete
+    - NewModify
+    - NewIter
+    - NewIterFromPath
+    - NewChanges
   constants: []
   semantic:
     - Action
     - Change
     - Changes
     - diffTree
+    - diffTreeContext
+    - newInsert
+    - newDelete
+    - newModify
     - Iter
+    - Iter.init
+    - Iter.initFromPath
+    - Changes.init
 zig_map:
   Action: Action
   Change: Change
   Changes: Changes
   DiffTree: diffTree
+  DiffTreeContext: diffTreeContext
+  NewInsert: newInsert
+  NewDelete: newDelete
+  NewModify: newModify
+  NewIter: Iter.init
+  NewIterFromPath: Iter.initFromPath
+  NewChanges: Changes.init
   Iter: Iter

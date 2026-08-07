@@ -1,11 +1,15 @@
 //! Patch / FilePatch / unified encode
 //! (go-git `plumbing/object/patch.go` + `plumbing/format/diff`).
 //!
-//! Line-oriented Myers O(ND) diff — same class as go-git `utils/diff.Do`.
+//! Line diffs go through `//src/utils/diff` (go-git `utils/diff.Do`).
+//! Unified encoding goes through `//src/plumbing/format/diff` UnifiedEncoder
+//! (go-git `fdiff.NewUnifiedEncoder` + `Encode`).
 
 const std = @import("std");
 const plumbing = @import("plumbing");
 const filemode = @import("filemode");
+const utils_diff = @import("diff");
+const format_diff = @import("format_diff");
 const change_mod = @import("change.zig");
 
 const Allocator = std.mem.Allocator;
@@ -13,8 +17,10 @@ const Hash = plumbing.Hash;
 const Change = change_mod.Change;
 const ChangeEntry = change_mod.ChangeEntry;
 const Changes = change_mod.Changes;
+const Writer = std.Io.Writer;
 
-pub const default_context_lines: usize = 3;
+/// go-git / format_diff `DefaultContextLines`.
+pub const default_context_lines: usize = format_diff.DefaultContextLines;
 
 /// Open: file content loads go through the storer; writers may return WriteFailed.
 pub const PatchError = anyerror;
@@ -29,6 +35,9 @@ pub const Chunk = struct {
     content: []const u8,
     operation: Operation,
 
+    /// Free heap content. Invariant: empty content is never allocator-owned
+    /// (always `""` / a non-owned empty view). `lineDiffChunks` normalizes
+    /// empty Myers texts to `""` after freeing any empty allocation.
     fn deinit(self: Chunk, allocator: Allocator) void {
         if (self.content.len > 0) allocator.free(self.content);
     }
@@ -99,16 +108,16 @@ pub const Patch = struct {
         return self.message;
     }
 
-    /// go-git `(*Patch).Encode` — unified diff into `writer`.
-    pub fn encode(self: *const Patch, writer: anytype) PatchError!void {
-        try encodeUnified(self.allocator, writer, self, default_context_lines);
+    /// go-git `(*Patch).Encode` — unified diff via format_diff.UnifiedEncoder.
+    pub fn encode(self: *const Patch, w: *Writer) PatchError!void {
+        try encodeViaUnifiedEncoder(self, w);
     }
 
     /// go-git `(*Patch).String`. Caller frees with `allocator`.
     pub fn string(self: *const Patch) PatchError![]u8 {
-        var aw: std.Io.Writer.Allocating = .init(self.allocator);
+        var aw: Writer.Allocating = .init(self.allocator);
         errdefer aw.deinit();
-        try encodeUnified(self.allocator, &aw.writer, self, default_context_lines);
+        try encodeViaUnifiedEncoder(self, &aw.writer);
         return try aw.toOwnedSlice();
     }
 
@@ -122,6 +131,11 @@ pub const FileStat = struct {
     name: []const u8 = "",
     addition: usize = 0,
     deletion: usize = 0,
+
+    /// go-git `FileStat.String` / `printStat` for one entry. Caller frees.
+    pub fn string(self: FileStat, allocator: Allocator) Allocator.Error![]u8 {
+        return try printStat(allocator, &[_]FileStat{self});
+    }
 };
 
 pub const FileStats = struct {
@@ -135,10 +149,80 @@ pub const FileStats = struct {
         if (self.items.len > 0) self.allocator.free(self.items);
         self.* = .{ .allocator = self.allocator };
     }
+
+    /// go-git `FileStats.String` / `printStat`. Caller frees with `self.allocator`.
+    pub fn string(self: *const FileStats) Allocator.Error![]u8 {
+        return try printStat(self.allocator, self.items);
+    }
 };
+
+/// go-git `printStat` — git-style shortstat table.
+/// Parts: `<pad><filename><pad>|<pad><changeNumber><pad><+++/---><newline>`
+fn printStat(allocator: Allocator, file_stats: []const FileStat) Allocator.Error![]u8 {
+    const max_graph_width: usize = 53;
+
+    var max_name_len: usize = 0;
+    var max_change_len: usize = 0;
+    for (file_stats) |fs| {
+        if (fs.name.len > max_name_len) max_name_len = fs.name.len;
+        var buf: [32]u8 = undefined;
+        const changes = std.fmt.bufPrint(&buf, "{d}", .{fs.addition + fs.deletion}) catch unreachable;
+        if (changes.len > max_change_len) max_change_len = changes.len;
+    }
+
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(allocator);
+
+    for (file_stats) |fs| {
+        var add: usize = fs.addition;
+        var del: usize = fs.deletion;
+        const total = add + del;
+        if (total > max_graph_width) {
+            add = scaleLinear(add, max_graph_width, total);
+            del = scaleLinear(del, max_graph_width, total);
+        }
+
+        const np = max_name_len - fs.name.len;
+        var total_buf: [32]u8 = undefined;
+        const total_s = std.fmt.bufPrint(&total_buf, "{d}", .{fs.addition + fs.deletion}) catch unreachable;
+        const cp = max_change_len - total_s.len;
+
+        try result.append(allocator, ' ');
+        try result.appendSlice(allocator, fs.name);
+        try result.appendNTimes(allocator, ' ', np);
+        try result.appendSlice(allocator, " | ");
+        try result.appendNTimes(allocator, ' ', cp);
+        try result.appendSlice(allocator, total_s);
+        try result.append(allocator, ' ');
+        try result.appendNTimes(allocator, '+', add);
+        try result.appendNTimes(allocator, '-', del);
+        try result.append(allocator, '\n');
+    }
+    return try result.toOwnedSlice(allocator);
+}
+
+fn scaleLinear(it: usize, width: usize, max: usize) usize {
+    if (it == 0 or max == 0) return 0;
+    return 1 + (it * (width - 1) / max);
+}
 
 /// go-git `getPatch` / `Changes.Patch` over a list of change pointers.
 pub fn getPatch(allocator: Allocator, message: []const u8, changes: []const *const Change) PatchError!Patch {
+    return buildPatch(allocator, message, changes);
+}
+
+/// go-git `Changes.Patch` — build a `Patch` from a `Changes` list.
+pub fn getPatchFromChanges(allocator: Allocator, message: []const u8, changes: *const Changes) PatchError!Patch {
+    // Reuse getPatch without allocating a pointer table: items is []*Change.
+    if (changes.items.len == 0) return buildPatch(allocator, message, &.{});
+    // `[]*Change` is not coercible to `[]const *const Change`; build views.
+    const views = try allocator.alloc(*const Change, changes.items.len);
+    defer allocator.free(views);
+    for (changes.items, 0..) |c, i| views[i] = c;
+    return buildPatch(allocator, message, views);
+}
+
+fn buildPatch(allocator: Allocator, message: []const u8, changes: []const *const Change) PatchError!Patch {
     var fps: std.ArrayList(FilePatch) = .empty;
     errdefer {
         for (fps.items) |*fp| fp.deinit(allocator);
@@ -146,30 +230,16 @@ pub fn getPatch(allocator: Allocator, message: []const u8, changes: []const *con
     }
 
     for (changes) |c| {
-        try fps.append(allocator, try filePatch(allocator, c));
+        var fp = try filePatch(allocator, c);
+        errdefer fp.deinit(allocator);
+        try fps.append(allocator, fp);
     }
+
+    const msg_owned = if (message.len > 0) try allocator.dupe(u8, message) else "";
+    errdefer if (msg_owned.len > 0) allocator.free(msg_owned);
 
     return .{
-        .message = if (message.len > 0) try allocator.dupe(u8, message) else "",
-        .file_patches = try fps.toOwnedSlice(allocator),
-        .allocator = allocator,
-    };
-}
-
-/// go-git `Changes.Patch` — build a `Patch` from a `Changes` list.
-pub fn getPatchFromChanges(allocator: Allocator, message: []const u8, changes: *const Changes) PatchError!Patch {
-    var fps: std.ArrayList(FilePatch) = .empty;
-    errdefer {
-        for (fps.items) |*fp| fp.deinit(allocator);
-        fps.deinit(allocator);
-    }
-
-    for (changes.items) |c| {
-        try fps.append(allocator, try filePatch(allocator, c));
-    }
-
-    return .{
-        .message = if (message.len > 0) try allocator.dupe(u8, message) else "",
+        .message = msg_owned,
         .file_patches = try fps.toOwnedSlice(allocator),
         .allocator = allocator,
     };
@@ -225,7 +295,7 @@ fn filePatch(allocator: Allocator, c: *const Change) PatchError!FilePatch {
     }
 
     return .{
-        .chunks = try myersLineDiff(allocator, from_content, to_content),
+        .chunks = try lineDiffChunks(allocator, from_content, to_content),
         .from = from_side,
         .to = to_side,
         .binary = false,
@@ -233,345 +303,129 @@ fn filePatch(allocator: Allocator, c: *const Change) PatchError!FilePatch {
 }
 
 // ---------------------------------------------------------------------------
-// Myers line diff
+// Line diff adapter (//src/utils/diff → patch Chunk)
 // ---------------------------------------------------------------------------
 
-const Edit = struct {
-    op: Operation,
-    line: []const u8,
-};
-
-fn splitLines(allocator: Allocator, text: []const u8) Allocator.Error![]const []const u8 {
-    var list: std.ArrayList([]const u8) = .empty;
-    errdefer list.deinit(allocator);
-    if (text.len == 0) return try list.toOwnedSlice(allocator);
-
-    var start: usize = 0;
-    var i: usize = 0;
-    while (i < text.len) : (i += 1) {
-        if (text[i] == '\n') {
-            try list.append(allocator, text[start .. i + 1]);
-            start = i + 1;
-        }
-    }
-    if (start < text.len) try list.append(allocator, text[start..]);
-    return try list.toOwnedSlice(allocator);
+/// Map utils/diff Operation (delete=-1, equal=0, insert=1) to patch Operation.
+fn mapDiffOperation(op: utils_diff.Operation) Operation {
+    return switch (op) {
+        .delete => .delete,
+        .equal => .equal,
+        .insert => .add,
+    };
 }
 
-fn vIndex(k: isize, max_d: usize) usize {
-    return @intCast(k + @as(isize, @intCast(max_d)));
+/// Map object Operation → format_diff.Operation.
+fn mapFormatOperation(op: Operation) format_diff.Operation {
+    return switch (op) {
+        .equal => .equal,
+        .add => .add,
+        .delete => .delete,
+    };
 }
 
-/// Myers O(ND) over lines → coalesced Equal/Delete/Add chunks.
-fn myersLineDiff(allocator: Allocator, a_text: []const u8, b_text: []const u8) Allocator.Error![]Chunk {
-    const a = try splitLines(allocator, a_text);
-    defer allocator.free(a);
-    const b = try splitLines(allocator, b_text);
-    defer allocator.free(b);
+/// go-git path: `utils/diff.Do` then convert to plumbing/format/diff chunks.
+/// Coalescing is already done inside utils/diff. Caller owns the returned chunks
+/// (including each `Chunk.content` when non-empty). Empty result is a non-owned
+/// empty slice. Empty Myers texts are freed and stored as `""` so `Chunk.deinit`
+/// never frees a non-owned empty view (and never frees string-literal test chunks).
+fn lineDiffChunks(allocator: Allocator, src_text: []const u8, dst_text: []const u8) Allocator.Error![]Chunk {
+    const diffs = try utils_diff.do(allocator, src_text, dst_text);
+    errdefer utils_diff.freeDiffs(allocator, diffs);
 
-    const n: isize = @intCast(a.len);
-    const m: isize = @intCast(b.len);
-    if (n == 0 and m == 0) return try allocator.alloc(Chunk, 0);
-
-    const max_d: usize = @intCast(n + m);
-    var v = try allocator.alloc(isize, 2 * max_d + 1);
-    defer allocator.free(v);
-    @memset(v, 0);
-
-    var trace: std.ArrayList([]isize) = .empty;
-    defer {
-        for (trace.items) |t| allocator.free(t);
-        trace.deinit(allocator);
+    if (diffs.len == 0) {
+        utils_diff.freeDiffs(allocator, diffs);
+        return &.{};
     }
 
-    var found = false;
-    var d: usize = 0;
-    while (d <= max_d) : (d += 1) {
-        var k: isize = -@as(isize, @intCast(d));
-        while (k <= @as(isize, @intCast(d))) : (k += 2) {
-            const down = k == -@as(isize, @intCast(d)) or
-                (k != @as(isize, @intCast(d)) and v[vIndex(k - 1, max_d)] < v[vIndex(k + 1, max_d)]);
-            var x: isize = if (down) v[vIndex(k + 1, max_d)] else v[vIndex(k - 1, max_d)] + 1;
-            var y = x - k;
-            while (x < n and y < m and std.mem.eql(u8, a[@intCast(x)], b[@intCast(y)])) {
-                x += 1;
-                y += 1;
-            }
-            v[vIndex(k, max_d)] = x;
-            if (x >= n and y >= m) {
-                found = true;
-                break;
-            }
-        }
-        try trace.append(allocator, try allocator.dupe(isize, v));
-        if (found) break;
-    }
-
-    var edits: std.ArrayList(Edit) = .empty;
-    defer edits.deinit(allocator);
-
-    var x: isize = n;
-    var y: isize = m;
-    var di: isize = @intCast(trace.items.len);
-    di -= 1;
-    while (di >= 0) : (di -= 1) {
-        const vv = trace.items[@intCast(di)];
-        const dd: usize = @intCast(di);
-        const k = x - y;
-        const down = k == -@as(isize, @intCast(dd)) or
-            (k != @as(isize, @intCast(dd)) and vv[vIndex(k - 1, max_d)] < vv[vIndex(k + 1, max_d)]);
-        const prev_k: isize = if (down) k + 1 else k - 1;
-        const prev_x = vv[vIndex(prev_k, max_d)];
-        const prev_y = prev_x - prev_k;
-
-        while (x > prev_x and y > prev_y) {
-            x -= 1;
-            y -= 1;
-            try edits.append(allocator, .{ .op = .equal, .line = a[@intCast(x)] });
-        }
-        if (dd == 0) break;
-        if (x == prev_x) {
-            y -= 1;
-            try edits.append(allocator, .{ .op = .add, .line = b[@intCast(y)] });
-        } else {
-            x -= 1;
-            try edits.append(allocator, .{ .op = .delete, .line = a[@intCast(x)] });
-        }
-        x = prev_x;
-        y = prev_y;
-    }
-
-    std.mem.reverse(Edit, edits.items);
-    return try coalesceEdits(allocator, edits.items);
-}
-
-fn coalesceEdits(allocator: Allocator, edits: []const Edit) Allocator.Error![]Chunk {
-    var chunks: std.ArrayList(Chunk) = .empty;
-    errdefer {
-        for (chunks.items) |ch| ch.deinit(allocator);
-        chunks.deinit(allocator);
-    }
-    if (edits.len == 0) return try chunks.toOwnedSlice(allocator);
-
-    var cur_op = edits[0].op;
-    var buf: std.ArrayList(u8) = .empty;
-    errdefer buf.deinit(allocator);
-
-    for (edits) |e| {
-        if (e.op != cur_op) {
-            try chunks.append(allocator, .{
-                .content = try buf.toOwnedSlice(allocator),
-                .operation = cur_op,
-            });
-            buf = .empty;
-            cur_op = e.op;
-        }
-        try buf.appendSlice(allocator, e.line);
-    }
-    try chunks.append(allocator, .{
-        .content = try buf.toOwnedSlice(allocator),
-        .operation = cur_op,
-    });
-    // buf was moved into last chunk; don't free.
-    return try chunks.toOwnedSlice(allocator);
-}
-
-// ---------------------------------------------------------------------------
-// Unified encoder
-// ---------------------------------------------------------------------------
-
-fn encodeUnified(
-    allocator: Allocator,
-    writer: anytype,
-    patch: *const Patch,
-    context_lines: usize,
-) PatchError!void {
-    if (patch.message.len > 0) {
-        try writer.writeAll(patch.message);
-        if (patch.message[patch.message.len - 1] != '\n') try writer.writeAll("\n");
-    }
-    for (patch.file_patches) |fp| {
-        try writeFilePatchHeader(writer, &fp);
-        if (fp.binary) continue;
-        try writeHunks(allocator, writer, fp.chunks, context_lines);
-    }
-}
-
-fn writeFilePatchHeader(writer: anytype, fp: *const FilePatch) PatchError!void {
-    const from = fp.from;
-    const to = fp.to;
-    if (from.empty() and to.empty()) return;
-
-    const src_prefix = "a/";
-    const dst_prefix = "b/";
-
-    if (!from.empty() and !to.empty()) {
-        try writer.print("diff --git {s}{s} {s}{s}\n", .{ src_prefix, from.path, dst_prefix, to.path });
-        if (from.mode != to.mode) {
-            try writer.print("old mode {o}\n", .{from.mode});
-            try writer.print("new mode {o}\n", .{to.mode});
-        }
-        if (!std.mem.eql(u8, from.path, to.path)) {
-            try writer.print("rename from {s}\n", .{from.path});
-            try writer.print("rename to {s}\n", .{to.path});
-        }
-        if (!from.hash.eql(to.hash)) {
-            var fh: [plumbing.HexSize]u8 = undefined;
-            var th: [plumbing.HexSize]u8 = undefined;
-            const fs = from.hash.string(&fh);
-            const ts = to.hash.string(&th);
-            if (from.mode != to.mode) {
-                try writer.print("index {s}..{s}\n", .{ fs, ts });
-            } else {
-                try writer.print("index {s}..{s} {o}\n", .{ fs, ts, from.mode });
-            }
-            try writer.print("--- {s}{s}\n", .{ src_prefix, from.path });
-            try writer.print("+++ {s}{s}\n", .{ dst_prefix, to.path });
-        }
-    } else if (from.empty()) {
-        var th: [plumbing.HexSize]u8 = undefined;
-        var zh: [plumbing.HexSize]u8 = undefined;
-        try writer.print("diff --git {s}{s} {s}{s}\n", .{ src_prefix, to.path, dst_prefix, to.path });
-        try writer.print("new file mode {o}\n", .{to.mode});
-        try writer.print("index {s}..{s}\n", .{ plumbing.ZeroHash.string(&zh), to.hash.string(&th) });
-        try writer.writeAll("--- /dev/null\n");
-        try writer.print("+++ {s}{s}\n", .{ dst_prefix, to.path });
-    } else {
-        var fh: [plumbing.HexSize]u8 = undefined;
-        var zh: [plumbing.HexSize]u8 = undefined;
-        try writer.print("diff --git {s}{s} {s}{s}\n", .{ src_prefix, from.path, dst_prefix, from.path });
-        try writer.print("deleted file mode {o}\n", .{from.mode});
-        try writer.print("index {s}..{s}\n", .{ from.hash.string(&fh), plumbing.ZeroHash.string(&zh) });
-        try writer.print("--- {s}{s}\n", .{ src_prefix, from.path });
-        try writer.writeAll("+++ /dev/null\n");
-    }
-
-    if (fp.binary) try writer.writeAll("Binary files differ\n");
-}
-
-const LineOp = struct {
-    op: Operation,
-    text: []const u8,
-};
-
-fn writeHunks(
-    allocator: Allocator,
-    writer: anytype,
-    chunks: []const Chunk,
-    context_lines: usize,
-) PatchError!void {
-    var flat: std.ArrayList(LineOp) = .empty;
-    defer flat.deinit(allocator);
-
-    for (chunks) |ch| {
-        try appendLines(&flat, allocator, ch.operation, ch.content);
-    }
-    if (flat.items.len == 0) return;
-
-    var i: usize = 0;
-    while (i < flat.items.len) {
-        while (i < flat.items.len and flat.items[i].op == .equal) : (i += 1) {}
-        if (i >= flat.items.len) break;
-
-        const change_start = i;
-        while (i < flat.items.len and flat.items[i].op != .equal) : (i += 1) {}
-        var change_end = i;
-
-        // Merge nearby change regions when equal run is within 2× context.
-        while (change_end < flat.items.len) {
-            var j = change_end;
-            while (j < flat.items.len and flat.items[j].op == .equal) : (j += 1) {}
-            if (j >= flat.items.len) break;
-            if (j - change_end > context_lines * 2) break;
-            while (j < flat.items.len and flat.items[j].op != .equal) : (j += 1) {}
-            change_end = j;
-        }
-
-        const ctx_before = @min(context_lines, change_start);
-        const hunk_start = change_start - ctx_before;
-        var ctx_after: usize = 0;
-        while (change_end + ctx_after < flat.items.len and
-            flat.items[change_end + ctx_after].op == .equal and
-            ctx_after < context_lines) : (ctx_after += 1)
-        {}
-        const hunk_end = change_end + ctx_after;
-
-        var old_start: usize = 1;
-        var new_start: usize = 1;
-        var oi: usize = 0;
-        while (oi < hunk_start) : (oi += 1) {
-            switch (flat.items[oi].op) {
-                .equal, .delete => old_start += 1,
-                .add => {},
-            }
-            switch (flat.items[oi].op) {
-                .equal, .add => new_start += 1,
-                .delete => {},
-            }
-        }
-        var old_count: usize = 0;
-        var new_count: usize = 0;
-        var hi = hunk_start;
-        while (hi < hunk_end) : (hi += 1) {
-            switch (flat.items[hi].op) {
-                .equal, .delete => old_count += 1,
-                .add => {},
-            }
-            switch (flat.items[hi].op) {
-                .equal, .add => new_count += 1,
-                .delete => {},
-            }
-        }
-        if (old_count == 0) old_start = 0;
-        if (new_count == 0) new_start = 0;
-
-        try writer.print("@@ -{d}", .{old_start});
-        if (old_count != 1) try writer.print(",{d}", .{old_count});
-        try writer.print(" +{d}", .{new_start});
-        if (new_count != 1) try writer.print(",{d}", .{new_count});
-        try writer.writeAll(" @@\n");
-
-        hi = hunk_start;
-        while (hi < hunk_end) : (hi += 1) {
-            const line = flat.items[hi];
-            const prefix: u8 = switch (line.op) {
-                .equal => ' ',
-                .add => '+',
-                .delete => '-',
+    const chunks = try allocator.alloc(Chunk, diffs.len);
+    // On success, Diff.text is moved into chunks (or freed if empty); free Diff slice only.
+    // Loop is infallible so outer freeDiffs errdefer still owns all texts until the free below.
+    for (diffs, chunks) |d, *ch| {
+        if (d.text.len == 0) {
+            // Normalize empty owned text → non-owned "" (Chunk.deinit free-if-len>0).
+            allocator.free(d.text);
+            ch.* = .{
+                .content = "",
+                .operation = mapDiffOperation(d.operation),
             };
-            try writer.writeByte(prefix);
-            if (line.text.len > 0 and line.text[line.text.len - 1] == '\n') {
-                try writer.writeAll(line.text[0 .. line.text.len - 1]);
-                try writer.writeAll("\n");
-            } else {
-                try writer.writeAll(line.text);
-                try writer.writeAll("\n");
+        } else {
+            ch.* = .{
+                .content = d.text,
+                .operation = mapDiffOperation(d.operation),
+            };
+        }
+    }
+    allocator.free(diffs);
+    return chunks;
+}
+
+// ---------------------------------------------------------------------------
+// Unified encoder bridge (object Patch → format_diff.UnifiedEncoder)
+// ---------------------------------------------------------------------------
+
+/// go-git:
+///   ue := fdiff.NewUnifiedEncoder(w, fdiff.DefaultContextLines)
+///   return ue.Encode(p)
+///
+/// Builds temporary format_diff views that borrow object paths/chunk content
+/// (no deep copy of text). Allocator only owns the view tables for Encode.
+fn encodeViaUnifiedEncoder(patch: *const Patch, w: *Writer) PatchError!void {
+    const allocator = patch.allocator;
+
+    const fd_fps = try allocator.alloc(format_diff.FilePatch, patch.file_patches.len);
+    defer allocator.free(fd_fps);
+
+    // Per-file chunk tables (views into object Chunk.content).
+    const chunk_tables = try allocator.alloc([]format_diff.Chunk, patch.file_patches.len);
+    defer {
+        for (chunk_tables) |t| {
+            if (t.len > 0) allocator.free(t);
+        }
+        allocator.free(chunk_tables);
+    }
+    for (chunk_tables) |*t| t.* = &.{};
+
+    for (patch.file_patches, 0..) |fp, i| {
+        if (fp.chunks.len > 0) {
+            const table = try allocator.alloc(format_diff.Chunk, fp.chunks.len);
+            chunk_tables[i] = table;
+            for (fp.chunks, table) |src, *dst| {
+                dst.* = .{
+                    .content = src.content,
+                    .op = mapFormatOperation(src.operation),
+                };
             }
         }
 
-        i = change_end;
+        fd_fps[i] = .{
+            .from = if (fp.from.empty()) null else format_diff.File{
+                .hash = fp.from.hash,
+                .mode = fp.from.mode,
+                .path = fp.from.path,
+            },
+            .to = if (fp.to.empty()) null else format_diff.File{
+                .hash = fp.to.hash,
+                .mode = fp.to.mode,
+                .path = fp.to.path,
+            },
+            .chunks = chunk_tables[i],
+            .is_binary = fp.binary,
+        };
     }
+
+    const fd_patch = format_diff.Patch{
+        .message = patch.message,
+        .file_patches = fd_fps,
+    };
+
+    var ue = format_diff.UnifiedEncoder.init(allocator, w, format_diff.DefaultContextLines);
+    try ue.encode(fd_patch);
 }
 
-fn appendLines(
-    flat: *std.ArrayList(LineOp),
-    allocator: Allocator,
-    op: Operation,
-    text: []const u8,
-) Allocator.Error!void {
-    if (text.len == 0) return;
-    var start: usize = 0;
-    var i: usize = 0;
-    while (i < text.len) : (i += 1) {
-        if (text[i] == '\n') {
-            try flat.append(allocator, .{ .op = op, .text = text[start .. i + 1] });
-            start = i + 1;
-        }
-    }
-    if (start < text.len) {
-        try flat.append(allocator, .{ .op = op, .text = text[start..] });
-    }
-}
+// ---------------------------------------------------------------------------
+// File stats (go-git getFileStatsFromFilePatches)
+// ---------------------------------------------------------------------------
 
 fn getFileStats(allocator: Allocator, fps: []const FilePatch) Allocator.Error!FileStats {
     var list: std.ArrayList(FileStat) = .empty;
@@ -580,7 +434,9 @@ fn getFileStats(allocator: Allocator, fps: []const FilePatch) Allocator.Error!Fi
         list.deinit(allocator);
     }
     for (fps) |fp| {
-        if (fp.from.empty() and fp.to.empty()) continue;
+        // go-git: ignore empty patches (binary files, submodule refs updates)
+        if (fp.chunks.len == 0) continue;
+
         var add: usize = 0;
         var del: usize = 0;
         for (fp.chunks) |ch| {
@@ -591,9 +447,22 @@ fn getFileStats(allocator: Allocator, fps: []const FilePatch) Allocator.Error!Fi
                 .equal => {},
             }
         }
-        const name = if (!fp.to.empty()) fp.to.path else fp.from.path;
+
+        // go-git naming: new → to; delete → from; rename → "from => to"; modify → from.
+        const name = blk: {
+            if (fp.from.empty()) {
+                break :blk try allocator.dupe(u8, fp.to.path);
+            } else if (fp.to.empty()) {
+                break :blk try allocator.dupe(u8, fp.from.path);
+            } else if (!std.mem.eql(u8, fp.from.path, fp.to.path)) {
+                break :blk try std.fmt.allocPrint(allocator, "{s} => {s}", .{ fp.from.path, fp.to.path });
+            } else {
+                break :blk try allocator.dupe(u8, fp.from.path);
+            }
+        };
+
         try list.append(allocator, .{
-            .name = try allocator.dupe(u8, name),
+            .name = name,
             .addition = add,
             .deletion = del,
         });
@@ -615,34 +484,35 @@ fn countLines(text: []const u8) usize {
 // Tests
 // ---------------------------------------------------------------------------
 
-test "myersLineDiff simple" {
+test "lineDiffChunks simple" {
     const gpa = std.testing.allocator;
-    const chunks = try myersLineDiff(gpa, "a\nb\n", "a\nc\n");
+    const chunks = try lineDiffChunks(gpa, "a\nb\n", "a\nc\n");
     defer {
         for (chunks) |ch| ch.deinit(gpa);
         gpa.free(chunks);
     }
-    var saw_del = false;
-    var saw_add = false;
-    for (chunks) |ch| {
-        if (ch.operation == .delete) saw_del = true;
-        if (ch.operation == .add) saw_add = true;
-    }
-    try std.testing.expect(saw_del and saw_add);
+    try std.testing.expectEqual(@as(usize, 3), chunks.len);
+    try std.testing.expect(chunks[0].operation == .equal);
+    try std.testing.expectEqualStrings("a\n", chunks[0].content);
+    try std.testing.expect(chunks[1].operation == .delete);
+    try std.testing.expectEqualStrings("b\n", chunks[1].content);
+    try std.testing.expect(chunks[2].operation == .add);
+    try std.testing.expectEqualStrings("c\n", chunks[2].content);
 }
 
-test "myersLineDiff empty to content" {
+test "lineDiffChunks empty to content" {
     const gpa = std.testing.allocator;
-    const chunks = try myersLineDiff(gpa, "", "x\n");
+    const chunks = try lineDiffChunks(gpa, "", "x\n");
     defer {
         for (chunks) |ch| ch.deinit(gpa);
         gpa.free(chunks);
     }
     try std.testing.expectEqual(@as(usize, 1), chunks.len);
     try std.testing.expect(chunks[0].operation == .add);
+    try std.testing.expectEqualStrings("x\n", chunks[0].content);
 }
 
-test "filePatch insert text" {
+test "filePatch insert text full unified" {
     const gpa = std.testing.allocator;
     const memory = @import("memory");
     const Storage = memory.Storage;
@@ -651,9 +521,10 @@ test "filePatch insert text" {
 
     var store = Storage.init(gpa);
     defer store.deinit();
+    const content = "hello\n";
     const blob = try store.newEncodedObject();
     blob.setType(.blob);
-    _ = try blob.write("hello\n");
+    _ = try blob.write(content);
     const bh = try store.setEncodedObject(blob);
 
     var tb = tree_mod.Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
@@ -677,8 +548,314 @@ test "filePatch insert text" {
     defer p.deinit();
     try std.testing.expectEqual(@as(usize, 1), p.file_patches.len);
     try std.testing.expect(!p.file_patches[0].binary);
+
+    var hex: [plumbing.HexSize]u8 = undefined;
+    const hash_s = bh.string(&hex);
+    const expected = try std.fmt.allocPrint(gpa,
+        \\diff --git a/hello.txt b/hello.txt
+        \\new file mode 100644
+        \\index 0000000000000000000000000000000000000000..{s}
+        \\--- /dev/null
+        \\+++ b/hello.txt
+        \\@@ -0,0 +1 @@
+        \\+hello
+        \\
+    , .{hash_s});
+    defer gpa.free(expected);
+
     const s = try p.string();
     defer gpa.free(s);
-    try std.testing.expect(std.mem.indexOf(u8, s, "new file mode") != null);
-    try std.testing.expect(std.mem.indexOf(u8, s, "+hello") != null);
+    try std.testing.expectEqualStrings(expected, s);
+}
+
+test "filePatch binary encode line" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+    const Storage = memory.Storage;
+    const storer = @import("storer");
+    const tree_mod = @import("tree.zig");
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    // NUL in the first sniff bytes → binary.
+    const content = "\x00bin-data";
+    const blob = try store.newEncodedObject();
+    blob.setType(.blob);
+    _ = try blob.write(content);
+    const bh = try store.setEncodedObject(blob);
+
+    var tb = tree_mod.Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer tb.deinit();
+    try tb.appendEntry("data.bin", filemode.Regular, bh);
+    tb.sortEntries();
+
+    const c = Change{
+        .from = .{},
+        .to = .{
+            .name = "data.bin",
+            .tree = &tb,
+            .tree_entry = .{
+                .name = "data.bin",
+                .mode = filemode.Regular,
+                .hash = bh,
+            },
+        },
+    };
+    var p = try changePatch(gpa, &c);
+    defer p.deinit();
+    try std.testing.expectEqual(@as(usize, 1), p.file_patches.len);
+    try std.testing.expect(p.file_patches[0].binary);
+
+    var hex: [plumbing.HexSize]u8 = undefined;
+    const hash_s = bh.string(&hex);
+    const expected = try std.fmt.allocPrint(gpa,
+        \\diff --git a/data.bin b/data.bin
+        \\new file mode 100644
+        \\index 0000000000000000000000000000000000000000..{s}
+        \\Binary files /dev/null and b/data.bin differ
+        \\
+    , .{hash_s});
+    defer gpa.free(expected);
+
+    const s = try p.string();
+    defer gpa.free(s);
+    try std.testing.expectEqualStrings(expected, s);
+}
+
+test "getFileStats skips empty chunks and names renames" {
+    const gpa = std.testing.allocator;
+
+    // Binary / empty-chunk patch is skipped.
+    const binary_fps = [_]FilePatch{.{
+        .chunks = &.{},
+        .binary = true,
+        .from = .{ .mode = filemode.Regular, .path = "a.bin", .hash = plumbing.computeHash(.blob, "\x00a") },
+        .to = .{ .mode = filemode.Regular, .path = "a.bin", .hash = plumbing.computeHash(.blob, "\x00b") },
+    }};
+    var empty_stats = try getFileStats(gpa, &binary_fps);
+    defer empty_stats.deinit();
+    try std.testing.expectEqual(@as(usize, 0), empty_stats.items.len);
+
+    // Rename with content: "from => to".
+    var rename_chunks = [_]Chunk{.{ .content = "line\n", .operation = .add }};
+    const rename_fps = [_]FilePatch{.{
+        .chunks = rename_chunks[0..],
+        .from = .{
+            .mode = filemode.Regular,
+            .path = "old.txt",
+            .hash = plumbing.computeHash(.blob, ""),
+        },
+        .to = .{
+            .mode = filemode.Regular,
+            .path = "new.txt",
+            .hash = plumbing.computeHash(.blob, "line\n"),
+        },
+    }};
+    var rename_stats = try getFileStats(gpa, &rename_fps);
+    defer rename_stats.deinit();
+    try std.testing.expectEqual(@as(usize, 1), rename_stats.items.len);
+    try std.testing.expectEqualStrings("old.txt => new.txt", rename_stats.items[0].name);
+    try std.testing.expectEqual(@as(usize, 1), rename_stats.items[0].addition);
+    try std.testing.expectEqual(@as(usize, 0), rename_stats.items[0].deletion);
+
+    // Modify (same path): prefer from path.
+    var mod_chunks = [_]Chunk{
+        .{ .content = "a\n", .operation = .delete },
+        .{ .content = "b\n", .operation = .add },
+    };
+    const mod_fps = [_]FilePatch{.{
+        .chunks = mod_chunks[0..],
+        .from = .{
+            .mode = filemode.Regular,
+            .path = "same.txt",
+            .hash = plumbing.computeHash(.blob, "a\n"),
+        },
+        .to = .{
+            .mode = filemode.Regular,
+            .path = "same.txt",
+            .hash = plumbing.computeHash(.blob, "b\n"),
+        },
+    }};
+    var mod_stats = try getFileStats(gpa, &mod_fps);
+    defer mod_stats.deinit();
+    try std.testing.expectEqual(@as(usize, 1), mod_stats.items.len);
+    try std.testing.expectEqualStrings("same.txt", mod_stats.items[0].name);
+    try std.testing.expectEqual(@as(usize, 1), mod_stats.items[0].addition);
+    try std.testing.expectEqual(@as(usize, 1), mod_stats.items[0].deletion);
+
+    // Insert naming: to path; delete naming: from path.
+    var ins_chunks = [_]Chunk{.{ .content = "n\n", .operation = .add }};
+    const ins_fps = [_]FilePatch{.{
+        .chunks = ins_chunks[0..],
+        .from = .{},
+        .to = .{ .mode = filemode.Regular, .path = "new.txt", .hash = plumbing.computeHash(.blob, "n\n") },
+    }};
+    var ins_stats = try getFileStats(gpa, &ins_fps);
+    defer ins_stats.deinit();
+    try std.testing.expectEqualStrings("new.txt", ins_stats.items[0].name);
+
+    var del_chunks = [_]Chunk{.{ .content = "o\n", .operation = .delete }};
+    const del_fps = [_]FilePatch{.{
+        .chunks = del_chunks[0..],
+        .from = .{ .mode = filemode.Regular, .path = "gone.txt", .hash = plumbing.computeHash(.blob, "o\n") },
+        .to = .{},
+    }};
+    var del_stats = try getFileStats(gpa, &del_fps);
+    defer del_stats.deinit();
+    try std.testing.expectEqualStrings("gone.txt", del_stats.items[0].name);
+}
+
+// go-git PatchSuite.TestFileStatsString / printStat cases
+test "FileStats string printStat formatting" {
+    const gpa = std.testing.allocator;
+
+    // no files changed
+    {
+        var fs: FileStats = .{ .items = &.{}, .allocator = gpa };
+        const s = try fs.string();
+        defer gpa.free(s);
+        try std.testing.expectEqualStrings("", s);
+    }
+
+    // one file touched - no changes
+    {
+        const s = try (FileStat{ .name = "file1" }).string(gpa);
+        defer gpa.free(s);
+        try std.testing.expectEqualStrings(" file1 | 0 \n", s);
+    }
+
+    // one file changed
+    {
+        const s = try (FileStat{ .name = "file1", .addition = 1 }).string(gpa);
+        defer gpa.free(s);
+        try std.testing.expectEqualStrings(" file1 | 1 +\n", s);
+    }
+
+    // one file changed with one addition and one deletion
+    {
+        const s = try (FileStat{
+            .name = ".github/workflows/git.yml",
+            .addition = 1,
+            .deletion = 1,
+        }).string(gpa);
+        defer gpa.free(s);
+        try std.testing.expectEqualStrings(" .github/workflows/git.yml | 2 +-\n", s);
+    }
+
+    // two files changed
+    {
+        var items = [_]FileStat{
+            .{ .name = ".github/workflows/git.yml", .addition = 1, .deletion = 1 },
+            .{ .name = "cli/go-git/go.mod", .addition = 4, .deletion = 4 },
+        };
+        var fs: FileStats = .{ .items = items[0..], .allocator = gpa };
+        const s = try fs.string();
+        defer gpa.free(s);
+        try std.testing.expectEqualStrings(
+            " .github/workflows/git.yml | 2 +-\n cli/go-git/go.mod         | 8 ++++----\n",
+            s,
+        );
+    }
+
+    // three files changed (additions only)
+    {
+        var items = [_]FileStat{
+            .{ .name = ".github/workflows/git.yml", .addition = 3, .deletion = 3 },
+            .{ .name = "worktree.go", .addition = 107 },
+            .{ .name = "worktree_test.go", .addition = 75 },
+        };
+        var fs: FileStats = .{ .items = items[0..], .allocator = gpa };
+        const s = try fs.string();
+        defer gpa.free(s);
+        try std.testing.expectEqualStrings(
+            " .github/workflows/git.yml |   6 +++---\n" ++
+                " worktree.go               | 107 +++++++++++++++++++++++++++++++++++++++++++++++++++++\n" ++
+                " worktree_test.go          |  75 +++++++++++++++++++++++++++++++++++++++++++++++++++++\n",
+            s,
+        );
+    }
+
+    // three files changed with deletions and additions (graph scaled)
+    {
+        var items = [_]FileStat{
+            .{ .name = ".github/workflows/git.yml", .addition = 3, .deletion = 3 },
+            .{ .name = "worktree.go", .addition = 107, .deletion = 217 },
+            .{ .name = "worktree_test.go", .addition = 75, .deletion = 275 },
+        };
+        var fs: FileStats = .{ .items = items[0..], .allocator = gpa };
+        const s = try fs.string();
+        defer gpa.free(s);
+        try std.testing.expectEqualStrings(
+            " .github/workflows/git.yml |   6 +++---\n" ++
+                " worktree.go               | 324 ++++++++++++++++++-----------------------------------\n" ++
+                " worktree_test.go          | 350 ++++++++++++-----------------------------------------\n",
+            s,
+        );
+    }
+}
+
+// go-git PatchStatsSuite.TestStatsWithRename — naming via getFileStats
+test "FileStats rename naming foo => bar" {
+    const gpa = std.testing.allocator;
+    var chunks = [_]Chunk{
+        .{ .content = "foo\n", .operation = .equal },
+        .{ .content = "bar\n", .operation = .equal },
+    };
+    // Pure rename (same content) still produces equal chunks when patched; if only
+    // equal chunks, additions/deletions stay 0 but name still uses rename form.
+    const fps = [_]FilePatch{.{
+        .chunks = chunks[0..],
+        .from = .{ .mode = filemode.Regular, .path = "foo", .hash = plumbing.computeHash(.blob, "foo\nbar\n") },
+        .to = .{ .mode = filemode.Regular, .path = "bar", .hash = plumbing.computeHash(.blob, "foo\nbar\n") },
+    }};
+    var stats = try getFileStats(gpa, &fps);
+    defer stats.deinit();
+    try std.testing.expectEqual(@as(usize, 1), stats.items.len);
+    try std.testing.expectEqualStrings("foo => bar", stats.items[0].name);
+}
+
+test "Patch stats from changePatch insert" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+    const Storage = memory.Storage;
+    const storer = @import("storer");
+    const tree_mod = @import("tree.zig");
+
+    var store = Storage.init(gpa);
+    defer store.deinit();
+    const content = "a\nb\n";
+    const blob = try store.newEncodedObject();
+    blob.setType(.blob);
+    _ = try blob.write(content);
+    const bh = try store.setEncodedObject(blob);
+
+    var tb = tree_mod.Tree.init(gpa, storer.ObjectGetter.from(Storage, &store));
+    defer tb.deinit();
+    try tb.appendEntry("f.txt", filemode.Regular, bh);
+    tb.sortEntries();
+
+    const c = Change{
+        .from = .{},
+        .to = .{
+            .name = "f.txt",
+            .tree = &tb,
+            .tree_entry = .{
+                .name = "f.txt",
+                .mode = filemode.Regular,
+                .hash = bh,
+            },
+        },
+    };
+    var p = try changePatch(gpa, &c);
+    defer p.deinit();
+    var stats = try p.stats();
+    defer stats.deinit();
+    try std.testing.expectEqual(@as(usize, 1), stats.items.len);
+    try std.testing.expectEqualStrings("f.txt", stats.items[0].name);
+    try std.testing.expectEqual(@as(usize, 2), stats.items[0].addition);
+    try std.testing.expectEqual(@as(usize, 0), stats.items[0].deletion);
+
+    const printed = try stats.string();
+    defer gpa.free(printed);
+    try std.testing.expectEqualStrings(" f.txt | 2 ++\n", printed);
 }

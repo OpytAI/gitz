@@ -60,13 +60,31 @@ pub const SimilarityIndex = struct {
         var idx = try new(allocator);
         errdefer idx.deinit();
         try idx.hashFile(f);
+        idx.sortHashes();
+        return idx;
+    }
+
+    /// Build an index from in-memory content (go-git test `textIndex` + sort).
+    /// `is_bin` false ignores CR before LF (text path).
+    pub fn fromContent(
+        allocator: Allocator,
+        data: []const u8,
+        is_bin: bool,
+    ) (Allocator.Error || IndexFullError)!SimilarityIndex {
+        var idx = try new(allocator);
+        errdefer idx.deinit();
+        try idx.hashContent(data, is_bin);
+        idx.sortHashes();
+        return idx;
+    }
+
+    fn sortHashes(self: *SimilarityIndex) void {
         // sort.Stable by keyCountPair numeric value (go-git keyCountPairs.Less).
-        std.mem.sort(KeyCountPair, idx.hashes, {}, struct {
+        std.mem.sort(KeyCountPair, self.hashes, {}, struct {
             fn less(_: void, a: KeyCountPair, b: KeyCountPair) bool {
                 return a < b;
             }
         }.less);
-        return idx;
     }
 
     fn hashFile(self: *SimilarityIndex, f: *const File) (Allocator.Error || IndexFullError)!void {
@@ -76,7 +94,7 @@ pub const SimilarityIndex = struct {
     }
 
     /// go-git `(*similarityIndex).hashContent`.
-    fn hashContent(self: *SimilarityIndex, data: []const u8, is_bin: bool) (Allocator.Error || IndexFullError)!void {
+    pub fn hashContent(self: *SimilarityIndex, data: []const u8, is_bin: bool) (Allocator.Error || IndexFullError)!void {
         var remaining: i64 = @intCast(data.len);
         var ptr: usize = 0;
 
@@ -174,7 +192,7 @@ pub const SimilarityIndex = struct {
     }
 
     /// go-git `(*similarityIndex).common` — walk sorted tables from index 0.
-    fn common(self: *const SimilarityIndex, dst: *const SimilarityIndex) u64 {
+    pub fn common(self: *const SimilarityIndex, dst: *const SimilarityIndex) u64 {
         if (self.num_hashes == 0 or dst.num_hashes == 0) return 0;
 
         var src_idx: usize = 0;
@@ -216,8 +234,30 @@ fn shouldGrowAt(hash_bits: u5) usize {
 }
 
 // ---------------------------------------------------------------------------
-// Tests (against go-git / jgit semantics)
+// Tests (against go-git SimilarityIndexSuite / jgit semantics)
 // ---------------------------------------------------------------------------
+
+fn textIndex(allocator: Allocator, content: []const u8) !SimilarityIndex {
+    return try SimilarityIndex.fromContent(allocator, content, false);
+}
+
+fn keyForLine(allocator: Allocator, line: []const u8) !u32 {
+    var idx = try SimilarityIndex.new(allocator);
+    defer idx.deinit();
+    try idx.hashContent(line, false);
+    try std.testing.expectEqual(@as(usize, 1), idx.num_hashes);
+    for (idx.hashes) |h| {
+        if (h != 0) return pairKey(h);
+    }
+    return error.TestUnexpectedResult;
+}
+
+fn findCount(idx: *const SimilarityIndex, key: u32) u64 {
+    for (idx.hashes) |h| {
+        if (h != 0 and pairKey(h) == key) return pairCount(h);
+    }
+    return 0;
+}
 
 test "SimilarityIndex identical files score max" {
     const gpa = std.testing.allocator;
@@ -259,4 +299,117 @@ test "SimilarityIndex empty files score max" {
     var c = try SimilarityIndex.fromFile(gpa, &f);
     defer c.deinit();
     try std.testing.expectEqual(@as(i32, 100), a.score(&c, 100));
+}
+
+// go-git SimilarityIndexSuite.TestHashContent
+test "SimilarityIndex hashContent line keys and counts" {
+    const gpa = std.testing.allocator;
+    var idx = try textIndex(gpa, "A\nB\nD\nB\n");
+    defer idx.deinit();
+
+    const key_a = try keyForLine(gpa, "A\n");
+    const key_b = try keyForLine(gpa, "B\n");
+    const key_d = try keyForLine(gpa, "D\n");
+
+    try std.testing.expect(key_a != key_b);
+    try std.testing.expect(key_a != key_d);
+    try std.testing.expect(key_d != key_b);
+
+    try std.testing.expectEqual(@as(usize, 3), idx.num_hashes);
+    try std.testing.expectEqual(@as(u64, 2), findCount(&idx, key_a));
+    try std.testing.expectEqual(@as(u64, 4), findCount(&idx, key_b));
+    try std.testing.expectEqual(@as(u64, 2), findCount(&idx, key_d));
+}
+
+// go-git SimilarityIndexSuite.TestCommonSameFiles
+test "SimilarityIndex common same files" {
+    const gpa = std.testing.allocator;
+    const content = "A\nB\nD\nB\n";
+    var src = try textIndex(gpa, content);
+    defer src.deinit();
+    var dst = try textIndex(gpa, content);
+    defer dst.deinit();
+
+    try std.testing.expectEqual(@as(u64, 8), src.common(&dst));
+    try std.testing.expectEqual(@as(u64, 8), dst.common(&src));
+    try std.testing.expectEqual(@as(i32, 100), src.score(&dst, 100));
+    try std.testing.expectEqual(@as(i32, 100), dst.score(&src, 100));
+}
+
+// go-git SimilarityIndexSuite.TestCommonSameFilesCR
+test "SimilarityIndex common same files with CR" {
+    const gpa = std.testing.allocator;
+    const with_cr = "A\r\nB\r\nD\r\nB\r\n";
+    const no_cr = "A\nB\nD\nB\n";
+    var src = try textIndex(gpa, with_cr);
+    defer src.deinit();
+    var dst = try textIndex(gpa, no_cr);
+    defer dst.deinit();
+
+    try std.testing.expectEqual(@as(u64, 8), src.common(&dst));
+    try std.testing.expectEqual(@as(u64, 8), dst.common(&src));
+    try std.testing.expectEqual(@as(i32, 100), src.score(&dst, 100));
+    try std.testing.expectEqual(@as(i32, 100), dst.score(&src, 100));
+}
+
+// go-git SimilarityIndexSuite.TestCommonEmptyFiles
+test "SimilarityIndex common empty files" {
+    const gpa = std.testing.allocator;
+    var src = try textIndex(gpa, "");
+    defer src.deinit();
+    var dst = try textIndex(gpa, "");
+    defer dst.deinit();
+
+    try std.testing.expectEqual(@as(u64, 0), src.common(&dst));
+    try std.testing.expectEqual(@as(u64, 0), dst.common(&src));
+}
+
+// go-git SimilarityIndexSuite.TestCommonTotallyDifferentFiles
+test "SimilarityIndex common totally different files" {
+    const gpa = std.testing.allocator;
+    var src = try textIndex(gpa, "A\n");
+    defer src.deinit();
+    var dst = try textIndex(gpa, "D\n");
+    defer dst.deinit();
+
+    try std.testing.expectEqual(@as(u64, 0), src.common(&dst));
+    try std.testing.expectEqual(@as(u64, 0), dst.common(&src));
+}
+
+// go-git SimilarityIndexSuite.TestSimilarity75
+test "SimilarityIndex similarity 75" {
+    const gpa = std.testing.allocator;
+    var src = try textIndex(gpa, "A\nB\nC\nD\n");
+    defer src.deinit();
+    var dst = try textIndex(gpa, "A\nB\nC\nQ\n");
+    defer dst.deinit();
+
+    try std.testing.expectEqual(@as(u64, 6), src.common(&dst));
+    try std.testing.expectEqual(@as(u64, 6), dst.common(&src));
+    try std.testing.expectEqual(@as(i32, 75), src.score(&dst, 100));
+    try std.testing.expectEqual(@as(i32, 75), dst.score(&src, 100));
+}
+
+// ScoreFiles without go-git fixtures: binary vs text content scores.
+test "SimilarityIndex score files synthetic" {
+    const gpa = std.testing.allocator;
+
+    var same = try textIndex(gpa, "line1\nline2\nline3\n");
+    defer same.deinit();
+    try std.testing.expectEqual(@as(i32, 10000), same.score(&same, 10000));
+
+    var short = try textIndex(gpa, "{\n  \"a\": 1\n}\n");
+    defer short.deinit();
+    var long = try textIndex(gpa, "{\n  \"a\": 1,\n  \"b\": 2,\n  \"c\": 3\n}\n");
+    defer long.deinit();
+    // Slightly similar JSON-ish text; score must be symmetric and in range.
+    const s1 = short.score(&long, 10000);
+    const s2 = long.score(&short, 10000);
+    try std.testing.expectEqual(s1, s2);
+    try std.testing.expect(s1 >= 0 and s1 <= 10000);
+
+    var bin = try SimilarityIndex.fromContent(gpa, "\x00\x01\x02\x03\x04\x05", true);
+    defer bin.deinit();
+    const vs_bin = long.score(&bin, 10000);
+    try std.testing.expect(vs_bin >= 0 and vs_bin <= 10000);
 }

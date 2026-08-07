@@ -1,0 +1,83 @@
+# go-git utils/merkletrie DiffTree modify + delete cases
+# Source: difftree_test.go TestBasicCases / TestSameNames / TestCrazy / change_test.go TestNewModify TestNewDelete
+# DiffTree dump: + insert, - delete, * modify; New* String forms below
+#
+# --- DiffTree modify ---
+from:(a<>)
+to:(a<1>)
+changes:1
+actions:*a
+names:a
+#
+from:(a<1>)
+to:(a<2>)
+changes:1
+actions:*a
+names:a
+#
+from:(a(a(a<>)))
+to:(a(a(a<1>)))
+changes:1
+actions:*a/a/a
+names:a/a/a
+#
+# --- DiffTree delete ---
+from:(a<>)
+to:(a())
+changes:1
+actions:-a
+names:a
+#
+from:(a<1>)
+to:(a())
+changes:1
+actions:-a
+names:a
+#
+from:(a<>)
+to:()
+changes:1
+actions:-a
+names:a
+#
+# --- DiffTree delete + insert ---
+from:(a<>)
+to:(a(b<>))
+changes:2
+actions:-a +a/b
+names:a,a/b
+#
+from:(a<1>)
+to:(b<1>)
+changes:2
+actions:-a +b
+names:a,b
+#
+from:(a(b(a<>)))
+to:(a(b()) b(a<>))
+changes:2
+actions:-a/b/a +b/a
+names:a/b/a,b/a
+#
+# --- DiffTree crazy modify/insert/delete mix ---
+from:(f(e(l<1>) a(n(o(p())) k<1>)) d<1> h(j(i<1> c<2> m<>) b() g<>))
+to:(d<2> f(e(l<2>) a(s(t<1>))) h(b() g<> r<> j(i<> c<3> m<>)))
+changes:7
+actions:+f/a/s/t +h/r -f/a/k *d *f/e/l *h/j/c *h/j/i
+names:d,f/a/k,f/a/s/t,f/e/l,h/j/c,h/j/i,h/r
+#
+from:(f(e(l<1>) a(n(o(p())) k<1>)) d<1> h(j(i<1> c<2> m<>) b() g<>))
+to:(f(e(l<2>) a(n(o(p<1>)) k<>)) h(j(i<1> c<2> m<>) b() g<>))
+changes:4
+actions:*f/e/l +f/a/n/o/p *f/a/k -d
+names:d,f/a/k,f/a/n/o/p,f/e/l
+#
+# --- NewDelete / NewModify path string form ---
+NewDelete:a/b/z
+string:<Delete a/b/z>
+NewDelete:z
+string:<Delete z>
+NewModify:a/b/z
+string:<Modify a/b/z>
+NewModify:z
+string:<Modify z>

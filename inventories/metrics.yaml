@@ -35,8 +35,10 @@ goldens:
   # + packp_report_status_ok + sideband_channel_byte + sideband_pack_channel
   # + transport_endpoint_http + transport_endpoint_scp (37).
   # Phase 9: pathutil_ntfs_dotgit + gitignore_simple + revision_parse +
-  # diff_do_equal + merkletrie_empty (42).
-  min_count: 42
+  # diff_do_equal + merkletrie_empty + pathutil_tree_reject +
+  # unified_diff_one_line + merkletrie_insert + merkletrie_modify_delete +
+  # gitattributes_simple (47).
+  min_count: 47
 
 
 allowlists:

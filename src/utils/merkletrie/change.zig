@@ -124,6 +124,8 @@ pub const Changes = struct {
                     .delete => newDelete(owned),
                 };
                 try self.add(c);
+                // Path value copied into Change; clear so errdefer no-ops.
+                owned = .{};
             }
             return;
         }
@@ -132,23 +134,25 @@ pub const Changes = struct {
         defer it.deinit();
 
         while (true) {
+            // step returns an owned path; free unless transferred into a Change.
             const current = it.step() catch |err| {
                 if (err == error.EndOfStream) break;
                 return err;
             };
-            defer {
-                // step returns owned path; free after use unless we keep it
-            }
             if (current.isDir() or current.skip()) {
                 var tmp = current;
                 tmp.deinit(self.allocator);
                 continue;
             }
+            var owned = current;
+            errdefer owned.deinit(self.allocator);
             const c = switch (kind) {
-                .insert => newInsert(current),
-                .delete => newDelete(current),
+                .insert => newInsert(owned),
+                .delete => newDelete(owned),
             };
             try self.add(c);
+            // Transferred into Change; clear so errdefer no-ops.
+            owned = .{};
         }
     }
 };
@@ -174,6 +178,7 @@ test "EmptyChanges AddRecursive empty path" {
     try std.testing.expectError(Error.EmptyFileName, ret.addRecursiveDelete(p));
 }
 
+// go-git ChangeSuite.TestNewInsert / TestNewDelete / TestNewModify.
 test "NewInsert NewDelete NewModify strings" {
     const a = std.testing.allocator;
     var tree = try fsnoder.New(a, "(a(b(z<>)))");
@@ -207,6 +212,14 @@ test "NewInsert NewDelete NewModify strings" {
         defer a.free(s);
         try std.testing.expectEqualStrings("<Delete a/b/z>", s);
     }
+    {
+        const short = try Path.fromNodes(a, path.nodes[path.nodes.len - 1 ..]);
+        var ch = newDelete(short);
+        defer ch.deinit(a);
+        const s = try ch.string(a);
+        defer a.free(s);
+        try std.testing.expectEqualStrings("<Delete z>", s);
+    }
 
     var tree2 = try fsnoder.New(a, "(a(b(z<1>)))");
     defer tree2.deinit(a);
@@ -222,11 +235,97 @@ test "NewInsert NewDelete NewModify strings" {
         defer a.free(s);
         try std.testing.expectEqualStrings("<Modify a/b/z>", s);
     }
+    {
+        const short1 = try Path.fromNodes(a, path.nodes[path.nodes.len - 1 ..]);
+        const short2 = try Path.fromNodes(a, path2.nodes[path2.nodes.len - 1 ..]);
+        var ch = newModify(short1, short2);
+        defer ch.deinit(a);
+        const s = try ch.string(a);
+        defer a.free(s);
+        try std.testing.expectEqualStrings("<Modify z>", s);
+    }
 }
 
+// go-git MalformedChange panics on String; Zig returns MalformedChange from action.
 test "Malformed change action" {
     const c = Change{};
     try std.testing.expectError(Error.MalformedChange, c.action());
+}
+
+// Successful recursive insert/delete (empty-path errors covered above).
+// go-git AddRecursiveInsert / AddRecursiveDelete walk file-like noders only.
+// Tree: root → a/{b/z, x, y}
+test "AddRecursiveInsert nested files" {
+    const a = std.testing.allocator;
+    var tree = try fsnoder.New(a, "(a(b(z<>) x<> y<>))");
+    defer tree.deinit(a);
+
+    // Single file: insert just that path.
+    {
+        const path_z = try find(a, tree.noder(), "z");
+        defer {
+            var p = path_z;
+            p.deinit(a);
+        }
+        var ret = Changes.init(a);
+        defer ret.deinit();
+        try ret.addRecursiveInsert(path_z);
+        try std.testing.expectEqual(@as(usize, 1), ret.items.items.len);
+        const act = try ret.items.items[0].action();
+        try std.testing.expectEqual(Action.insert, act);
+        const s = try ret.items.items[0].string(a);
+        defer a.free(s);
+        try std.testing.expectEqualStrings("<Insert a/b/z>", s);
+    }
+
+    // Directory "a": files a/b/z, a/x, a/y (iter Step, skip dirs).
+    {
+        const path_a = try find(a, tree.noder(), "a");
+        defer {
+            var p = path_a;
+            p.deinit(a);
+        }
+        var ret = Changes.init(a);
+        defer ret.deinit();
+        try ret.addRecursiveInsert(path_a);
+        try std.testing.expectEqual(@as(usize, 3), ret.items.items.len);
+
+        var paths: [3][]u8 = undefined;
+        defer for (paths) |p| a.free(p);
+        for (ret.items.items, 0..) |c, i| {
+            try std.testing.expectEqual(Action.insert, try c.action());
+            paths[i] = try c.to.?.string(a);
+        }
+        // Depth-first: a/b, a/b/z, a/x, a/y → files a/b/z, a/x, a/y
+        try std.testing.expectEqualStrings("a/b/z", paths[0]);
+        try std.testing.expectEqualStrings("a/x", paths[1]);
+        try std.testing.expectEqualStrings("a/y", paths[2]);
+    }
+}
+
+test "AddRecursiveDelete nested files" {
+    const a = std.testing.allocator;
+    var tree = try fsnoder.New(a, "(a(b(z<>) y<>))");
+    defer tree.deinit(a);
+
+    const path_a = try find(a, tree.noder(), "a");
+    defer {
+        var p = path_a;
+        p.deinit(a);
+    }
+    var ret = Changes.init(a);
+    defer ret.deinit();
+    try ret.addRecursiveDelete(path_a);
+    try std.testing.expectEqual(@as(usize, 2), ret.items.items.len);
+    for (ret.items.items) |c| {
+        try std.testing.expectEqual(Action.delete, try c.action());
+    }
+    const s0 = try ret.items.items[0].string(a);
+    defer a.free(s0);
+    const s1 = try ret.items.items[1].string(a);
+    defer a.free(s1);
+    try std.testing.expectEqualStrings("<Delete a/b/z>", s0);
+    try std.testing.expectEqualStrings("<Delete a/y>", s1);
 }
 
 fn find(allocator: Allocator, tree: noder.Noder, name: []const u8) !Path {

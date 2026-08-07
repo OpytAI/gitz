@@ -1,0 +1,42 @@
+# go-git internal/pathutil ValidTreePath
+# Source: go-git/internal/pathutil/tree_test.go TestValidTreePath
+# Format: "path"  wantErr
+# path double-quoted; \xNN / \uXXXX escapes for control / ZWNJ where needed
+# wantErr true = reject
+#
+# Strict positional rejection
+"submodule/.git"	true
+"a/.git"	true
+"a\\.git"	true
+".git"	true
+".git/config"	true
+"a/.git/b"	true
+"git~1"	true
+"sub/git~1/HEAD"	true
+"a/../b"	true
+"."	true
+""	true
+"a\x01b"	true
+"foo\x7fbar"	true
+# Always-on NTFS .git-disguise variants
+"sub/.git . /x"	true
+".git::$INDEX_ALLOCATION/x"	true
+"sub/git~1 /x"	true
+"git~1./x"	true
+"git~1::$INDEX_ALLOCATION/x"	true
+# Always-on HFS+ ZWNJ variants (U+200C)
+".g\u200cit/x"	true
+"sub/.g\u200cit/x"	true
+# Legitimate paths (wantErr false) for contrast
+"readme.md"	false
+"src/main.go"	false
+".gitmodules"	false
+".gitignore"	false
+"vendor/.gitignore"	false
+"a..b"	false
+"submodule"	false
+"vendor/sub"	false
+"Çircle/file"	false
+"CON/file"	false
+"CON.txt"	false
+"dir/NUL"	false

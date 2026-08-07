@@ -1,4 +1,173 @@
+# go-git internal/revision Parser.Parse
+# Source: go-git/internal/revision/parser_test.go
+#   TestParseWithValidExpression + TestParseWithInvalidExpression
+# Valid case: revision line, then components:N, then one Type:payload per component
+# Invalid case: revision line, then error:<reason>
+#
 HEAD~1
 components:2
 Ref:HEAD
 TildePath:1
+#
+@
+components:1
+Ref:HEAD
+#
+@~3
+components:2
+Ref:HEAD
+TildePath:3
+#
+@{2016-12-16T21:42:47Z}
+components:1
+AtDate:1481924567
+#
+@{1}
+components:1
+AtReflog:1
+#
+@{-1}
+components:1
+AtCheckout:1
+#
+HEAD^
+components:2
+Ref:HEAD
+CaretPath:1
+#
+master~3
+components:2
+Ref:master
+TildePath:3
+#
+master@{upstream}
+components:2
+Ref:master
+AtUpstream:
+#
+@{upstream}
+components:1
+AtUpstream:
+#
+@{u}
+components:1
+AtUpstream:
+#
+master@{push}
+components:2
+Ref:master
+AtPush:
+#
+master@{2016-12-16T21:42:47Z}
+components:2
+Ref:master
+AtDate:1481924567
+#
+v0.99.8^{commit}
+components:2
+Ref:v0.99.8
+CaretType:commit
+#
+v0.99.8^{}
+components:2
+Ref:v0.99.8
+CaretType:tag
+#
+HEAD^{/fix nasty bug}
+components:2
+Ref:HEAD
+CaretReg:fix nasty bug
+#
+:/fix nasty bug
+components:1
+ColonReg:fix nasty bug
+#
+HEAD:README
+components:2
+Ref:HEAD
+ColonPath:README
+#
+:README
+components:1
+ColonPath:README
+#
+master:./README
+components:2
+Ref:master
+ColonPath:./README
+#
+master^1~:./README
+components:4
+Ref:master
+CaretPath:1
+TildePath:1
+ColonPath:./README
+#
+:0:README
+components:1
+ColonStagePath:README:0
+#
+:3:README
+components:1
+ColonStagePath:README:3
+#
+master~1^{/update}~5~^^1
+components:7
+Ref:master
+TildePath:1
+CaretReg:update
+TildePath:5
+TildePath:1
+CaretPath:1
+CaretPath:1
+#
+# --- invalid: Parser.Parse error reasons (TestParseWithInvalidExpression) ---
+# Format: revision line, then error:<reason>
+#
+..
+error:must not start with "."
+#
+master^1master
+error:reference must be defined once at the beginning
+#
+master^1@{2016-12-16T21:42:47Z}
+error:"@" statement is not valid, could be : <refname>@{<ISO-8601 date>}, @{<ISO-8601 date>}
+#
+master^1@{1}
+error:"@" statement is not valid, could be : <refname>@{<n>}, @{<n>}
+#
+master@{-1}
+error:"@" statement is not valid, could be : @{-<n>}
+#
+master^1@{upstream}
+error:"@" statement is not valid, could be : <refname>@{upstream}, @{upstream}, <refname>@{u}, @{u}
+#
+master^1@{u}
+error:"@" statement is not valid, could be : <refname>@{upstream}, @{upstream}, <refname>@{u}, @{u}
+#
+master^1@{push}
+error:"@" statement is not valid, could be : <refname>@{push}, @{push}
+#
+^1
+error:"~" or "^" statement must have a reference defined at the beginning
+#
+^{/test}
+error:"~" or "^" statement must have a reference defined at the beginning
+#
+~1
+error:"~" or "^" statement must have a reference defined at the beginning
+#
+master:/test
+error:":" statement is not valid, could be : :/<regexp>
+#
+master:0:README
+error:":" statement is not valid, could be : :<n>:<path>
+#
+^{/
+error:missing "}" in ^{<data>} structure
+#
+~@{
+error:missing "}" in @{<data>} structure
+#
+@@{{0
+error:missing "}" in @{<data>} structure

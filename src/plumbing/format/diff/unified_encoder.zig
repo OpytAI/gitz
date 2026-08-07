@@ -167,12 +167,18 @@ pub const UnifiedEncoder = struct {
             }
 
             if (!hash_equals) {
-                try self.appendPathLines(
-                    &lines,
-                    try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.src_prefix, f.path }),
-                    try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.dst_prefix, t.path }),
-                    is_binary,
-                );
+                // Optional pointers so failed second alloc frees the first, and
+                // successful transfer into appendPathLines (which always frees)
+                // clears the options before outer errdefer can double-free.
+                var src_p: ?[]u8 = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.src_prefix, f.path });
+                errdefer if (src_p) |p| self.allocator.free(p);
+                var dst_p: ?[]u8 = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.dst_prefix, t.path });
+                errdefer if (dst_p) |p| self.allocator.free(p);
+                const s = src_p.?;
+                const d = dst_p.?;
+                src_p = null;
+                dst_p = null;
+                try self.appendPathLines(&lines, s, d, is_binary);
             }
         } else if (from == null) {
             const t = to.?;
@@ -193,12 +199,15 @@ pub const UnifiedEncoder = struct {
                 "index {s}..{s}",
                 .{ plumbing.ZeroHash.string(&zh), t.hash.string(&th) },
             ));
-            try self.appendPathLines(
-                &lines,
-                try self.allocator.dupe(u8, "/dev/null"),
-                try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.dst_prefix, t.path }),
-                is_binary,
-            );
+            var src_p: ?[]u8 = try self.allocator.dupe(u8, "/dev/null");
+            errdefer if (src_p) |p| self.allocator.free(p);
+            var dst_p: ?[]u8 = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.dst_prefix, t.path });
+            errdefer if (dst_p) |p| self.allocator.free(p);
+            const s = src_p.?;
+            const d = dst_p.?;
+            src_p = null;
+            dst_p = null;
+            try self.appendPathLines(&lines, s, d, is_binary);
         } else {
             const f = from.?;
             var fh: [plumbing.HexSize]u8 = undefined;
@@ -218,12 +227,15 @@ pub const UnifiedEncoder = struct {
                 "index {s}..{s}",
                 .{ f.hash.string(&fh), plumbing.ZeroHash.string(&zh) },
             ));
-            try self.appendPathLines(
-                &lines,
-                try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.src_prefix, f.path }),
-                try self.allocator.dupe(u8, "/dev/null"),
-                is_binary,
-            );
+            var src_p: ?[]u8 = try std.fmt.allocPrint(self.allocator, "{s}{s}", .{ self.src_prefix, f.path });
+            errdefer if (src_p) |p| self.allocator.free(p);
+            var dst_p: ?[]u8 = try self.allocator.dupe(u8, "/dev/null");
+            errdefer if (dst_p) |p| self.allocator.free(p);
+            const s = src_p.?;
+            const d = dst_p.?;
+            src_p = null;
+            dst_p = null;
+            try self.appendPathLines(&lines, s, d, is_binary);
         }
 
         try self.w.writeAll(self.color.get(.meta));
@@ -243,22 +255,23 @@ pub const UnifiedEncoder = struct {
         to_path: []const u8,
         is_binary: bool,
     ) !void {
-        // from_path and to_path are owned; consume into lines.
+        // from_path and to_path are owned; always free them (success or error).
+        defer self.allocator.free(from_path);
+        defer self.allocator.free(to_path);
         if (is_binary) {
             const line = try std.fmt.allocPrint(
                 self.allocator,
                 "Binary files {s} and {s} differ",
                 .{ from_path, to_path },
             );
-            self.allocator.free(from_path);
-            self.allocator.free(to_path);
+            errdefer self.allocator.free(line);
             try lines.append(self.allocator, line);
             return;
         }
         const from_line = try std.fmt.allocPrint(self.allocator, "--- {s}", .{from_path});
+        errdefer self.allocator.free(from_line);
         const to_line = try std.fmt.allocPrint(self.allocator, "+++ {s}", .{to_path});
-        self.allocator.free(from_path);
-        self.allocator.free(to_path);
+        errdefer self.allocator.free(to_line);
         try lines.append(self.allocator, from_line);
         try lines.append(self.allocator, to_line);
     }
@@ -634,18 +647,66 @@ const one_chunk_chunks = [_]Chunk{
     .{ .content = "V\nW\nX\nY\nZ", .op = .equal },
 };
 
-/// Build onechunk patch. Uses a static FilePatch slot so `file_patches` is not a
-/// dangling pointer to a temporary array (Zig `&[_]T{...}` in return is UAF).
-fn oneChunkPatch() Patch {
-    const Holder = struct {
-        var buf: [1]FilePatch = undefined;
-    };
-    Holder.buf[0] = .{
+const one_chunk_inverted_chunks = [_]Chunk{
+    .{ .content = "A\n", .op = .add },
+    .{ .content = "B\nC\nD\nE\nF\nG\n", .op = .equal },
+    .{ .content = "H\n", .op = .add },
+    .{ .content = "I\nJ\nK\nL\nM\nN\n", .op = .equal },
+    .{ .content = "Ñ\n", .op = .add },
+    .{ .content = "O\nP\nQ\nR\nS\nT\n", .op = .equal },
+    .{ .content = "U\n", .op = .add },
+    .{ .content = "V\nW\nX\nY\nZ", .op = .equal },
+};
+
+const remove_last_letter_chunks = [_]Chunk{
+    .{ .content = "B\nC\nD\nE\nF\nG\nI\nJ\nK\nL\nM\nN\nO\nP\nQ\nR\nS\nT\nV\nW\nX\nY\n", .op = .equal },
+    .{ .content = "Z", .op = .delete },
+};
+
+const remove_last_letter_no_nl_chunks = [_]Chunk{
+    .{ .content = "B\nC\nD\nE\nF\nG\nI\nJ\nK\nL\nM\nN\nO\nP\nQ\nR\nS\nT\nV\nW\nX\n", .op = .equal },
+    .{ .content = "Y\nZ", .op = .delete },
+    .{ .content = "Y", .op = .add },
+};
+
+/// Fill `fps` with the onechunk delete FilePatch; Patch borrows `fps` for the call.
+fn oneChunkPatch(fps: *[1]FilePatch) Patch {
+    fps[0] = .{
         .from = testFile(filemode.Regular, "onechunk.txt", one_chunk_from_seed),
         .to = testFile(filemode.Regular, "onechunk.txt", one_chunk_to_seed),
         .chunks = &one_chunk_chunks,
     };
-    return makePatch("", Holder.buf[0..]);
+    return makePatch("", fps[0..]);
+}
+
+/// Fill `fps` with the onechunk inverted (add) FilePatch; Patch borrows `fps`.
+fn oneChunkPatchInverted(fps: *[1]FilePatch) Patch {
+    fps[0] = .{
+        .to = testFile(filemode.Regular, "onechunk.txt", one_chunk_from_seed),
+        .from = testFile(filemode.Regular, "onechunk.txt", one_chunk_to_seed),
+        .chunks = &one_chunk_inverted_chunks,
+    };
+    return makePatch("", fps[0..]);
+}
+
+/// Fill `fps` with remove-last-letter (Z) FilePatch; Patch borrows `fps`.
+fn removeLastLetterPatch(fps: *[1]FilePatch) Patch {
+    fps[0] = .{
+        .from = testFile(filemode.Regular, "onechunk.txt", one_chunk_to_seed),
+        .to = testFile(filemode.Regular, "onechunk.txt", "B\nC\nD\nE\nF\nG\nI\nJ\nK\nL\nM\nN\nO\nP\nQ\nR\nS\nT\nV\nW\nX\nY\n"),
+        .chunks = &remove_last_letter_chunks,
+    };
+    return makePatch("", fps[0..]);
+}
+
+/// Fill `fps` with remove-last-letter no-newline FilePatch; Patch borrows `fps`.
+fn removeLastLetterNoNewlinePatch(fps: *[1]FilePatch) Patch {
+    fps[0] = .{
+        .from = testFile(filemode.Regular, "onechunk.txt", one_chunk_to_seed),
+        .to = testFile(filemode.Regular, "onechunk.txt", "B\nC\nD\nE\nF\nG\nI\nJ\nK\nL\nM\nN\nO\nP\nQ\nR\nS\nT\nV\nW\nX\nY"),
+        .chunks = &remove_last_letter_no_nl_chunks,
+    };
+    return makePatch("", fps[0..]);
 }
 
 const Fixture = struct {
@@ -667,19 +728,20 @@ fn runFixture(f: Fixture) !void {
 
 test "TestBothFilesEmpty" {
     const gpa = testing.allocator;
-    const out = try encodeToString(gpa, 1, .{}, null, null, makePatch("", &[_]FilePatch{.{}}));
+    var fps = [_]FilePatch{.{}};
+    const out = try encodeToString(gpa, 1, .{}, null, null, makePatch("", fps[0..]));
     defer gpa.free(out);
     try testing.expectEqualStrings("", out);
 }
 
 test "TestBinaryFile" {
     const gpa = testing.allocator;
-    const fp = FilePatch{
+    var fps = [_]FilePatch{.{
         .from = testFile(filemode.Regular, "binary", "something"),
         .to = testFile(filemode.Regular, "binary", "otherthing"),
         .is_binary = true,
-    };
-    const out = try encodeToString(gpa, 1, .{}, null, null, makePatch("", &[_]FilePatch{fp}));
+    }};
+    const out = try encodeToString(gpa, 1, .{}, null, null, makePatch("", fps[0..]));
     defer gpa.free(out);
     try testing.expectEqualStrings(
         \\diff --git a/binary b/binary
@@ -695,6 +757,11 @@ test "positive negative number" {
         .{ .content = "world\n", .op = .delete },
         .{ .content = "bug\n", .op = .add },
     };
+    var fps = [_]FilePatch{.{
+        .from = testFile(filemode.Regular, "README.md", "hello\nworld\n"),
+        .to = testFile(filemode.Regular, "README.md", "hello\nbug\n"),
+        .chunks = &chunks,
+    }};
     try runFixture(.{
         .desc = "positive negative number",
         .context = 2,
@@ -709,15 +776,15 @@ test "positive negative number" {
         \\+bug
         \\
         ,
-        .patch = makePatch("", &[_]FilePatch{.{
-            .from = testFile(filemode.Regular, "README.md", "hello\nworld\n"),
-            .to = testFile(filemode.Regular, "README.md", "hello\nbug\n"),
-            .chunks = &chunks,
-        }}),
+        .patch = makePatch("", fps[0..]),
     });
 }
 
 test "make executable" {
+    var fps = [_]FilePatch{.{
+        .from = testFile(filemode.Regular, "test.txt", "test"),
+        .to = testFile(filemode.Executable, "test.txt", "test"),
+    }};
     try runFixture(.{
         .desc = "make executable",
         .context = 1,
@@ -727,14 +794,15 @@ test "make executable" {
         \\new mode 100755
         \\
         ,
-        .patch = makePatch("", &[_]FilePatch{.{
-            .from = testFile(filemode.Regular, "test.txt", "test"),
-            .to = testFile(filemode.Executable, "test.txt", "test"),
-        }}),
+        .patch = makePatch("", fps[0..]),
     });
 }
 
 test "rename file" {
+    var fps = [_]FilePatch{.{
+        .from = testFile(filemode.Regular, "test.txt", "test"),
+        .to = testFile(filemode.Regular, "test1.txt", "test"),
+    }};
     try runFixture(.{
         .desc = "rename file",
         .context = 1,
@@ -744,10 +812,7 @@ test "rename file" {
         \\rename to test1.txt
         \\
         ,
-        .patch = makePatch("", &[_]FilePatch{.{
-            .from = testFile(filemode.Regular, "test.txt", "test"),
-            .to = testFile(filemode.Regular, "test1.txt", "test"),
-        }}),
+        .patch = makePatch("", fps[0..]),
     });
 }
 
@@ -756,6 +821,11 @@ test "rename file with changes" {
         .{ .content = "test\n", .op = .delete },
         .{ .content = "test1\n", .op = .add },
     };
+    var fps = [_]FilePatch{.{
+        .from = testFile(filemode.Regular, "test.txt", "test\n"),
+        .to = testFile(filemode.Regular, "test1.txt", "test1\n"),
+        .chunks = &chunks,
+    }};
     try runFixture(.{
         .desc = "rename file with changes",
         .context = 1,
@@ -771,15 +841,15 @@ test "rename file with changes" {
         \\+test1
         \\
         ,
-        .patch = makePatch("", &[_]FilePatch{.{
-            .from = testFile(filemode.Regular, "test.txt", "test\n"),
-            .to = testFile(filemode.Regular, "test1.txt", "test1\n"),
-            .chunks = &chunks,
-        }}),
+        .patch = makePatch("", fps[0..]),
     });
 }
 
 test "rename with file mode change" {
+    var fps = [_]FilePatch{.{
+        .from = testFile(filemode.Regular, "test.txt", "test"),
+        .to = testFile(filemode.Executable, "test1.txt", "test"),
+    }};
     try runFixture(.{
         .desc = "rename with file mode change",
         .context = 1,
@@ -791,10 +861,7 @@ test "rename with file mode change" {
         \\rename to test1.txt
         \\
         ,
-        .patch = makePatch("", &[_]FilePatch{.{
-            .from = testFile(filemode.Regular, "test.txt", "test"),
-            .to = testFile(filemode.Executable, "test1.txt", "test"),
-        }}),
+        .patch = makePatch("", fps[0..]),
     });
 }
 
@@ -803,6 +870,11 @@ test "one line change" {
         .{ .content = "test\n", .op = .delete },
         .{ .content = "test2\n", .op = .add },
     };
+    var fps = [_]FilePatch{.{
+        .from = testFile(filemode.Regular, "test.txt", "test\n"),
+        .to = testFile(filemode.Regular, "test.txt", "test2\n"),
+        .chunks = &chunks,
+    }};
     try runFixture(.{
         .desc = "one line change",
         .context = 1,
@@ -816,11 +888,7 @@ test "one line change" {
         \\+test2
         \\
         ,
-        .patch = makePatch("", &[_]FilePatch{.{
-            .from = testFile(filemode.Regular, "test.txt", "test\n"),
-            .to = testFile(filemode.Regular, "test.txt", "test2\n"),
-            .chunks = &chunks,
-        }}),
+        .patch = makePatch("", fps[0..]),
     });
 }
 
@@ -829,6 +897,11 @@ test "one line change with message" {
         .{ .content = "test\n", .op = .delete },
         .{ .content = "test2\n", .op = .add },
     };
+    var fps = [_]FilePatch{.{
+        .from = testFile(filemode.Regular, "test.txt", "test\n"),
+        .to = testFile(filemode.Regular, "test.txt", "test2\n"),
+        .chunks = &chunks,
+    }};
     try runFixture(.{
         .desc = "one line change with message",
         .context = 1,
@@ -843,11 +916,7 @@ test "one line change with message" {
         \\+test2
         \\
         ,
-        .patch = makePatch("this is the message\n", &[_]FilePatch{.{
-            .from = testFile(filemode.Regular, "test.txt", "test\n"),
-            .to = testFile(filemode.Regular, "test.txt", "test2\n"),
-            .chunks = &chunks,
-        }}),
+        .patch = makePatch("this is the message\n", fps[0..]),
     });
 }
 
@@ -856,6 +925,11 @@ test "one line change with message and no end of line" {
         .{ .content = "test", .op = .delete },
         .{ .content = "test2", .op = .add },
     };
+    var fps = [_]FilePatch{.{
+        .from = testFile(filemode.Regular, "test.txt", "test"),
+        .to = testFile(filemode.Regular, "test.txt", "test2"),
+        .chunks = &chunks,
+    }};
     try runFixture(.{
         .desc = "one line change with message and no end of line",
         .context = 1,
@@ -872,11 +946,7 @@ test "one line change with message and no end of line" {
         \\\ No newline at end of file
         \\
         ,
-        .patch = makePatch("this is the message", &[_]FilePatch{.{
-            .from = testFile(filemode.Regular, "test.txt", "test"),
-            .to = testFile(filemode.Regular, "test.txt", "test2"),
-            .chunks = &chunks,
-        }}),
+        .patch = makePatch("this is the message", fps[0..]),
     });
 }
 
@@ -884,6 +954,10 @@ test "new file" {
     const chunks = [_]Chunk{
         .{ .content = "test\ntest2\ntest3", .op = .add },
     };
+    var fps = [_]FilePatch{.{
+        .to = testFile(filemode.Regular, "new.txt", "test\ntest2\ntest3"),
+        .chunks = &chunks,
+    }};
     try runFixture(.{
         .desc = "new file",
         .context = 1,
@@ -900,10 +974,7 @@ test "new file" {
         \\\ No newline at end of file
         \\
         ,
-        .patch = makePatch("", &[_]FilePatch{.{
-            .to = testFile(filemode.Regular, "new.txt", "test\ntest2\ntest3"),
-            .chunks = &chunks,
-        }}),
+        .patch = makePatch("", fps[0..]),
     });
 }
 
@@ -911,6 +982,10 @@ test "delete file" {
     const chunks = [_]Chunk{
         .{ .content = "test", .op = .delete },
     };
+    var fps = [_]FilePatch{.{
+        .from = testFile(filemode.Regular, "old.txt", "test"),
+        .chunks = &chunks,
+    }};
     try runFixture(.{
         .desc = "delete file",
         .context = 1,
@@ -925,10 +1000,7 @@ test "delete file" {
         \\\ No newline at end of file
         \\
         ,
-        .patch = makePatch("", &[_]FilePatch{.{
-            .from = testFile(filemode.Regular, "old.txt", "test"),
-            .chunks = &chunks,
-        }}),
+        .patch = makePatch("", fps[0..]),
     });
 }
 
@@ -938,6 +1010,11 @@ test "positive negative number with color" {
         .{ .content = "world\n", .op = .delete },
         .{ .content = "bug\n", .op = .add },
     };
+    var fps = [_]FilePatch{.{
+        .from = testFile(filemode.Regular, "README.md", "hello\nworld\n"),
+        .to = testFile(filemode.Regular, "README.md", "hello\nbug\n"),
+        .chunks = &chunks,
+    }};
     const expected = color_mod.Bold ++
         "diff --git a/README.md b/README.md\n" ++
         "index 94954abda49de8615a048f8d2e64b5de848e27a1..f3dad9514629b9ff9136283ae331ad1fc95748a8 100644\n" ++
@@ -953,11 +1030,7 @@ test "positive negative number with color" {
         .use_color = true,
         .color = colorconfig.newColorConfig(&.{}),
         .diff = expected,
-        .patch = makePatch("", &[_]FilePatch{.{
-            .from = testFile(filemode.Regular, "README.md", "hello\nworld\n"),
-            .to = testFile(filemode.Regular, "README.md", "hello\nbug\n"),
-            .chunks = &chunks,
-        }}),
+        .patch = makePatch("", fps[0..]),
     });
 }
 
@@ -972,13 +1045,16 @@ test "newColorConfig defaults and WithColor" {
 }
 
 
-// --- onechunk delete fixtures (context 0–6) ---
-
 test "one line change with color" {
     const chunks = [_]Chunk{
         .{ .content = "test\n", .op = .delete },
         .{ .content = "test2\n", .op = .add },
     };
+    var fps = [_]FilePatch{.{
+        .from = testFile(filemode.Regular, "test.txt", "test\n"),
+        .to = testFile(filemode.Regular, "test.txt", "test2\n"),
+        .chunks = &chunks,
+    }};
     const expected = color_mod.Bold ++
         "diff --git a/test.txt b/test.txt\n" ++
         "index 9daeafb9864cf43055ae93beb0afd6c7d144bfa4..180cf8328022becee9aaa2577a8f84ea2b9f3827 100644\n" ++
@@ -995,11 +1071,491 @@ test "one line change with color" {
             colorconfig.withColor(.func, color_mod.Reverse),
         }),
         .diff = expected,
-        .patch = makePatch("", &[_]FilePatch{.{
-            .from = testFile(filemode.Regular, "test.txt", "test\n"),
-            .to = testFile(filemode.Regular, "test.txt", "test2\n"),
-            .chunks = &chunks,
-        }}),
+        .patch = makePatch("", fps[0..]),
+    });
+}
+
+// --- onechunk delete fixtures (context 0,1,2,3,4,6) — go-git exact ---
+
+test "modified deleting lines file with context to 0" {
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "modified deleting lines file with context to 0",
+        .context = 0,
+        .diff =
+        \\diff --git a/onechunk.txt b/onechunk.txt
+        \\index ab5eed5d4a2c33aeef67e0188ee79bed666bde6f..0adddcde4fd38042c354518351820eb06c417c82 100644
+        \\--- a/onechunk.txt
+        \\+++ b/onechunk.txt
+        \\@@ -1 +0,0 @@
+        \\-A
+        \\@@ -8 +6,0 @@ G
+        \\-H
+        \\@@ -15 +12,0 @@ N
+        \\-Ñ
+        \\@@ -22 +18,0 @@ T
+        \\-U
+        \\
+        ,
+        .patch = oneChunkPatch(&fps),
+    });
+}
+
+test "modified deleting lines file with context to 1" {
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "modified deleting lines file with context to 1",
+        .context = 1,
+        .diff =
+        \\diff --git a/onechunk.txt b/onechunk.txt
+        \\index ab5eed5d4a2c33aeef67e0188ee79bed666bde6f..0adddcde4fd38042c354518351820eb06c417c82 100644
+        \\--- a/onechunk.txt
+        \\+++ b/onechunk.txt
+        \\@@ -1,2 +1 @@
+        \\-A
+        \\ B
+        \\@@ -7,3 +6,2 @@ F
+        \\ G
+        \\-H
+        \\ I
+        \\@@ -14,3 +12,2 @@ M
+        \\ N
+        \\-Ñ
+        \\ O
+        \\@@ -21,3 +18,2 @@ S
+        \\ T
+        \\-U
+        \\ V
+        \\
+        ,
+        .patch = oneChunkPatch(&fps),
+    });
+}
+
+test "modified deleting lines file with context to 2" {
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "modified deleting lines file with context to 2",
+        .context = 2,
+        .diff =
+        \\diff --git a/onechunk.txt b/onechunk.txt
+        \\index ab5eed5d4a2c33aeef67e0188ee79bed666bde6f..0adddcde4fd38042c354518351820eb06c417c82 100644
+        \\--- a/onechunk.txt
+        \\+++ b/onechunk.txt
+        \\@@ -1,3 +1,2 @@
+        \\-A
+        \\ B
+        \\ C
+        \\@@ -6,5 +5,4 @@ E
+        \\ F
+        \\ G
+        \\-H
+        \\ I
+        \\ J
+        \\@@ -13,5 +11,4 @@ L
+        \\ M
+        \\ N
+        \\-Ñ
+        \\ O
+        \\ P
+        \\@@ -20,5 +17,4 @@ R
+        \\ S
+        \\ T
+        \\-U
+        \\ V
+        \\ W
+        \\
+        ,
+        .patch = oneChunkPatch(&fps),
+    });
+}
+
+test "modified deleting lines file with context to 3" {
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "modified deleting lines file with context to 3",
+        .context = 3,
+        .diff =
+        \\diff --git a/onechunk.txt b/onechunk.txt
+        \\index ab5eed5d4a2c33aeef67e0188ee79bed666bde6f..0adddcde4fd38042c354518351820eb06c417c82 100644
+        \\--- a/onechunk.txt
+        \\+++ b/onechunk.txt
+        \\@@ -1,25 +1,21 @@
+        \\-A
+        \\ B
+        \\ C
+        \\ D
+        \\ E
+        \\ F
+        \\ G
+        \\-H
+        \\ I
+        \\ J
+        \\ K
+        \\ L
+        \\ M
+        \\ N
+        \\-Ñ
+        \\ O
+        \\ P
+        \\ Q
+        \\ R
+        \\ S
+        \\ T
+        \\-U
+        \\ V
+        \\ W
+        \\ X
+        \\
+        ,
+        .patch = oneChunkPatch(&fps),
+    });
+}
+
+test "modified deleting lines file with context to 4" {
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "modified deleting lines file with context to 4",
+        .context = 4,
+        .diff =
+        \\diff --git a/onechunk.txt b/onechunk.txt
+        \\index ab5eed5d4a2c33aeef67e0188ee79bed666bde6f..0adddcde4fd38042c354518351820eb06c417c82 100644
+        \\--- a/onechunk.txt
+        \\+++ b/onechunk.txt
+        \\@@ -1,26 +1,22 @@
+        \\-A
+        \\ B
+        \\ C
+        \\ D
+        \\ E
+        \\ F
+        \\ G
+        \\-H
+        \\ I
+        \\ J
+        \\ K
+        \\ L
+        \\ M
+        \\ N
+        \\-Ñ
+        \\ O
+        \\ P
+        \\ Q
+        \\ R
+        \\ S
+        \\ T
+        \\-U
+        \\ V
+        \\ W
+        \\ X
+        \\ Y
+        \\
+        ,
+        .patch = oneChunkPatch(&fps),
+    });
+}
+
+test "modified deleting lines file with context to 6" {
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "modified deleting lines file with context to 6",
+        .context = 6,
+        .diff =
+        \\diff --git a/onechunk.txt b/onechunk.txt
+        \\index ab5eed5d4a2c33aeef67e0188ee79bed666bde6f..0adddcde4fd38042c354518351820eb06c417c82 100644
+        \\--- a/onechunk.txt
+        \\+++ b/onechunk.txt
+        \\@@ -1,27 +1,23 @@
+        \\-A
+        \\ B
+        \\ C
+        \\ D
+        \\ E
+        \\ F
+        \\ G
+        \\-H
+        \\ I
+        \\ J
+        \\ K
+        \\ L
+        \\ M
+        \\ N
+        \\-Ñ
+        \\ O
+        \\ P
+        \\ Q
+        \\ R
+        \\ S
+        \\ T
+        \\-U
+        \\ V
+        \\ W
+        \\ X
+        \\ Y
+        \\ Z
+        \\\ No newline at end of file
+        \\
+        ,
+        .patch = oneChunkPatch(&fps),
+    });
+}
+
+// --- onechunk inverted (add) fixtures (context 0,1,2,3,4) — go-git exact ---
+
+test "modified adding lines file with context to 0" {
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "modified adding lines file with context to 0",
+        .context = 0,
+        .diff =
+        \\diff --git a/onechunk.txt b/onechunk.txt
+        \\index 0adddcde4fd38042c354518351820eb06c417c82..ab5eed5d4a2c33aeef67e0188ee79bed666bde6f 100644
+        \\--- a/onechunk.txt
+        \\+++ b/onechunk.txt
+        \\@@ -0,0 +1 @@
+        \\+A
+        \\@@ -6,0 +8 @@ G
+        \\+H
+        \\@@ -12,0 +15 @@ N
+        \\+Ñ
+        \\@@ -18,0 +22 @@ T
+        \\+U
+        \\
+        ,
+        .patch = oneChunkPatchInverted(&fps),
+    });
+}
+
+test "modified adding lines file with context to 1" {
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "modified adding lines file with context to 1",
+        .context = 1,
+        .diff =
+        \\diff --git a/onechunk.txt b/onechunk.txt
+        \\index 0adddcde4fd38042c354518351820eb06c417c82..ab5eed5d4a2c33aeef67e0188ee79bed666bde6f 100644
+        \\--- a/onechunk.txt
+        \\+++ b/onechunk.txt
+        \\@@ -1 +1,2 @@
+        \\+A
+        \\ B
+        \\@@ -6,2 +7,3 @@ F
+        \\ G
+        \\+H
+        \\ I
+        \\@@ -12,2 +14,3 @@ M
+        \\ N
+        \\+Ñ
+        \\ O
+        \\@@ -18,2 +21,3 @@ S
+        \\ T
+        \\+U
+        \\ V
+        \\
+        ,
+        .patch = oneChunkPatchInverted(&fps),
+    });
+}
+
+test "modified adding lines file with context to 2" {
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "modified adding lines file with context to 2",
+        .context = 2,
+        .diff =
+        \\diff --git a/onechunk.txt b/onechunk.txt
+        \\index 0adddcde4fd38042c354518351820eb06c417c82..ab5eed5d4a2c33aeef67e0188ee79bed666bde6f 100644
+        \\--- a/onechunk.txt
+        \\+++ b/onechunk.txt
+        \\@@ -1,2 +1,3 @@
+        \\+A
+        \\ B
+        \\ C
+        \\@@ -5,4 +6,5 @@ E
+        \\ F
+        \\ G
+        \\+H
+        \\ I
+        \\ J
+        \\@@ -11,4 +13,5 @@ L
+        \\ M
+        \\ N
+        \\+Ñ
+        \\ O
+        \\ P
+        \\@@ -17,4 +20,5 @@ R
+        \\ S
+        \\ T
+        \\+U
+        \\ V
+        \\ W
+        \\
+        ,
+        .patch = oneChunkPatchInverted(&fps),
+    });
+}
+
+test "modified adding lines file with context to 3" {
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "modified adding lines file with context to 3",
+        .context = 3,
+        .diff =
+        \\diff --git a/onechunk.txt b/onechunk.txt
+        \\index 0adddcde4fd38042c354518351820eb06c417c82..ab5eed5d4a2c33aeef67e0188ee79bed666bde6f 100644
+        \\--- a/onechunk.txt
+        \\+++ b/onechunk.txt
+        \\@@ -1,21 +1,25 @@
+        \\+A
+        \\ B
+        \\ C
+        \\ D
+        \\ E
+        \\ F
+        \\ G
+        \\+H
+        \\ I
+        \\ J
+        \\ K
+        \\ L
+        \\ M
+        \\ N
+        \\+Ñ
+        \\ O
+        \\ P
+        \\ Q
+        \\ R
+        \\ S
+        \\ T
+        \\+U
+        \\ V
+        \\ W
+        \\ X
+        \\
+        ,
+        .patch = oneChunkPatchInverted(&fps),
+    });
+}
+
+test "modified adding lines file with context to 4" {
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "modified adding lines file with context to 4",
+        .context = 4,
+        .diff =
+        \\diff --git a/onechunk.txt b/onechunk.txt
+        \\index 0adddcde4fd38042c354518351820eb06c417c82..ab5eed5d4a2c33aeef67e0188ee79bed666bde6f 100644
+        \\--- a/onechunk.txt
+        \\+++ b/onechunk.txt
+        \\@@ -1,22 +1,26 @@
+        \\+A
+        \\ B
+        \\ C
+        \\ D
+        \\ E
+        \\ F
+        \\ G
+        \\+H
+        \\ I
+        \\ J
+        \\ K
+        \\ L
+        \\ M
+        \\ N
+        \\+Ñ
+        \\ O
+        \\ P
+        \\ Q
+        \\ R
+        \\ S
+        \\ T
+        \\+U
+        \\ V
+        \\ W
+        \\ X
+        \\ Y
+        \\
+        ,
+        .patch = oneChunkPatchInverted(&fps),
+    });
+}
+
+// --- last-letter cases ---
+
+test "remove last letter" {
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "remove last letter",
+        .context = 0,
+        .diff =
+        \\diff --git a/onechunk.txt b/onechunk.txt
+        \\index 0adddcde4fd38042c354518351820eb06c417c82..553ae669c7a9303cf848fcc749a2569228ac5309 100644
+        \\--- a/onechunk.txt
+        \\+++ b/onechunk.txt
+        \\@@ -23 +22,0 @@ Y
+        \\-Z
+        \\\ No newline at end of file
+        \\
+        ,
+        .patch = removeLastLetterPatch(&fps),
+    });
+}
+
+test "remove last letter and no newline at end of file" {
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "remove last letter and no newline at end of file",
+        .context = 0,
+        .diff =
+        \\diff --git a/onechunk.txt b/onechunk.txt
+        \\index 0adddcde4fd38042c354518351820eb06c417c82..d39ae38aad7ba9447b5e7998b2e4714f26c9218d 100644
+        \\--- a/onechunk.txt
+        \\+++ b/onechunk.txt
+        \\@@ -22,2 +21 @@ X
+        \\-Y
+        \\-Z
+        \\\ No newline at end of file
+        \\+Y
+        \\\ No newline at end of file
+        \\
+        ,
+        .patch = removeLastLetterNoNewlinePatch(&fps),
+    });
+}
+
+// --- onechunk color variant ---
+
+test "modified deleting lines file with context to 1 with color" {
+    const expected = color_mod.Bold ++
+        "diff --git a/onechunk.txt b/onechunk.txt\n" ++
+        "index ab5eed5d4a2c33aeef67e0188ee79bed666bde6f..0adddcde4fd38042c354518351820eb06c417c82 100644\n" ++
+        "--- a/onechunk.txt\n" ++
+        "+++ b/onechunk.txt" ++ color_mod.Reset ++ "\n" ++
+        color_mod.Cyan ++ "@@ -1,2 +1 @@" ++ color_mod.Reset ++ "\n" ++
+        color_mod.Red ++ "-A" ++ color_mod.Reset ++ "\n" ++
+        " B\n" ++
+        color_mod.Cyan ++ "@@ -7,3 +6,2 @@" ++ color_mod.Reset ++ " " ++ color_mod.Reverse ++ "F" ++ color_mod.Reset ++ "\n" ++
+        " G\n" ++
+        color_mod.Red ++ "-H" ++ color_mod.Reset ++ "\n" ++
+        " I\n" ++
+        color_mod.Cyan ++ "@@ -14,3 +12,2 @@" ++ color_mod.Reset ++ " " ++ color_mod.Reverse ++ "M" ++ color_mod.Reset ++ "\n" ++
+        " N\n" ++
+        color_mod.Red ++ "-Ñ" ++ color_mod.Reset ++ "\n" ++
+        " O\n" ++
+        color_mod.Cyan ++ "@@ -21,3 +18,2 @@" ++ color_mod.Reset ++ " " ++ color_mod.Reverse ++ "S" ++ color_mod.Reset ++ "\n" ++
+        " T\n" ++
+        color_mod.Red ++ "-U" ++ color_mod.Reset ++ "\n" ++
+        " V\n";
+    var fps: [1]FilePatch = undefined;
+    try runFixture(.{
+        .desc = "modified deleting lines file with context to 1 with color",
+        .context = 1,
+        .use_color = true,
+        .color = colorconfig.newColorConfig(&.{
+            colorconfig.withColor(.func, color_mod.Reverse),
+        }),
+        .diff = expected,
+        .patch = oneChunkPatch(&fps),
     });
 }
 
@@ -1032,85 +1588,28 @@ test "splitLines keeps trailing newlines and strips empty tail" {
     }
 }
 
-// Silence unused import if color_mod only used in color tests (always used).
-
-
-test "generate only onechunk context 0" {
+test "TestCustomSrcDstPrefix" {
     const gpa = testing.allocator;
-    var gen = HunksGenerator.init(gpa, &one_chunk_chunks, 0);
-    defer gen.deinit();
-    const hunks = try gen.generate();
-    try testing.expect(hunks.len >= 1);
-}
-
-
-test "writeTo onechunk context 0 no header" {
-    const gpa = testing.allocator;
-    var gen = HunksGenerator.init(gpa, &one_chunk_chunks, 0);
-    defer gen.deinit();
-    const hunks = try gen.generate();
-    var aw: Writer.Allocating = .init(gpa);
-    defer aw.deinit();
-    for (hunks) |h| {
-        try h.writeTo(&aw.writer, .{});
-    }
-    const out = aw.written();
-    try testing.expect(out.len > 10);
-}
-
-
-test "header only onechunk" {
-    const gpa = testing.allocator;
-    const patch = oneChunkPatch();
-    var aw: Writer.Allocating = .init(gpa);
-    defer aw.deinit();
-    var e = UnifiedEncoder.init(gpa, &aw.writer, 0);
-    // only header
-    for (patch.file_patches) |fp| {
-        try e.writeFilePatchHeader(fp);
-    }
-    const out = aw.written();
-    try testing.expect(std.mem.startsWith(u8, out, "diff --git"));
-}
-
-
-
-
-
-test "encode multi-hunk simple no N" {
-    const gpa = testing.allocator;
-    const chunks = [_]Chunk{
-        .{ .content = "A\n", .op = .delete },
-        .{ .content = "B\nC\n", .op = .equal },
-        .{ .content = "D\n", .op = .delete },
-        .{ .content = "E\n", .op = .equal },
-    };
-    const patch = makePatch("", &[_]FilePatch{.{
-        .from = testFile(filemode.Regular, "f.txt", "A\nB\nC\nD\nE\n"),
-        .to = testFile(filemode.Regular, "f.txt", "B\nC\nE\n"),
-        .chunks = &chunks,
-    }});
-    const out = try encodeToString(gpa, 0, .{}, null, null, patch);
+    var fps = [_]FilePatch{.{
+        .from = testFile(filemode.Regular, "binary", "something"),
+        .to = testFile(filemode.Regular, "binary", "otherthing"),
+        .is_binary = true,
+    }};
+    const out = try encodeToString(
+        gpa,
+        1,
+        .{},
+        "source/prefix/",
+        "dest/prefix/",
+        makePatch("", fps[0..]),
+    );
     defer gpa.free(out);
-    try testing.expect(std.mem.indexOf(u8, out, "@@") != null);
-}
-
-
-test "encode onechunk full context 0" {
-    const gpa = testing.allocator;
-    const out = try encodeToString(gpa, 0, .{}, null, null, oneChunkPatch());
-    defer gpa.free(out);
-    try testing.expect(std.mem.startsWith(u8, out, "diff --git"));
-    try testing.expect(std.mem.indexOf(u8, out, "@@") != null);
-}
-test "encode onechunk full context 1" {
-    const gpa = testing.allocator;
-    const out = try encodeToString(gpa, 1, .{}, null, null, oneChunkPatch());
-    defer gpa.free(out);
-    try testing.expect(std.mem.indexOf(u8, out, "@@") != null);
-}
-comptime {
-    _ = color_mod;
+    try testing.expectEqualStrings(
+        \\diff --git source/prefix/binary dest/prefix/binary
+        \\index a459bc245bdbc45e1bca99e7fe61731da5c48da4..6879395eacf3cc7e5634064ccb617ac7aa62be7d 100644
+        \\Binary files source/prefix/binary and dest/prefix/binary differ
+        \\
+    , out);
 }
 
 

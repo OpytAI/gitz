@@ -5,14 +5,65 @@ require:
   types:
     - Revisioner
     - Parser
+    - Ref
+    - TildePath
+    - CaretPath
+    - CaretReg
+    - CaretType
+    - AtReflog
+    - AtCheckout
+    - AtUpstream
+    - AtPush
+    - AtDate
+    - ColonReg
+    - ColonPath
+    - ColonStagePath
+    - Token
+    - Scanner
+    - ErrInvalidRevision
   functions:
     - newParserFromString
+    - NewParser
   constants: []
   semantic:
     - Revisioner
     - Parser
     - newParserFromString
+    - newParser
+    - Ref
+    - TildePath
+    - CaretPath
+    - CaretReg
+    - CaretType
+    - AtReflog
+    - AtCheckout
+    - AtUpstream
+    - AtPush
+    - AtDate
+    - ColonReg
+    - ColonPath
+    - ColonStagePath
+    - Token
+    - Scanner
+    - ErrInvalidRevision
 zig_map:
   Revisioner: Revisioner
   Parser: Parser
   NewParserFromString: newParserFromString
+  NewParser: newParser
+  Ref: Ref
+  TildePath: TildePath
+  CaretPath: CaretPath
+  CaretReg: CaretReg
+  CaretType: CaretType
+  AtReflog: AtReflog
+  AtCheckout: AtCheckout
+  AtUpstream: AtUpstream
+  AtPush: AtPush
+  AtDate: AtDate
+  ColonReg: ColonReg
+  ColonPath: ColonPath
+  ColonStagePath: ColonStagePath
+  Token: Token
+  Scanner: Scanner
+  ErrInvalidRevision: ErrInvalidRevision

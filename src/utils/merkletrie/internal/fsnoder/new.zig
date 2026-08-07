@@ -192,26 +192,314 @@ fn validFileContents(s: []const u8) bool {
     return true;
 }
 
-test "fsnoder New basic" {
-    const a = std.testing.allocator;
-    var t = try New(a, "(a<1> b<2>)");
-    defer t.deinit(a);
-    try std.testing.expect(t.noder().isDir());
-    try std.testing.expectEqual(@as(usize, 2), try t.noder().numChildren());
-    const s = try t.string(a);
-    defer a.free(s);
-    // children sorted: a then b
-    try std.testing.expectEqualStrings("(a<1> b<2>)", s);
+// ---------------------------------------------------------------------------
+// Tests — go-git `internal/fsnoder/new_test.go` (FSNoderSuite)
+// ---------------------------------------------------------------------------
+
+fn emptyKids() []Child {
+    return @constCast(&[_]Child{});
 }
 
-test "fsnoder HashEqual" {
+// go-git check helper: New(input) hash equals expected dir hash
+fn check(allocator: Allocator, input: []const u8, expected: *Dir) !void {
+    var obtained = try New(allocator, input);
+    defer obtained.deinit(allocator);
+    try std.testing.expectEqualSlices(u8, expected.hash(), obtained.root.hash());
+}
+
+// go-git asserts err != nil without caring about the concrete error type
+fn expectAnyError(result: anytype) !void {
+    if (result) |_| return error.TestExpectedError else |_| {}
+}
+
+// go-git FSNoderSuite.TestNoDataFails
+test "FSNoder NoDataFails" {
     const a = std.testing.allocator;
-    var t1 = try New(a, "(a<1>)");
+    try std.testing.expectError(Error.EmptyInput, New(a, ""));
+    try std.testing.expectError(Error.EmptyInput, New(a, " \t")); // SPC + TAB
+}
+
+// go-git FSNoderSuite.TestUnnamedRootFailsIfNotRoot
+test "FSNoder UnnamedRootFailsIfNotRoot" {
+    const a = std.testing.allocator;
+    try std.testing.expectError(Error.UnnamedInnerDir, decodeDir(a, "()", false));
+}
+
+// go-git FSNoderSuite.TestUnnamedInnerFails
+test "FSNoder UnnamedInnerFails" {
+    const a = std.testing.allocator;
+    // New may wrap UnnamedInnerDir inside a generic anyerror from decodeChild path
+    try expectAnyError(New(a, "(())"));
+    try expectAnyError(New(a, "((a<>))"));
+}
+
+// go-git FSNoderSuite.TestMalformedFile
+test "FSNoder MalformedFile" {
+    const a = std.testing.allocator;
+    try expectAnyError(New(a, "(4<>)"));
+    try expectAnyError(New(a, "(4<1>)"));
+    try expectAnyError(New(a, "(4?1>)"));
+    try expectAnyError(New(a, "(4<a>)"));
+    try expectAnyError(New(a, "(4<a?)"));
+
+    try expectAnyError(decodeFile(a, "a?1>"));
+    try expectAnyError(decodeFile(a, "a<a>"));
+    try expectAnyError(decodeFile(a, "a<1?"));
+    try expectAnyError(decodeFile(a, "a?>"));
+    try expectAnyError(decodeFile(a, "1<>"));
+    try expectAnyError(decodeFile(a, "a<?"));
+}
+
+// go-git FSNoderSuite.TestMalformedRootFails
+test "FSNoder MalformedRootFails" {
+    const a = std.testing.allocator;
+    try expectAnyError(New(a, ")"));
+    try expectAnyError(New(a, "("));
+    try expectAnyError(New(a, "(a<>"));
+    try expectAnyError(New(a, "a<>"));
+}
+
+// go-git FSNoderSuite.TestUnnamedEmptyRoot
+test "FSNoder UnnamedEmptyRoot" {
+    const a = std.testing.allocator;
+    const expected = try Dir.init(a, "", emptyKids());
+    defer expected.deinit();
+    try check(a, "()", expected);
+}
+
+// go-git FSNoderSuite.TestNamedEmptyRoot
+test "FSNoder NamedEmptyRoot" {
+    const a = std.testing.allocator;
+    const expected = try Dir.init(a, "a", emptyKids());
+    defer expected.deinit();
+    try check(a, "a()", expected);
+}
+
+// go-git FSNoderSuite.TestEmptyFile
+test "FSNoder EmptyFile" {
+    const a = std.testing.allocator;
+    const a1 = try File.init(a, "a", "");
+    var kids = [_]Child{.{ .file = a1 }};
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(a<>)", expected);
+}
+
+// go-git FSNoderSuite.TestNonEmptyFile
+test "FSNoder NonEmptyFile" {
+    const a = std.testing.allocator;
+    const a1 = try File.init(a, "a", "1");
+    var kids = [_]Child{.{ .file = a1 }};
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(a<1>)", expected);
+}
+
+// go-git FSNoderSuite.TestTwoFilesSameContents
+test "FSNoder TwoFilesSameContents" {
+    const a = std.testing.allocator;
+    const a1 = try File.init(a, "a", "1");
+    const b1 = try File.init(a, "b", "1");
+    var kids = [_]Child{ .{ .file = a1 }, .{ .file = b1 } };
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(b<1> a<1>)", expected);
+}
+
+// go-git FSNoderSuite.TestTwoFilesDifferentContents
+test "FSNoder TwoFilesDifferentContents" {
+    const a = std.testing.allocator;
+    const a1 = try File.init(a, "a", "1");
+    const b2 = try File.init(a, "b", "2");
+    var kids = [_]Child{ .{ .file = a1 }, .{ .file = b2 } };
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(b<2> a<1>)", expected);
+}
+
+// go-git FSNoderSuite.TestManyFiles
+test "FSNoder ManyFiles" {
+    const a = std.testing.allocator;
+    const a1 = try File.init(a, "a", "1");
+    const b2 = try File.init(a, "b", "2");
+    const c1 = try File.init(a, "c", "1");
+    const d3 = try File.init(a, "d", "3");
+    const e1 = try File.init(a, "e", "1");
+    const f4 = try File.init(a, "f", "4");
+    var kids = [_]Child{
+        .{ .file = e1 }, .{ .file = b2 }, .{ .file = a1 },
+        .{ .file = c1 }, .{ .file = d3 }, .{ .file = f4 },
+    };
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(e<1> b<2> a<1> c<1> d<3> f<4>)", expected);
+}
+
+// go-git FSNoderSuite.TestEmptyDir
+test "FSNoder EmptyDir" {
+    const a = std.testing.allocator;
+    const A = try Dir.init(a, "A", emptyKids());
+    var kids = [_]Child{.{ .dir = A }};
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(A())", expected);
+}
+
+// go-git FSNoderSuite.TestDirWithEmptyFile
+test "FSNoder DirWithEmptyFile" {
+    const a = std.testing.allocator;
+    const f = try File.init(a, "a", "");
+    var ak = [_]Child{.{ .file = f }};
+    const A = try Dir.init(a, "A", &ak);
+    var kids = [_]Child{.{ .dir = A }};
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(A(a<>))", expected);
+}
+
+// go-git FSNoderSuite.TestDirWithEmptyFileSameName
+test "FSNoder DirWithEmptyFileSameName" {
+    const a = std.testing.allocator;
+    const f = try File.init(a, "A", "");
+    var ak = [_]Child{.{ .file = f }};
+    const A = try Dir.init(a, "A", &ak);
+    var kids = [_]Child{.{ .dir = A }};
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(A(A<>))", expected);
+}
+
+// go-git FSNoderSuite.TestDirWithFileLongContents
+test "FSNoder DirWithFileLongContents" {
+    const a = std.testing.allocator;
+    const a1 = try File.init(a, "a", "12");
+    var ak = [_]Child{.{ .file = a1 }};
+    const A = try Dir.init(a, "A", &ak);
+    var kids = [_]Child{.{ .dir = A }};
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(A(a<12>))", expected);
+}
+
+// go-git FSNoderSuite.TestDirWithFileLongName
+test "FSNoder DirWithFileLongName" {
+    const a = std.testing.allocator;
+    const a1 = try File.init(a, "abc", "12");
+    var ak = [_]Child{.{ .file = a1 }};
+    const A = try Dir.init(a, "A", &ak);
+    var kids = [_]Child{.{ .dir = A }};
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(A(abc<12>))", expected);
+}
+
+// go-git FSNoderSuite.TestDirWithFile
+test "FSNoder DirWithFile" {
+    const a = std.testing.allocator;
+    const a1 = try File.init(a, "a", "1");
+    var ak = [_]Child{.{ .file = a1 }};
+    const A = try Dir.init(a, "A", &ak);
+    var kids = [_]Child{.{ .dir = A }};
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(A(a<1>))", expected);
+}
+
+// go-git FSNoderSuite.TestDirWithEmptyDirSameName
+test "FSNoder DirWithEmptyDirSameName" {
+    const a = std.testing.allocator;
+    const A2 = try Dir.init(a, "A", emptyKids());
+    var ak = [_]Child{.{ .dir = A2 }};
+    const A1 = try Dir.init(a, "A", &ak);
+    var kids = [_]Child{.{ .dir = A1 }};
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(A(A()))", expected);
+}
+
+// go-git FSNoderSuite.TestDirWithEmptyDir
+test "FSNoder DirWithEmptyDir" {
+    const a = std.testing.allocator;
+    const B = try Dir.init(a, "B", emptyKids());
+    var ak = [_]Child{.{ .dir = B }};
+    const A = try Dir.init(a, "A", &ak);
+    var kids = [_]Child{.{ .dir = A }};
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(A(B()))", expected);
+}
+
+// go-git FSNoderSuite.TestDirWithTwoFiles
+test "FSNoder DirWithTwoFiles" {
+    const a = std.testing.allocator;
+    const a1 = try File.init(a, "a", "1");
+    const b2 = try File.init(a, "b", "2");
+    var ak = [_]Child{ .{ .file = b2 }, .{ .file = a1 } };
+    const A = try Dir.init(a, "A", &ak);
+    var kids = [_]Child{.{ .dir = A }};
+    const expected = try Dir.init(a, "", &kids);
+    defer expected.deinit();
+    try check(a, "(A(a<1> b<2>))", expected);
+}
+
+// go-git FSNoderSuite.TestCrazy
+test "FSNoder Crazy" {
+    const a = std.testing.allocator;
+    //           ""
+    //            |
+    //   -------------------------
+    //   |    |      |      |    |
+    //  a1    B     c1     d2    E
+    //        |                  |
+    //   -------------           E
+    //   |   |   |   |           |
+    //   A   B   X   c1          E
+    //           |               |
+    //          a1               e1
+    const e1 = try File.init(a, "e", "1");
+    var ek1 = [_]Child{.{ .file = e1 }};
+    var E = try Dir.init(a, "e", &ek1);
+    var ek2 = [_]Child{.{ .dir = E }};
+    E = try Dir.init(a, "e", &ek2);
+    var ek3 = [_]Child{.{ .dir = E }};
+    E = try Dir.init(a, "e", &ek3);
+
+    const A = try Dir.init(a, "a", emptyKids());
+    const B_empty = try Dir.init(a, "b", emptyKids());
+    const a1_inner = try File.init(a, "a", "1");
+    var xk = [_]Child{.{ .file = a1_inner }};
+    const X = try Dir.init(a, "x", &xk);
+    const c1_inner = try File.init(a, "c", "1");
+    var bk = [_]Child{ .{ .file = c1_inner }, .{ .dir = B_empty }, .{ .dir = X }, .{ .dir = A } };
+    const B = try Dir.init(a, "b", &bk);
+
+    const a1 = try File.init(a, "a", "1");
+    const c1 = try File.init(a, "c", "1");
+    const d2 = try File.init(a, "d", "2");
+
+    var rk = [_]Child{ .{ .file = a1 }, .{ .file = d2 }, .{ .dir = E }, .{ .dir = B }, .{ .file = c1 } };
+    const expected = try Dir.init(a, "", &rk);
+    defer expected.deinit();
+
+    try check(a, "(d<2> b(c<1> b() a() x(a<1>)) a<1> c<1> e(e(e(e<1>))))", expected);
+}
+
+// go-git FSNoderSuite.TestHashEqual
+test "FSNoder HashEqual" {
+    const a = std.testing.allocator;
+    var t1 = try New(a, "(A(a<1> b<2>))");
     defer t1.deinit(a);
-    var t2 = try New(a, "(a<1>)");
+    var t2 = try New(a, "(A(a<1> b<2>))");
     defer t2.deinit(a);
-    var t3 = try New(a, "(a<2>)");
+    var t3 = try New(a, "(A(a<> b<2>))");
     defer t3.deinit(a);
+
     try std.testing.expect(hashEqual(t1.noder(), t2.noder()));
+    try std.testing.expect(hashEqual(t2.noder(), t1.noder()));
+
+    try std.testing.expect(!hashEqual(t2.noder(), t3.noder()));
+    try std.testing.expect(!hashEqual(t3.noder(), t2.noder()));
+
+    try std.testing.expect(!hashEqual(t3.noder(), t1.noder()));
     try std.testing.expect(!hashEqual(t1.noder(), t3.noder()));
 }

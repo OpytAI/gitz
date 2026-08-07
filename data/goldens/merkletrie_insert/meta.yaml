@@ -1,0 +1,5 @@
+name: merkletrie_insert
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "merkletrie DiffTree insert name lists + NewInsert String from go-git utils/merkletrie/difftree_test.go TestSingleInserts/TestBasicCases and change_test.go TestNewInsert (Class A file_equals inventory; behavior locked by unit tests)."

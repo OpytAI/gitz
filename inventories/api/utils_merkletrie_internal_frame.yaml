@@ -4,9 +4,12 @@ phase: 9
 require:
   types:
     - Frame
-  functions: []
+  functions:
+    - New
   constants: []
   semantic:
     - Frame
+    - Frame.init
 zig_map:
   Frame: Frame
+  New: Frame.init

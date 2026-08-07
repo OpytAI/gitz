@@ -237,7 +237,9 @@ const RenameDetector = struct {
         added_left: *std.ArrayList(*Change),
         paired: *std.AutoHashMap(*Change, void),
     ) Allocator.Error!void {
-        _ = hash;
+        // Use the precomputed content `hash` — never call changeHash on a shell
+        // after pairRename (shells are zeroed/destroyed; that would yield ZeroHash
+        // and leave the real group dangling → double-free on deinit).
         var matrix: std.ArrayList(SimilarityPair) = .empty;
         defer matrix.deinit(self.allocator);
 
@@ -282,15 +284,12 @@ const RenameDetector = struct {
         for (dels, 0..) |d, di| {
             if (!used_del[di]) try remain.append(self.allocator, d);
         }
-        if (dels.len > 0) {
-            const h = changeHash(dels[0]);
-            if (remain.items.len == 0) {
-                removeHashGroup(deletes_by, h, self.allocator);
-            } else {
-                const slice = try self.allocator.dupe(*Change, remain.items);
-                if (deletes_by.fetchRemove(h)) |old| self.allocator.free(old.value);
-                try deletes_by.put(h, slice);
-            }
+        if (remain.items.len == 0) {
+            removeHashGroup(deletes_by, hash, self.allocator);
+        } else {
+            const slice = try self.allocator.dupe(*Change, remain.items);
+            if (deletes_by.fetchRemove(hash)) |old| self.allocator.free(old.value);
+            try deletes_by.put(hash, slice);
         }
     }
 
@@ -304,6 +303,18 @@ const RenameDetector = struct {
         add: *Change,
         paired: *std.AutoHashMap(*Change, void),
     ) Allocator.Error!void {
+        // Mark in `paired` first so parent errdefers never free these pointers once
+        // we steal names. If put fails, del/add are still intact and not taken.
+        var shells_taken = false;
+        try paired.put(del, {});
+        errdefer {
+            if (!shells_taken) _ = paired.remove(del);
+        }
+        try paired.put(add, {});
+        errdefer {
+            if (!shells_taken) _ = paired.remove(add);
+        }
+
         const mod = try self.allocator.create(Change);
         mod.* = .{
             .from = del.from,
@@ -312,28 +323,19 @@ const RenameDetector = struct {
         // Sever name ownership so shell destroy is a pure free of the node.
         del.* = .{};
         add.* = .{};
-
-        var shells_live = true;
-        errdefer {
-            if (shells_live) {
-                paired.put(del, {}) catch {};
-                paired.put(add, {}) catch {};
-                self.allocator.destroy(del);
-                self.allocator.destroy(add);
-            }
-        }
+        shells_taken = true;
 
         self.modified.append(self.allocator, mod) catch |err| {
-            // Names live in mod; free everything we own here.
+            // Names live in mod; free mod + shells once. Stay in `paired` so
+            // parent errdefers skip the destroyed shells (no silent put).
             mod.destroy(self.allocator);
-            return err; // errdefer frees shells
+            self.allocator.destroy(del);
+            self.allocator.destroy(add);
+            return err;
         };
         // `mod` is owned by `modified` now.
-        try paired.put(del, {});
-        try paired.put(add, {});
         self.allocator.destroy(del);
         self.allocator.destroy(add);
-        shells_live = false;
     }
 
     /// Content path without a paired set: uses nulling arrays (go-git style).
@@ -631,17 +633,161 @@ fn sameMode(a: *const Change, b: *const Change) bool {
     return changeMode(a) == changeMode(b);
 }
 
-test "nameSimilarityScore exact" {
-    try std.testing.expectEqual(@as(i32, 100), nameSimilarityScore("a/b.txt", "a/b.txt"));
+// ---------------------------------------------------------------------------
+// Tests (go-git RenameSuite + Similarity path via DetectRenames)
+// ---------------------------------------------------------------------------
+
+const memory = @import("memory");
+const Storage = memory.Storage;
+const storer = @import("storer");
+const tree_mod = @import("tree.zig");
+const difftree = @import("difftree.zig");
+
+const path_a = "src/A";
+const path_b = "src/B";
+const path_h = "src/H";
+const path_q = "src/Q";
+
+const RenameFixture = struct {
+    gpa: Allocator,
+    store: Storage,
+    tree: tree_mod.Tree,
+
+    /// Initialize in place so `tree` storer points at stable `store` storage.
+    fn init(self: *RenameFixture, gpa: Allocator) void {
+        self.* = .{
+            .gpa = gpa,
+            .store = Storage.init(gpa),
+            .tree = undefined,
+        };
+        self.tree = tree_mod.Tree.init(gpa, storer.ObjectGetter.from(Storage, &self.store));
+    }
+
+    fn deinit(self: *RenameFixture) void {
+        self.tree.deinit();
+        self.store.deinit();
+    }
+
+    fn putBlob(self: *RenameFixture, content: []const u8) !Hash {
+        const blob = try self.store.newEncodedObject();
+        blob.setType(.blob);
+        _ = try blob.write(content);
+        return try self.store.setEncodedObject(blob);
+    }
+
+    fn pathBaseName(path: []const u8) []const u8 {
+        if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| return path[i + 1 ..];
+        return path;
+    }
+
+    fn makeAdd(self: *RenameFixture, path: []const u8, mode: filemode.FileMode, content: []const u8) !*Change {
+        const h = try self.putBlob(content);
+        const c = try self.gpa.create(Change);
+        errdefer self.gpa.destroy(c);
+        const name_owned = try self.gpa.dupe(u8, path);
+        errdefer self.gpa.free(name_owned);
+        c.* = .{
+            .from = .{},
+            .to = .{
+                .name = name_owned,
+                .tree = &self.tree,
+                .tree_entry = .{
+                    .name = pathBaseName(name_owned),
+                    .mode = mode,
+                    .hash = h,
+                },
+            },
+        };
+        return c;
+    }
+
+    fn makeDelete(self: *RenameFixture, path: []const u8, mode: filemode.FileMode, content: []const u8) !*Change {
+        const h = try self.putBlob(content);
+        const c = try self.gpa.create(Change);
+        errdefer self.gpa.destroy(c);
+        const name_owned = try self.gpa.dupe(u8, path);
+        errdefer self.gpa.free(name_owned);
+        c.* = .{
+            .from = .{
+                .name = name_owned,
+                .tree = &self.tree,
+                .tree_entry = .{
+                    .name = pathBaseName(name_owned),
+                    .mode = mode,
+                    .hash = h,
+                },
+            },
+            .to = .{},
+        };
+        return c;
+    }
+
+    fn makeModify(
+        self: *RenameFixture,
+        path: []const u8,
+        mode: filemode.FileMode,
+        from_content: []const u8,
+        to_content: []const u8,
+    ) !*Change {
+        const fh = try self.putBlob(from_content);
+        const th = try self.putBlob(to_content);
+        const c = try self.gpa.create(Change);
+        errdefer self.gpa.destroy(c);
+        const name_owned = try self.gpa.dupe(u8, path);
+        errdefer self.gpa.free(name_owned);
+        c.* = .{
+            .from = .{
+                .name = name_owned,
+                .tree = &self.tree,
+                .tree_entry = .{
+                    .name = pathBaseName(name_owned),
+                    .mode = mode,
+                    .hash = fh,
+                },
+            },
+            .to = .{
+                .name = name_owned,
+                .tree = &self.tree,
+                .tree_entry = .{
+                    .name = pathBaseName(name_owned),
+                    .mode = mode,
+                    .hash = th,
+                },
+            },
+        };
+        return c;
+    }
+};
+
+fn runDetect(
+    gpa: Allocator,
+    items: []const *Change,
+    opts: DiffTreeOptions,
+) !Changes {
+    const slice = try gpa.dupe(*Change, items);
+    // detectRenames always takes ownership of slice + *Change nodes.
+    return try detectRenames(gpa, .{ .items = slice, .allocator = gpa }, opts);
 }
 
-test "detectExact rename same hash" {
+// go-git RenameSuite.TestNameSimilarityScore
+test "nameSimilarityScore table" {
+    const cases = [_]struct { a: []const u8, b: []const u8, score: i32 }{
+        .{ .a = "foo/bar.c", .b = "foo/baz.c", .score = 70 },
+        .{ .a = "src/utils/Foo.java", .b = "tests/utils/Foo.java", .score = 64 },
+        .{ .a = "foo/bar/baz.py", .b = "README.md", .score = 0 },
+        .{ .a = "src/utils/something/foo.py", .b = "src/utils/something/other/foo.py", .score = 69 },
+        .{ .a = "src/utils/something/foo.py", .b = "src/utils/yada/foo.py", .score = 63 },
+        .{ .a = "src/utils/something/foo.py", .b = "src/utils/something/other/bar.py", .score = 44 },
+        .{ .a = "src/utils/something/foo.py", .b = "src/utils/something/foo.py", .score = 100 },
+        .{ .a = "a/b.txt", .b = "a/b.txt", .score = 100 },
+    };
+    for (cases) |tc| {
+        try std.testing.expectEqual(tc.score, nameSimilarityScore(tc.a, tc.b));
+    }
+}
+
+test "detectExact rename same hash via DiffTree" {
     const gpa = std.testing.allocator;
-    const memory = @import("memory");
-    const Storage = memory.Storage;
-    const storer = @import("storer");
-    const tree_mod = @import("tree.zig");
-    const difftree = @import("difftree.zig");
 
     var store = Storage.init(gpa);
     defer store.deinit();
@@ -671,3 +817,471 @@ test "detectExact rename same hash" {
     try std.testing.expectEqualStrings("old.txt", changes.items[0].from.name);
     try std.testing.expectEqualStrings("new.txt", changes.items[0].to.name);
 }
+
+// go-git TestExactRename_OneRename
+test "detectRenames exact one rename" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const a = try fx.makeAdd(path_a, filemode.Regular, "foo");
+    const b = try fx.makeDelete(path_q, filemode.Regular, "foo");
+    // Snapshots for assertRename before ownership transfer.
+    const a_name = try gpa.dupe(u8, a.to.name);
+    defer gpa.free(a_name);
+    const b_name = try gpa.dupe(u8, b.from.name);
+    defer gpa.free(b_name);
+    const a_hash = a.to.tree_entry.hash;
+    const b_hash = b.from.tree_entry.hash;
+
+    var result = try runDetect(gpa, &[_]*Change{ a, b }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expect((try result.items[0].action()) == .modify);
+    try std.testing.expectEqualStrings(b_name, result.items[0].from.name);
+    try std.testing.expectEqualStrings(a_name, result.items[0].to.name);
+    try std.testing.expect(result.items[0].from.tree_entry.hash.eql(b_hash));
+    try std.testing.expect(result.items[0].to.tree_entry.hash.eql(a_hash));
+}
+
+// go-git TestExactRename_DifferentObjects
+test "detectRenames exact different objects no rename" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const a = try fx.makeAdd(path_a, filemode.Regular, "foo");
+    const h = try fx.makeAdd(path_h, filemode.Regular, "foo");
+    const q = try fx.makeDelete(path_q, filemode.Regular, "bar");
+
+    var result = try runDetect(gpa, &[_]*Change{ a, h, q }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 3), result.items.len);
+    // Sorted by path name: src/A, src/H, src/Q
+    try std.testing.expect((try result.items[0].action()) == .insert);
+    try std.testing.expectEqualStrings(path_a, result.items[0].name());
+    try std.testing.expect((try result.items[1].action()) == .insert);
+    try std.testing.expectEqualStrings(path_h, result.items[1].name());
+    try std.testing.expect((try result.items[2].action()) == .delete);
+    try std.testing.expectEqualStrings(path_q, result.items[2].name());
+}
+
+// go-git TestExactRename_OneRenameOneModify
+test "detectRenames exact one rename one modify" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const c1 = try fx.makeAdd(path_a, filemode.Regular, "foo");
+    const c2 = try fx.makeDelete(path_q, filemode.Regular, "foo");
+    const c3 = try fx.makeModify(path_h, filemode.Regular, "bar", "bar");
+
+    var result = try runDetect(gpa, &[_]*Change{ c1, c2, c3 }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), result.items.len);
+    // sorted: src/A rename, src/H modify — rename from is Q→A so name() prefers from → path_q
+    // Change.name() prefers from when present → rename sorts as path_q, modify as path_h
+    // Actually name() for rename uses from.name = path_q; modify uses path_h
+    // sort: path_h < path_q? "src/H" vs "src/Q" → H first
+    try std.testing.expect((try result.items[0].action()) == .modify);
+    try std.testing.expectEqualStrings(path_h, result.items[0].name());
+    try std.testing.expect((try result.items[1].action()) == .modify);
+    try std.testing.expectEqualStrings(path_q, result.items[1].from.name);
+    try std.testing.expectEqualStrings(path_a, result.items[1].to.name);
+}
+
+// go-git TestExactRename_ManyRenames
+test "detectRenames exact many renames" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const c1 = try fx.makeAdd(path_a, filemode.Regular, "foo");
+    const c2 = try fx.makeDelete(path_q, filemode.Regular, "foo");
+    const c3 = try fx.makeAdd(path_h, filemode.Regular, "bar");
+    const c4 = try fx.makeDelete(path_b, filemode.Regular, "bar");
+
+    var result = try runDetect(gpa, &[_]*Change{ c1, c2, c3, c4 }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), result.items.len);
+    // Both renames; sorted by from name: path_b, path_q
+    try std.testing.expectEqualStrings(path_b, result.items[0].from.name);
+    try std.testing.expectEqualStrings(path_h, result.items[0].to.name);
+    try std.testing.expectEqualStrings(path_q, result.items[1].from.name);
+    try std.testing.expectEqualStrings(path_a, result.items[1].to.name);
+}
+
+// go-git TestExactRename_MultipleIdenticalDeletes
+test "detectRenames exact multiple identical deletes" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const d0 = try fx.makeDelete(path_a, filemode.Regular, "foo");
+    const d1 = try fx.makeDelete(path_b, filemode.Regular, "foo");
+    const d2 = try fx.makeDelete(path_h, filemode.Regular, "foo");
+    const a3 = try fx.makeAdd(path_q, filemode.Regular, "foo");
+
+    var result = try runDetect(gpa, &[_]*Change{ d0, d1, d2, a3 }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 3), result.items.len);
+    // One rename (best name match among deletes for the single add) + two deletes.
+    var renames: usize = 0;
+    var deletes: usize = 0;
+    for (result.items) |c| {
+        switch (try c.action()) {
+            .modify => {
+                renames += 1;
+                try std.testing.expectEqualStrings(path_q, c.to.name);
+            },
+            .delete => deletes += 1,
+            .insert => try std.testing.expect(false),
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), renames);
+    try std.testing.expectEqual(@as(usize, 2), deletes);
+}
+
+// go-git TestRenameExact_PathBreaksTie
+test "detectRenames exact path breaks tie" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const c0 = try fx.makeAdd("src/com/foo/a.java", filemode.Regular, "foo");
+    const c1 = try fx.makeDelete("src/com/foo/b.java", filemode.Regular, "foo");
+    const c2 = try fx.makeAdd("c.txt", filemode.Regular, "foo");
+    const c3 = try fx.makeDelete("d.txt", filemode.Regular, "foo");
+    const c4 = try fx.makeAdd("the_e_file.txt", filemode.Regular, "foo");
+
+    // Out of order like go-git
+    var result = try runDetect(gpa, &[_]*Change{ c0, c3, c4, c1, c2 }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 3), result.items.len);
+
+    var rename_count: usize = 0;
+    var leftover_add = false;
+    for (result.items) |c| {
+        switch (try c.action()) {
+            .modify => {
+                rename_count += 1;
+                // Either d.txt→c.txt or b.java→a.java
+                const from_n = c.from.name;
+                const to_n = c.to.name;
+                const pair_ok =
+                    (std.mem.eql(u8, from_n, "d.txt") and std.mem.eql(u8, to_n, "c.txt")) or
+                    (std.mem.eql(u8, from_n, "src/com/foo/b.java") and std.mem.eql(u8, to_n, "src/com/foo/a.java"));
+                try std.testing.expect(pair_ok);
+            },
+            .insert => {
+                try std.testing.expectEqualStrings("the_e_file.txt", c.to.name);
+                leftover_add = true;
+            },
+            .delete => try std.testing.expect(false),
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), rename_count);
+    try std.testing.expect(leftover_add);
+}
+
+// go-git TestExactRename_OneDeleteManyAdds
+test "detectRenames exact one delete many adds" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const c0 = try fx.makeAdd("src/com/foo/a.java", filemode.Regular, "foo");
+    const c1 = try fx.makeAdd("src/com/foo/b.java", filemode.Regular, "foo");
+    const c2 = try fx.makeAdd("c.txt", filemode.Regular, "foo");
+    const c3 = try fx.makeDelete("d.txt", filemode.Regular, "foo");
+
+    var result = try runDetect(gpa, &[_]*Change{ c0, c1, c2, c3 }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 3), result.items.len);
+
+    var found_rename = false;
+    var inserts: usize = 0;
+    for (result.items) |c| {
+        switch (try c.action()) {
+            .modify => {
+                found_rename = true;
+                try std.testing.expectEqualStrings("d.txt", c.from.name);
+                try std.testing.expectEqualStrings("c.txt", c.to.name);
+            },
+            .insert => inserts += 1,
+            .delete => try std.testing.expect(false),
+        }
+    }
+    try std.testing.expect(found_rename);
+    try std.testing.expectEqual(@as(usize, 2), inserts);
+}
+
+// go-git TestExactRename_UnstagedFile
+test "detectRenames exact unstaged style paths" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const d = try fx.makeDelete(path_a, filemode.Regular, "foo");
+    const a = try fx.makeAdd(path_b, filemode.Regular, "foo");
+    var result = try runDetect(gpa, &[_]*Change{ d, a }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqualStrings(path_a, result.items[0].from.name);
+    try std.testing.expectEqualStrings(path_b, result.items[0].to.name);
+}
+
+// go-git TestContentRename_OnePair
+test "detectRenames content one pair" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const a = try fx.makeAdd(path_a, filemode.Regular, "foo\nbar\nbaz\nblarg\n");
+    const d = try fx.makeDelete(path_a, filemode.Regular, "foo\nbar\nbaz\nblah\n");
+    // Note: same path on both is fine for content rename detection on Changes list.
+    // Wait - both have path_a? go-git uses pathA for both add and delete.
+    // Delete from pathA, add to pathA with different content = would be modify normally.
+    // Looking at go-git again:
+    // makeAdd(pathA, ... blarg)
+    // makeDelete(pathA, ... blah)
+    // So delete and add at same path - detects as rename (modify with same names).
+
+    var result = try runDetect(gpa, &[_]*Change{ a, d }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expect((try result.items[0].action()) == .modify);
+    try std.testing.expectEqualStrings(path_a, result.items[0].from.name);
+    try std.testing.expectEqualStrings(path_a, result.items[0].to.name);
+}
+
+// go-git TestContentRename_OneRenameTwoUnrelatedFiles
+test "detectRenames content one rename two unrelated" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const c0 = try fx.makeAdd(path_a, filemode.Regular, "foo\nbar\nbaz\nblarg\n");
+    const c1 = try fx.makeDelete(path_q, filemode.Regular, "foo\nbar\nbaz\nblah\n");
+    const c2 = try fx.makeAdd(path_b, filemode.Regular, "some\nsort\nof\ntext\n");
+    const c3 = try fx.makeDelete(path_h, filemode.Regular, "completely\nunrelated\ntext\n");
+
+    var result = try runDetect(gpa, &[_]*Change{ c0, c1, c2, c3 }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 3), result.items.len);
+
+    var renames: usize = 0;
+    var inserts: usize = 0;
+    var deletes: usize = 0;
+    for (result.items) |c| {
+        switch (try c.action()) {
+            .modify => {
+                renames += 1;
+                try std.testing.expectEqualStrings(path_q, c.from.name);
+                try std.testing.expectEqualStrings(path_a, c.to.name);
+            },
+            .insert => {
+                inserts += 1;
+                try std.testing.expectEqualStrings(path_b, c.to.name);
+            },
+            .delete => {
+                deletes += 1;
+                try std.testing.expectEqualStrings(path_h, c.from.name);
+            },
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), renames);
+    try std.testing.expectEqual(@as(usize, 1), inserts);
+    try std.testing.expectEqual(@as(usize, 1), deletes);
+}
+
+// go-git TestContentRename_LastByteDifferent
+test "detectRenames content last byte different" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const a = try fx.makeAdd(path_a, filemode.Regular, "foo\nbar\na");
+    const d = try fx.makeDelete(path_q, filemode.Regular, "foo\nbar\nb");
+    var result = try runDetect(gpa, &[_]*Change{ a, d }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expectEqualStrings(path_q, result.items[0].from.name);
+    try std.testing.expectEqualStrings(path_a, result.items[0].to.name);
+}
+
+// go-git TestContentRename_NewlinesOnly
+test "detectRenames content newlines only" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const newlines3 = "\n\n\n";
+    const newlines4 = "\n\n\n\n";
+    const a = try fx.makeAdd(path_a, filemode.Regular, newlines3);
+    const d = try fx.makeDelete(path_q, filemode.Regular, newlines4);
+    var result = try runDetect(gpa, &[_]*Change{ a, d }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expect((try result.items[0].action()) == .modify);
+}
+
+// go-git TestContentRename_SameContentMultipleTimes
+test "detectRenames content same line repeated" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const a = try fx.makeAdd(path_a, filemode.Regular, "a\na\na\na\n");
+    const d = try fx.makeDelete(path_q, filemode.Regular, "a\na\na\n");
+    var result = try runDetect(gpa, &[_]*Change{ a, d }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expect((try result.items[0].action()) == .modify);
+}
+
+// go-git TestContentRename_OnePairRenameScore50
+test "detectRenames content score threshold 50" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const a = try fx.makeAdd(path_a, filemode.Regular, "ab\nab\nab\nac\nad\nae\n");
+    const d = try fx.makeDelete(path_q, filemode.Regular, "ac\nab\nab\nab\naa\na0\na1\n");
+    var result = try runDetect(gpa, &[_]*Change{ a, d }, .{
+        .detect_renames = true,
+        .rename_score = 50,
+        .rename_limit = 0,
+        .only_exact_renames = false,
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 1), result.items.len);
+    try std.testing.expect((try result.items[0].action()) == .modify);
+}
+
+// go-git TestNoRenames_SingleByteFiles
+test "detectRenames no renames single byte files only adds" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const a = try fx.makeAdd(path_a, filemode.Regular, "a");
+    const q = try fx.makeAdd(path_q, filemode.Regular, "b");
+    var result = try runDetect(gpa, &[_]*Change{ a, q }, DiffTreeOptions.default);
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), result.items.len);
+    try std.testing.expect((try result.items[0].action()) == .insert);
+    try std.testing.expect((try result.items[1].action()) == .insert);
+}
+
+// go-git TestNoRenames_EmptyFile / EmptyFile2
+test "detectRenames no renames empty file" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    {
+        const a = try fx.makeAdd(path_a, filemode.Regular, "");
+        var result = try runDetect(gpa, &[_]*Change{a}, DiffTreeOptions.default);
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 1), result.items.len);
+        try std.testing.expect((try result.items[0].action()) == .insert);
+    }
+    {
+        const a = try fx.makeAdd(path_a, filemode.Regular, "");
+        const d = try fx.makeDelete(path_q, filemode.Regular, "blah");
+        var result = try runDetect(gpa, &[_]*Change{ a, d }, DiffTreeOptions.default);
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 2), result.items.len);
+        try std.testing.expect((try result.items[0].action()) == .insert);
+        try std.testing.expect((try result.items[1].action()) == .delete);
+    }
+}
+
+// go-git TestNoRenames_SymlinkAndFile / SamePath
+test "detectRenames no renames symlink vs file" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    {
+        const a = try fx.makeAdd(path_a, filemode.Regular, "src/dest");
+        const d = try fx.makeDelete(path_q, filemode.Symlink, "src/dest");
+        var result = try runDetect(gpa, &[_]*Change{ a, d }, DiffTreeOptions.default);
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 2), result.items.len);
+    }
+    {
+        const a = try fx.makeAdd(path_a, filemode.Regular, "src/dest");
+        const d = try fx.makeDelete(path_a, filemode.Symlink, "src/dest");
+        var result = try runDetect(gpa, &[_]*Change{ a, d }, DiffTreeOptions.default);
+        defer result.deinit();
+        try std.testing.expectEqual(@as(usize, 2), result.items.len);
+    }
+}
+
+// go-git TestRenameLimit
+test "detectRenames content rename limit" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const c0 = try fx.makeAdd(path_a, filemode.Regular, "foo\nbar\nbaz\nblarg\n");
+    const c1 = try fx.makeDelete(path_b, filemode.Regular, "foo\nbar\nbaz\nblah\n");
+    const c2 = try fx.makeAdd(path_h, filemode.Regular, "a\nb\nc\nd\n");
+    const c3 = try fx.makeDelete(path_q, filemode.Regular, "a\nb\nc\n");
+
+    var result = try runDetect(gpa, &[_]*Change{ c0, c1, c2, c3 }, .{
+        .detect_renames = true,
+        .rename_score = 60,
+        .rename_limit = 1,
+        .only_exact_renames = false,
+    });
+    defer result.deinit();
+    // Limit 1 skips content rename detection entirely (max(adds,dels)=2 > 1).
+    try std.testing.expectEqual(@as(usize, 4), result.items.len);
+    for (result.items) |c| {
+        const act = try c.action();
+        try std.testing.expect(act == .insert or act == .delete);
+    }
+}
+
+// only_exact_renames skips content pairing
+test "detectRenames only exact skips content" {
+    const gpa = std.testing.allocator;
+    var fx: RenameFixture = undefined;
+    fx.init(gpa);
+    defer fx.deinit();
+
+    const a = try fx.makeAdd(path_a, filemode.Regular, "foo\nbar\nbaz\nblarg\n");
+    const d = try fx.makeDelete(path_q, filemode.Regular, "foo\nbar\nbaz\nblah\n");
+    var result = try runDetect(gpa, &[_]*Change{ a, d }, .{
+        .detect_renames = true,
+        .rename_score = 50,
+        .rename_limit = 0,
+        .only_exact_renames = true,
+    });
+    defer result.deinit();
+    try std.testing.expectEqual(@as(usize, 2), result.items.len);
+}
+
+
+

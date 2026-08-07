@@ -1,4 +1,72 @@
-.git
-git~1
-.GIT....
-git~1:stream
+# go-git internal/pathutil IsNTFSDotGit + WindowsValidPath
+# Source: go-git/internal/pathutil/ntfs_test.go
+# Format: fn  "name"  result
+# fn ∈ {IsNTFSDotGit, WindowsValidPath}; name is double-quoted (spaces significant)
+#
+# --- IsNTFSDotGit (ports upstream is_ntfs_dotgit) ---
+IsNTFSDotGit	".git"	true
+IsNTFSDotGit	".GIT"	true
+IsNTFSDotGit	"git~1"	true
+IsNTFSDotGit	"GIT~1"	true
+IsNTFSDotGit	".git "	true
+IsNTFSDotGit	".git."	true
+IsNTFSDotGit	".git . . ."	true
+IsNTFSDotGit	".git::$INDEX_ALLOCATION"	true
+IsNTFSDotGit	".git:foo"	true
+IsNTFSDotGit	".GIT...."	true
+IsNTFSDotGit	"git~1 "	true
+IsNTFSDotGit	"git~1."	true
+IsNTFSDotGit	"git~1 . "	true
+IsNTFSDotGit	"git~1::$DATA"	true
+IsNTFSDotGit	"git~1:stream"	true
+IsNTFSDotGit	"GIT~1."	true
+IsNTFSDotGit	".gitignore"	false
+IsNTFSDotGit	".gitmodules"	false
+IsNTFSDotGit	"gitfoo"	false
+IsNTFSDotGit	"git~2"	false
+IsNTFSDotGit	"git~10"	false
+IsNTFSDotGit	"git"	false
+IsNTFSDotGit	""	false
+IsNTFSDotGit	"."	false
+IsNTFSDotGit	"readme.md"	false
+#
+# --- WindowsValidPath (true = valid / allowed at this layer) ---
+# Bare .git / git~1 stay valid; caller decides position
+WindowsValidPath	".git"	true
+WindowsValidPath	"git~1"	true
+# NTFS-disguised .git rejects (IsNTFSDotGit && !IsDotGitName)
+WindowsValidPath	".git . . ."	false
+WindowsValidPath	".git "	false
+WindowsValidPath	".git  "	false
+WindowsValidPath	".git . ."	false
+WindowsValidPath	".git::$INDEX_ALLOCATION"	false
+WindowsValidPath	".git:"	false
+WindowsValidPath	"git~1 "	false
+WindowsValidPath	"git~1."	false
+WindowsValidPath	"GIT~1 "	false
+WindowsValidPath	"git~1::$DATA"	false
+# Reserved device names
+WindowsValidPath	"CON"	false
+WindowsValidPath	"con"	false
+WindowsValidPath	"CON.txt"	false
+WindowsValidPath	"CON:ads"	false
+WindowsValidPath	"CON "	false
+WindowsValidPath	"PRN"	false
+WindowsValidPath	"AUX"	false
+WindowsValidPath	"NUL"	false
+WindowsValidPath	"COM1"	false
+WindowsValidPath	"COM9"	false
+WindowsValidPath	"LPT1"	false
+WindowsValidPath	"LPT9"	false
+WindowsValidPath	"CONIN$"	false
+WindowsValidPath	"CONOUT$"	false
+# Legitimate paths
+WindowsValidPath	"a"	true
+WindowsValidPath	"a\\b"	true
+WindowsValidPath	"a/b"	true
+WindowsValidPath	".gitm"	true
+WindowsValidPath	"CONNECT"	true
+WindowsValidPath	"comic"	true
+WindowsValidPath	"COM"	true
+WindowsValidPath	"COM0"	true
+WindowsValidPath	"LPT0"	true

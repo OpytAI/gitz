@@ -1,0 +1,58 @@
+# go-git utils/merkletrie insert changes
+# Source: difftree_test.go TestSingleInserts / TestBasicCases; change_test.go TestNewInsert
+# DiffTree change dump: +path means Insert; NewInsert String is <Insert path>
+#
+# --- DiffTree single inserts (from → to → expected change names) ---
+from:()
+to:(z<>)
+changes:1
+actions:+z
+names:z
+#
+from:(a())
+to:(a(z<>))
+changes:1
+actions:+a/z
+names:a/z
+#
+from:(a())
+to:(a(b(z<>)))
+changes:1
+actions:+a/b/z
+names:a/b/z
+#
+from:(a(b(c())))
+to:(a(b(c(z<>))))
+changes:1
+actions:+a/b/c/z
+names:a/b/c/z
+#
+from:(a<> b<> c<>)
+to:(a<> b<> c<> z<>)
+changes:1
+actions:+z
+names:z
+#
+from:(a(b<> c<> d<>))
+to:(a(b<> c<> d<> z<>))
+changes:1
+actions:+a/z
+names:a/z
+#
+from:()
+to:(a<> b<>)
+changes:2
+actions:+a +b
+names:a,b
+#
+from:()
+to:(a(b<>))
+changes:1
+actions:+a/b
+names:a/b
+#
+# --- NewInsert path string form ---
+NewInsert:a/b/z
+string:<Insert a/b/z>
+NewInsert:z
+string:<Insert z>

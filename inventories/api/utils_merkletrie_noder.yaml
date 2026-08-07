@@ -5,11 +5,17 @@ require:
   types:
     - Noder
     - Path
+    - Equal
   functions: []
-  constants: []
+  constants:
+    - NoChildren
   semantic:
     - Noder
     - Path
+    - Equal
+    - NoChildren
 zig_map:
   Noder: Noder
   Path: Path
+  Equal: Equal
+  NoChildren: NoChildren

@@ -292,64 +292,70 @@ fn decodeRune(s: []const u8) DecodedRune {
 }
 
 // ---------------------------------------------------------------------------
-// Tests (go-git pattern_test.go)
+// Tests (go-git pattern_test.go — one row per suite method)
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
 
-fn expectMatch(pat: []const u8, domain: []const []const u8, path: []const []const u8, want: bool) !void {
-    var p = try parsePattern(testing.allocator, pat, domain);
-    defer p.deinit();
-    try testing.expectEqual(want, p.match(path));
-}
+const Case = struct {
+    /// go-git test method name (PatternSuite).
+    name: []const u8,
+    pattern: []const u8,
+    domain: []const []const u8 = &.{},
+    path: []const []const u8,
+    want: bool,
+};
 
-test "gitattributes domain mismatches" {
-    try expectMatch("value", &.{ "head", "middle", "tail" }, &.{ "head", "middle" }, false);
-    try expectMatch("value", &.{ "head", "middle", "tail" }, &.{ "head", "middle", "tail" }, false);
-    try expectMatch("value", &.{ "head", "middle", "tail" }, &.{ "head", "middle", "_tail_", "value" }, false);
-}
+// Full vector table from go-git plumbing/format/gitattributes/pattern_test.go.
+const go_git_pattern_cases = [_]Case{
+    .{ .name = "TestMatch_domainLonger_mismatch", .pattern = "value", .domain = &.{ "head", "middle", "tail" }, .path = &.{ "head", "middle" }, .want = false },
+    .{ .name = "TestMatch_domainSameLength_mismatch", .pattern = "value", .domain = &.{ "head", "middle", "tail" }, .path = &.{ "head", "middle", "tail" }, .want = false },
+    .{ .name = "TestMatch_domainMismatch_mismatch", .pattern = "value", .domain = &.{ "head", "middle", "tail" }, .path = &.{ "head", "middle", "_tail_", "value" }, .want = false },
+    .{ .name = "TestSimpleMatch_match", .pattern = "vul?ano", .path = &.{ "value", "vulkano" }, .want = true },
+    .{ .name = "TestSimpleMatch_withDomain", .pattern = "middle/tail", .domain = &.{ "value", "volcano" }, .path = &.{ "value", "volcano", "middle", "tail" }, .want = true },
+    .{ .name = "TestSimpleMatch_onlyMatchInDomain_mismatch", .pattern = "value/volcano", .domain = &.{ "value", "volcano" }, .path = &.{ "value", "volcano", "tail" }, .want = false },
+    .{ .name = "TestSimpleMatch_atStart", .pattern = "value", .path = &.{ "value", "tail" }, .want = false },
+    .{ .name = "TestSimpleMatch_inTheMiddle", .pattern = "value", .path = &.{ "head", "value", "tail" }, .want = false },
+    .{ .name = "TestSimpleMatch_atEnd", .pattern = "value", .path = &.{ "head", "value" }, .want = true },
+    .{ .name = "TestSimpleMatch_mismatch", .pattern = "value", .path = &.{ "head", "val", "tail" }, .want = false },
+    .{ .name = "TestSimpleMatch_valueLonger_mismatch", .pattern = "tai", .path = &.{ "head", "value", "tail" }, .want = false },
+    .{ .name = "TestSimpleMatch_withAsterisk", .pattern = "t*l", .path = &.{ "value", "vulkano", "tail" }, .want = true },
+    .{ .name = "TestSimpleMatch_withQuestionMark", .pattern = "ta?l", .path = &.{ "value", "vulkano", "tail" }, .want = true },
+    .{ .name = "TestSimpleMatch_magicChars", .pattern = "v[ou]l[kc]ano", .path = &.{ "value", "volcano" }, .want = true },
+    .{ .name = "TestSimpleMatch_wrongPattern_mismatch", .pattern = "v[ou]l[", .path = &.{ "value", "vol[" }, .want = false },
+    .{ .name = "TestGlobMatch_fromRootWithSlash", .pattern = "/value/vul?ano/tail", .path = &.{ "value", "vulkano", "tail" }, .want = true },
+    .{ .name = "TestGlobMatch_withDomain", .pattern = "middle/tail", .domain = &.{ "value", "volcano" }, .path = &.{ "value", "volcano", "middle", "tail" }, .want = true },
+    .{ .name = "TestGlobMatch_onlyMatchInDomain_mismatch", .pattern = "volcano/tail", .domain = &.{ "value", "volcano" }, .path = &.{ "value", "volcano", "tail" }, .want = false },
+    .{ .name = "TestGlobMatch_fromRootWithoutSlash", .pattern = "value/vul?ano/tail", .path = &.{ "value", "vulkano", "tail" }, .want = true },
+    .{ .name = "TestGlobMatch_fromRoot_mismatch", .pattern = "value/vulkano", .path = &.{ "value", "volcano" }, .want = false },
+    .{ .name = "TestGlobMatch_fromRoot_tooShort_mismatch", .pattern = "value/vul?ano", .path = &.{"value"}, .want = false },
+    .{ .name = "TestGlobMatch_fromRoot_notAtRoot_mismatch", .pattern = "/value/volcano", .path = &.{ "value", "value", "volcano" }, .want = false },
+    .{ .name = "TestGlobMatch_leadingAsterisks_atStart", .pattern = "**/*lue/vol?ano/ta?l", .path = &.{ "value", "volcano", "tail" }, .want = true },
+    .{ .name = "TestGlobMatch_leadingAsterisks_notAtStart", .pattern = "**/*lue/vol?ano/tail", .path = &.{ "head", "value", "volcano", "tail" }, .want = true },
+    .{ .name = "TestGlobMatch_leadingAsterisks_mismatch", .pattern = "**/*lue/vol?ano/tail", .path = &.{ "head", "value", "Volcano", "tail" }, .want = false },
+    .{ .name = "TestGlobMatch_tailingAsterisks", .pattern = "/*lue/vol?ano/**", .path = &.{ "value", "volcano", "tail", "moretail" }, .want = true },
+    .{ .name = "TestGlobMatch_tailingAsterisks_single", .pattern = "/*lue/**", .path = &.{ "value", "volcano" }, .want = true },
+    .{ .name = "TestGlobMatch_tailingAsterisk_single", .pattern = "/*lue/*", .path = &.{ "value", "volcano", "tail" }, .want = false },
+    .{ .name = "TestGlobMatch_tailingAsterisks_exactMatch", .pattern = "/*lue/vol?ano/**", .path = &.{ "value", "volcano" }, .want = false },
+    .{ .name = "TestGlobMatch_middleAsterisks_emptyMatch", .pattern = "/*lue/**/vol?ano", .path = &.{ "value", "volcano" }, .want = true },
+    .{ .name = "TestGlobMatch_middleAsterisks_oneMatch", .pattern = "/*lue/**/vol?ano", .path = &.{ "value", "middle", "volcano" }, .want = true },
+    .{ .name = "TestGlobMatch_middleAsterisks_multiMatch", .pattern = "/*lue/**/vol?ano", .path = &.{ "value", "middle1", "middle2", "volcano" }, .want = true },
+    .{ .name = "TestGlobMatch_wrongDoubleAsterisk_mismatch", .pattern = "/*lue/**foo/vol?ano/tail", .path = &.{ "value", "foo", "volcano", "tail" }, .want = false },
+    .{ .name = "TestGlobMatch_magicChars", .pattern = "**/head/v[ou]l[kc]ano", .path = &.{ "value", "head", "volcano" }, .want = true },
+    .{ .name = "TestGlobMatch_wrongPattern_noTraversal_mismatch", .pattern = "**/head/v[ou]l[", .path = &.{ "value", "head", "vol[" }, .want = false },
+    .{ .name = "TestGlobMatch_wrongPattern_onTraversal_mismatch", .pattern = "/value/**/v[ou]l[", .path = &.{ "value", "head", "vol[" }, .want = false },
+    .{ .name = "TestGlobMatch_issue_923", .pattern = "**/android/**/GeneratedPluginRegistrant.java", .path = &.{ "packages", "flutter_tools", "lib", "src", "android", "gradle.dart" }, .want = false },
+};
 
-test "gitattributes simple match" {
-    try expectMatch("vul?ano", &.{}, &.{ "value", "vulkano" }, true);
-    try expectMatch("middle/tail", &.{ "value", "volcano" }, &.{ "value", "volcano", "middle", "tail" }, true);
-    try expectMatch("value/volcano", &.{ "value", "volcano" }, &.{ "value", "volcano", "tail" }, false);
-    try expectMatch("value", &.{}, &.{ "value", "tail" }, false);
-    try expectMatch("value", &.{}, &.{ "head", "value", "tail" }, false);
-    try expectMatch("value", &.{}, &.{ "head", "value" }, true);
-    try expectMatch("value", &.{}, &.{ "head", "val", "tail" }, false);
-    try expectMatch("tai", &.{}, &.{ "head", "value", "tail" }, false);
-    try expectMatch("t*l", &.{}, &.{ "value", "vulkano", "tail" }, true);
-    try expectMatch("ta?l", &.{}, &.{ "value", "vulkano", "tail" }, true);
-    try expectMatch("v[ou]l[kc]ano", &.{}, &.{ "value", "volcano" }, true);
-    try expectMatch("v[ou]l[", &.{}, &.{ "value", "vol[" }, false);
-}
-
-test "gitattributes glob match" {
-    try expectMatch("/value/vul?ano/tail", &.{}, &.{ "value", "vulkano", "tail" }, true);
-    try expectMatch("middle/tail", &.{ "value", "volcano" }, &.{ "value", "volcano", "middle", "tail" }, true);
-    try expectMatch("volcano/tail", &.{ "value", "volcano" }, &.{ "value", "volcano", "tail" }, false);
-    try expectMatch("value/vul?ano/tail", &.{}, &.{ "value", "vulkano", "tail" }, true);
-    try expectMatch("value/vulkano", &.{}, &.{ "value", "volcano" }, false);
-    try expectMatch("value/vul?ano", &.{}, &.{"value"}, false);
-    try expectMatch("/value/volcano", &.{}, &.{ "value", "value", "volcano" }, false);
-    try expectMatch("**/*lue/vol?ano/ta?l", &.{}, &.{ "value", "volcano", "tail" }, true);
-    try expectMatch("**/*lue/vol?ano/tail", &.{}, &.{ "head", "value", "volcano", "tail" }, true);
-    try expectMatch("**/*lue/vol?ano/tail", &.{}, &.{ "head", "value", "Volcano", "tail" }, false);
-    try expectMatch("/*lue/vol?ano/**", &.{}, &.{ "value", "volcano", "tail", "moretail" }, true);
-    try expectMatch("/*lue/**", &.{}, &.{ "value", "volcano" }, true);
-    try expectMatch("/*lue/*", &.{}, &.{ "value", "volcano", "tail" }, false);
-    try expectMatch("/*lue/vol?ano/**", &.{}, &.{ "value", "volcano" }, false);
-    try expectMatch("/*lue/**/vol?ano", &.{}, &.{ "value", "volcano" }, true);
-    try expectMatch("/*lue/**/vol?ano", &.{}, &.{ "value", "middle", "volcano" }, true);
-    try expectMatch("/*lue/**/vol?ano", &.{}, &.{ "value", "middle1", "middle2", "volcano" }, true);
-    try expectMatch("/*lue/**foo/vol?ano/tail", &.{}, &.{ "value", "foo", "volcano", "tail" }, false);
-    try expectMatch("**/head/v[ou]l[kc]ano", &.{}, &.{ "value", "head", "volcano" }, true);
-    try expectMatch("**/head/v[ou]l[", &.{}, &.{ "value", "head", "vol[" }, false);
-    try expectMatch("/value/**/v[ou]l[", &.{}, &.{ "value", "head", "vol[" }, false);
-    try expectMatch(
-        "**/android/**/GeneratedPluginRegistrant.java",
-        &.{},
-        &.{ "packages", "flutter_tools", "lib", "src", "android", "gradle.dart" },
-        false,
-    );
+test "pattern_test.go all go-git PatternSuite vectors" {
+    try testing.expectEqual(@as(usize, 37), go_git_pattern_cases.len);
+    for (go_git_pattern_cases) |c| {
+        var p = try parsePattern(testing.allocator, c.pattern, c.domain);
+        defer p.deinit();
+        const got = p.match(c.path);
+        if (got != c.want) {
+            std.debug.print("FAIL {s}: pattern={s} want={} got={}\n", .{ c.name, c.pattern, c.want, got });
+            try testing.expectEqual(c.want, got);
+        }
+    }
 }

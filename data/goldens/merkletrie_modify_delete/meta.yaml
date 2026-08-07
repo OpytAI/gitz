@@ -1,0 +1,5 @@
+name: merkletrie_modify_delete
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "merkletrie DiffTree modify/delete name lists + NewDelete/NewModify String from change_test.go and difftree_test.go TestBasicCases/TestCrazy"

@@ -1,3 +1,42 @@
-pattern:*.o
-path:foo.o
-result:exclude
+# go-git plumbing/format/gitignore ParsePattern + Match
+# Source: go-git/plumbing/format/gitignore/pattern_test.go (+ classic *.o)
+# Format: pattern<TAB>path_slash_joined<TAB>isDir<TAB>result
+# result ∈ {include, exclude, no_match}; domain empty unless noted in comment
+#
+# Classic shell glob (seed case extended)
+*.o	foo.o	false	exclude
+*.o	foo.c	false	no_match
+*.o	src/foo.o	false	exclude
+#
+# Inclusion prefix "!"
+!vul?ano	value/vulkano/tail	false	include
+#
+# Simple name match
+value	value/tail	false	exclude
+value	head/value/tail	false	exclude
+value	head/value	false	exclude
+value	head/val/tail	false	no_match
+val	head/value/tail	false	no_match
+#
+# Directory-only trailing /
+value/	value/tail	false	exclude
+value/	head/value	true	exclude
+value/	head/value	false	no_match
+#
+# Wildcards
+v*o	value/vulkano/tail	false	exclude
+vul?ano	value/vulkano/tail	false	exclude
+v[ou]l[kc]ano	value/volcano	false	exclude
+#
+# Rooted / glob
+/value/vul?ano	value/vulkano/tail	false	exclude
+/value/volcano	value/value/volcano	false	no_match
+value/vul?ano	value	false	no_match
+#
+# ** globs
+**/*lue/vol?ano	head/value/volcano/tail	false	exclude
+**/*lue/vol?ano	head/value/Volcano/tail	false	no_match
+**/*lue/vol?ano/	head/value/volcano	true	exclude
+**/*lue/vol?ano/	head/value/volcano	false	no_match
+/*lue/vol?ano/**	value/volcano/tail/moretail	false	exclude
+/*lue/**/vol?ano	value/middle/volcano	false	exclude

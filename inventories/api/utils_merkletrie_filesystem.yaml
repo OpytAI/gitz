@@ -4,9 +4,15 @@ phase: 9
 require:
   functions:
     - newRootNode
-  types: []
+    - NewRootNodeWithOptions
+  types:
+    - Options
   constants: []
   semantic:
     - newRootNode
+    - newRootNodeWithOptions
+    - Options
 zig_map:
   NewRootNode: newRootNode
+  NewRootNodeWithOptions: newRootNodeWithOptions
+  Options: Options

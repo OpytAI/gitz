@@ -95,8 +95,6 @@ pub fn newMatcher(allocator: Allocator, stack: []const MatchAttribute) Allocator
     return m;
 }
 
-// initMacros is a method on Matcher (below).
-
 // ---------------------------------------------------------------------------
 // Tests (go-git matcher_test.go)
 // ---------------------------------------------------------------------------
@@ -105,15 +103,18 @@ const testing = std.testing;
 const readAttributes = attributes_mod.readAttributes;
 const freeMatchAttributes = attributes_mod.freeMatchAttributes;
 
-test "Matcher Match" {
+// Fixture lines from go-git TestMatcher_Match (matcher_test.go).
+const matcher_fixture =
+    \\[attr]binary -diff -merge -text
+    \\**/middle/v[uo]l?ano binary text eol=crlf
+    \\volcano -eol
+    \\foobar diff merge text eol=lf foo=bar
+;
+
+test "Matcher_Match" {
+    // go-git TestMatcher_Match — macro expand + multi-attr on matching path
     const gpa = testing.allocator;
-    const text =
-        \\[attr]binary -diff -merge -text
-        \\**/middle/v[uo]l?ano binary text eol=crlf
-        \\volcano -eol
-        \\foobar diff merge text eol=lf foo=bar
-    ;
-    const ma = try readAttributes(gpa, text, &.{}, true);
+    const ma = try readAttributes(gpa, matcher_fixture, &.{}, true);
     defer freeMatchAttributes(gpa, ma);
 
     var m = try newMatcher(gpa, ma);
@@ -128,4 +129,46 @@ test "Matcher Match" {
     try testing.expect(out.results.get("merge").?.isUnset());
     try testing.expect(out.results.get("text").?.isSet());
     try testing.expectEqualStrings("crlf", out.results.get("eol").?.value);
+}
+
+test "Matcher_Match non-matching path" {
+    // Same fixture: path that hits no pattern → matched false, empty results.
+    const gpa = testing.allocator;
+    const ma = try readAttributes(gpa, matcher_fixture, &.{}, true);
+    defer freeMatchAttributes(gpa, ma);
+
+    var m = try newMatcher(gpa, ma);
+    defer m.deinit();
+
+    var out = try m.match(gpa, &.{ "head", "other", "file" }, &.{});
+    defer out.results.deinit(gpa);
+    try testing.expect(!out.matched);
+    try testing.expectEqual(@as(usize, 0), out.results.count());
+}
+
+test "Matcher_Match simple name multi-attr" {
+    // Fixture lines "volcano -eol" and "foobar …" (present in go-git matcher fixture).
+    const gpa = testing.allocator;
+    const ma = try readAttributes(gpa, matcher_fixture, &.{}, true);
+    defer freeMatchAttributes(gpa, ma);
+
+    var m = try newMatcher(gpa, ma);
+    defer m.deinit();
+
+    {
+        var out = try m.match(gpa, &.{"volcano"}, &.{});
+        defer out.results.deinit(gpa);
+        try testing.expect(out.matched);
+        try testing.expect(out.results.get("eol").?.isUnset());
+    }
+    {
+        var out = try m.match(gpa, &.{"foobar"}, &.{});
+        defer out.results.deinit(gpa);
+        try testing.expect(out.matched);
+        try testing.expect(out.results.get("diff").?.isSet());
+        try testing.expect(out.results.get("merge").?.isSet());
+        try testing.expect(out.results.get("text").?.isSet());
+        try testing.expectEqualStrings("lf", out.results.get("eol").?.value);
+        try testing.expectEqualStrings("bar", out.results.get("foo").?.value);
+    }
 }

@@ -8,16 +8,31 @@ require:
     - isHFSDotGit
     - isDotGitName
     - validTreePath
-  types: []
+    - IsNTFSDot
+    - IsNTFSDotGitmodules
+    - IsHFSDot
+    - IsHFSDotGitmodules
+  types:
+    - ErrInvalidPath
   constants: []
   semantic:
     - isNTFSDotGit
     - windowsValidPath
     - isHFSDotGit
     - validTreePath
+    - isNTFSDot
+    - isNTFSDotGitmodules
+    - isHFSDot
+    - isHFSDotGitmodules
+    - ErrInvalidPath
 zig_map:
   IsNTFSDotGit: isNTFSDotGit
   WindowsValidPath: windowsValidPath
   IsHFSDotGit: isHFSDotGit
   IsDotGitName: isDotGitName
   ValidTreePath: validTreePath
+  IsNTFSDot: isNTFSDot
+  IsNTFSDotGitmodules: isNTFSDotGitmodules
+  IsHFSDot: isHFSDot
+  IsHFSDotGitmodules: isHFSDotGitmodules
+  ErrInvalidPath: ErrInvalidPath

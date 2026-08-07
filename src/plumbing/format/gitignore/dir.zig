@@ -26,6 +26,10 @@ const system_file = "/etc/gitconfig";
 const info_exclude_file = ".git/info/exclude";
 
 /// Free a slice returned by `readPatterns` / `loadGlobalPatterns` / `loadSystemPatterns`.
+///
+/// Empty results are always the non-owned sentinel `&.{}` (missing file, empty
+/// config, etc.) — never an `alloc(0)` slice. Only free the outer container when
+/// `ps.len > 0`.
 pub fn freePatterns(allocator: Allocator, ps: []Pattern) void {
     for (ps) |*p| p.deinit();
     if (ps.len > 0) allocator.free(ps);
@@ -77,6 +81,11 @@ fn readIgnoreFile(
             const pat = try parsePattern(allocator, line, path);
             try list.append(allocator, pat);
         }
+    }
+    if (list.items.len == 0) {
+        // Keep empty as non-owned `&.{}` so freePatterns never frees a sentinel.
+        list.deinit(allocator);
+        return &.{};
     }
     return try list.toOwnedSlice(allocator);
 }
@@ -451,11 +460,34 @@ test "Dir LoadGlobalPatterns relative tilde" {
     try testing.expectEqual(@as(usize, 2), ps.len);
 
     const m = newMatcher(ps);
-    // go-git: Match([]string{".idea/"}, true) is false — pattern is ".idea/" dir-only
-    // against path segment ".idea/" (with slash in name) which does not match the
-    // dir basename ".idea". Match on "*.iml" is true.
+    // go-git TestDir_ReadRelativeGlobalGitIgnore:
+    // Match([]string{".idea/"}, true) is false — pattern is ".idea/" dir-only
+    // against path segment ".idea/" (slash in name) which does not match basename ".idea".
+    // Match on literal "*.iml" is true; "IntelliJ" (comment text) is false.
+    try testing.expect(!m.match(&.{".idea/"}, true));
     try testing.expect(m.match(&.{"*.iml"}, true));
     try testing.expect(!m.match(&.{"IntelliJ"}, true));
+}
+
+test "Dir LoadGlobalPatterns ~user path not expanded" {
+    // go-git RFSU expands ~user via passwd; gitz leaves ~user unchanged (no getpwnam).
+    // With only a file under home, LoadGlobalPatterns yields no patterns.
+    const gpa = testing.allocator;
+    const home = test_home;
+
+    var fs = try Mem.init(gpa);
+    defer fs.deinit();
+    try fs.mkdirAll(home, 0o755);
+    const cfg = try fs.joinPath(&.{ home, gitconfig_file });
+    defer gpa.free(cfg);
+    try writeFile(&fs, cfg, "[core]\n\texcludesfile = ~testuser/.gitignore_global\n");
+    const ignores = try fs.joinPath(&.{ home, ".gitignore_global" });
+    defer gpa.free(ignores);
+    try writeFile(&fs, ignores, "# IntelliJ\n.idea/\n*.iml\n");
+
+    const ps = try loadGlobalPatterns(gpa, &fs, home);
+    defer freePatterns(gpa, ps);
+    try testing.expectEqual(@as(usize, 0), ps.len);
 }
 
 test "expandTilde ~/ uses home; ~user unchanged" {

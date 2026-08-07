@@ -194,22 +194,48 @@ pub const Node = struct {
     fn calculateChildren(self: *Node) anyerror!void {
         if (!self.is_dir) return;
         if (self.children_ready) return;
-        self.children_ready = true;
 
         const entries = self.root.fs_vt.read_dir(self.root.fs_ptr, self.path) catch |err| {
-            if (err == error.NotExist) return;
+            if (err == error.NotExist) {
+                // Empty / missing dir is a successful empty children set.
+                self.children_ready = true;
+                return;
+            }
             return err;
         };
         defer self.root.fs_vt.free_read_dir(self.root.fs_ptr, entries);
+
+        // On failure roll back partial children so a retry is safe.
+        const list_start = self.children_list.items.len;
+        const all_start = self.root.all.items.len;
+        errdefer self.rollbackPartialChildren(list_start, all_start);
 
         for (entries) |file| {
             if (std.mem.eql(u8, file.name, ignore_git)) continue;
             if (file.mode & 0o170000 == 0o140000) continue;
 
             const child = try self.newChildNode(file);
-            try self.children_list.append(self.root.allocator, child);
-            try self.root.register(child);
+            self.children_list.append(self.root.allocator, child) catch |err| {
+                child.destroy();
+                return err;
+            };
+            self.root.register(child) catch |err| {
+                _ = self.children_list.pop();
+                child.destroy();
+                return err;
+            };
         }
+        self.children_ready = true;
+    }
+
+    /// Destroy children added after `list_start` / `all_start` (failed partial fill).
+    fn rollbackPartialChildren(self: *Node, list_start: usize, all_start: usize) void {
+        while (self.children_list.items.len > list_start) {
+            const c = self.children_list.pop().?;
+            c.destroy();
+        }
+        // Registered entries for those children sit at the end of `all`.
+        self.root.all.shrinkRetainingCapacity(all_start);
     }
 
     fn newChildNode(self: *Node, file: fs.FileInfo) Allocator.Error!*Node {
@@ -230,6 +256,8 @@ pub const Node = struct {
             .size = file.size,
             .mtime_sec = file.mtime_sec,
         };
+        // Path ownership moved into node; caller owns `n` until register/append.
+        // On create failure, errdefer frees child_path. On success, cancel free by return.
         return n;
     }
 
@@ -467,6 +495,7 @@ test "filesystem Diff identical" {
     try std.testing.expectEqual(@as(usize, 0), ch.items.items.len);
 }
 
+// go-git NoderSuite.TestDiffChangeContent
 test "filesystem Diff content change" {
     const a = std.testing.allocator;
     var fs_a = try fs.Mem.init(a);
@@ -475,8 +504,10 @@ test "filesystem Diff content change" {
     defer fs_b.deinit();
     try writeFile(&fs_a, "foo", "foo", 0o644);
     try writeFile(&fs_a, "qux/bar", "foo", 0o644);
+    try writeFile(&fs_a, "qux/qux", "foo", 0o644);
     try writeFile(&fs_b, "foo", "foo", 0o644);
     try writeFile(&fs_b, "qux/bar", "bar", 0o644);
+    try writeFile(&fs_b, "qux/qux", "foo", 0o644);
 
     const ra = try newRootNodeMem(a, &fs_a, null);
     defer ra.deinit();
@@ -486,8 +517,10 @@ test "filesystem Diff content change" {
     var ch = try merkletrie.diffTree(a, ra.noder(), rb.noder(), isEquals);
     defer ch.deinit();
     try std.testing.expectEqual(@as(usize, 1), ch.items.items.len);
+    try std.testing.expectEqual(merkletrie.Action.modify, try ch.items.items[0].action());
 }
 
+// go-git NoderSuite.TestDiffChangeLink
 test "filesystem Diff symlink change" {
     const a = std.testing.allocator;
     var fs_a = try fs.Mem.init(a);
@@ -505,6 +538,55 @@ test "filesystem Diff symlink change" {
     var ch = try merkletrie.diffTree(a, ra.noder(), rb.noder(), isEquals);
     defer ch.deinit();
     try std.testing.expectEqual(@as(usize, 1), ch.items.items.len);
+    try std.testing.expectEqual(merkletrie.Action.modify, try ch.items.items[0].action());
+}
+
+// go-git NoderSuite.TestDiffSymlinkDirOnA:
+// A has only a real directory tree; B also has a symlink that points at that dir.
+test "filesystem Diff symlink dir on A" {
+    const a = std.testing.allocator;
+    var fs_a = try fs.Mem.init(a);
+    defer fs_a.deinit();
+    var fs_b = try fs.Mem.init(a);
+    defer fs_b.deinit();
+    try writeFile(&fs_a, "qux/qux", "foo", 0o644);
+    try fs_b.symlink("qux", "foo");
+    try writeFile(&fs_b, "qux/qux", "foo", 0o644);
+
+    const ra = try newRootNodeMem(a, &fs_a, null);
+    defer ra.deinit();
+    const rb = try newRootNodeMem(a, &fs_b, null);
+    defer rb.deinit();
+
+    var ch = try merkletrie.diffTree(a, ra.noder(), rb.noder(), isEquals);
+    defer ch.deinit();
+    try std.testing.expectEqual(@as(usize, 1), ch.items.items.len);
+    // Symlink "foo" only on B → Insert.
+    try std.testing.expectEqual(merkletrie.Action.insert, try ch.items.items[0].action());
+}
+
+// go-git NoderSuite.TestDiffSymlinkDirOnB:
+// B has only a real directory tree; A also has a symlink that points at that dir.
+test "filesystem Diff symlink dir on B" {
+    const a = std.testing.allocator;
+    var fs_a = try fs.Mem.init(a);
+    defer fs_a.deinit();
+    var fs_b = try fs.Mem.init(a);
+    defer fs_b.deinit();
+    try fs_a.symlink("qux", "foo");
+    try writeFile(&fs_a, "qux/qux", "foo", 0o644);
+    try writeFile(&fs_b, "qux/qux", "foo", 0o644);
+
+    const ra = try newRootNodeMem(a, &fs_a, null);
+    defer ra.deinit();
+    const rb = try newRootNodeMem(a, &fs_b, null);
+    defer rb.deinit();
+
+    var ch = try merkletrie.diffTree(a, ra.noder(), rb.noder(), isEquals);
+    defer ch.deinit();
+    try std.testing.expectEqual(@as(usize, 1), ch.items.items.len);
+    // Symlink "foo" only on A → Delete.
+    try std.testing.expectEqual(merkletrie.Action.delete, try ch.items.items[0].action());
 }
 
 test "filesystem Diff missing" {
@@ -526,6 +608,7 @@ test "filesystem Diff missing" {
     try std.testing.expectEqual(@as(usize, 2), ch.items.items.len);
 }
 
+// go-git NoderSuite.TestDiffChangeMode (0644 vs 0755 → executable bit)
 test "filesystem Diff mode change" {
     const a = std.testing.allocator;
     var fs_a = try fs.Mem.init(a);
@@ -543,8 +626,10 @@ test "filesystem Diff mode change" {
     var ch = try merkletrie.diffTree(a, ra.noder(), rb.noder(), isEquals);
     defer ch.deinit();
     try std.testing.expectEqual(@as(usize, 1), ch.items.items.len);
+    try std.testing.expectEqual(merkletrie.Action.modify, try ch.items.items[0].action());
 }
 
+// go-git NoderSuite.TestDiffChangeModeNotRelevant (0644 vs 0655 → same git mode)
 test "filesystem Diff mode not relevant" {
     const a = std.testing.allocator;
     var fs_a = try fs.Mem.init(a);
@@ -562,6 +647,78 @@ test "filesystem Diff mode not relevant" {
     var ch = try merkletrie.diffTree(a, ra.noder(), rb.noder(), isEquals);
     defer ch.deinit();
     try std.testing.expectEqual(@as(usize, 0), ch.items.items.len);
+}
+
+// go-git NoderSuite.TestSocket: Unix sockets are skipped in Children.
+// Mem FS cannot create sockets (S_IFSOCK). Mock FsVTable reports socket mode
+// matching go-git's filter (file.Mode()&os.ModeSocket) / Zig 0o140000 skip,
+// and gitModeFromUnix rejecting sockets with NoEquivalentGitMode.
+test "filesystem Children ignores socket" {
+    const a = std.testing.allocator;
+
+    const SocketFs = struct {
+        allocator: Allocator,
+
+        fn readDir(ptr: *anyopaque, path: []const u8) anyerror![]fs.FileInfo {
+            _ = path;
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            const entries = try self.allocator.alloc(fs.FileInfo, 2);
+            errdefer self.allocator.free(entries);
+            entries[0] = .{
+                .name = try self.allocator.dupe(u8, "foo"),
+                .size = 3,
+                .mode = 0o100644,
+            };
+            errdefer self.allocator.free(entries[0].name);
+            // S_IFSOCK (0o140000) | 0o644 — calculateChildren skips this type.
+            entries[1] = .{
+                .name = try self.allocator.dupe(u8, "socket"),
+                .size = 0,
+                .mode = 0o140644,
+            };
+            return entries;
+        }
+
+        fn freeReadDir(ptr: *anyopaque, entries: []fs.FileInfo) void {
+            const self: *@This() = @ptrCast(@alignCast(ptr));
+            for (entries) |e| {
+                if (e.name.len > 0) self.allocator.free(e.name);
+            }
+            self.allocator.free(entries);
+        }
+
+        // Children listing does not open files; stubs for FsVTable completeness.
+        fn open(_: *anyopaque, _: []const u8) anyerror!FsFile {
+            return error.NotExist;
+        }
+        fn readlink(_: *anyopaque, _: []const u8) anyerror![]u8 {
+            return error.NotLink;
+        }
+    };
+
+    var mock: SocketFs = .{ .allocator = a };
+    const vt: FsVTable = .{
+        .read_dir = SocketFs.readDir,
+        .free_read_dir = SocketFs.freeReadDir,
+        .open = SocketFs.open,
+        .readlink = SocketFs.readlink,
+    };
+
+    const root = try newRootNode(a, &mock, &vt, null);
+    defer root.deinit();
+
+    const kids = try root.noder().children(a);
+    defer a.free(kids);
+    // Only the regular file; the socket entry is ignored.
+    try std.testing.expectEqual(@as(usize, 1), kids.len);
+    try std.testing.expectEqualStrings("foo", kids[0].name());
+}
+
+// Sanity: gitModeFromUnix rejects S_IFSOCK the same way go-git
+// filemode.NewFromOSFileMode fails for sockets (NoEquivalentGitMode).
+test "filesystem gitModeFromUnix rejects socket" {
+    try std.testing.expectError(filemode.Error.NoEquivalentGitMode, gitModeFromUnix(0o140644));
+    try std.testing.expectError(filemode.Error.NoEquivalentGitMode, gitModeFromUnix(0o140000));
 }
 
 test "filesystem Diff submodule dir" {
@@ -622,4 +779,110 @@ test "filesystem zero index modtime forces rehash" {
     @memcpy(expected[20..24], &mb);
 
     try std.testing.expectEqualSlices(u8, &expected, kids[0].hash());
+}
+
+// go-git NoderSuite.TestRacyGit (node_test.go).
+// Content change with preserved size+mtime while mtime is in the racy window
+// (mtime >= index.ModTime) must rehash file content, not trust the index hash.
+// Mem FS has no host mtime, so after Children() we set Node.mtime_sec to the
+// same controlled timestamp used in the index (same comparison as go-git).
+test "filesystem racy git rehashes when mtime in racy window" {
+    const a = std.testing.allocator;
+    var mem = try fs.Mem.init(a);
+    defer mem.deinit();
+
+    const orig_content = "foo";
+    const new_content = "bar";
+    try std.testing.expectEqual(orig_content.len, new_content.len);
+
+    try writeFile(&mem, "racyfile", orig_content, 0o644);
+
+    var foo_hasher = plumbing.Hasher.init(.blob, @intCast(orig_content.len));
+    foo_hasher.update(orig_content);
+    const foo_hash = foo_hasher.sum();
+
+    // Controlled timestamps (Unix seconds). go-git uses fi.ModTime for both
+    // entry.ModifiedAt and idx.ModTime so the file sits in the racy window.
+    const mod_sec: i64 = 1_700_000_000;
+
+    var idx = Index.init(a);
+    defer idx.deinit();
+    const e = try idx.add("racyfile");
+    e.hash = foo_hash;
+    e.size = @intCast(orig_content.len);
+    e.mode = filemode.Regular;
+    e.modified_at = index_fmt.Time.unix(mod_sec, 0);
+    idx.mod_time = index_fmt.Time.unix(mod_sec, 0);
+
+    // Same size, different content; mtime will be forced to match entry.
+    try writeFile(&mem, "racyfile", new_content, 0o644);
+
+    var bar_hasher = plumbing.Hasher.init(.blob, @intCast(new_content.len));
+    bar_hasher.update(new_content);
+    const bar_hash = bar_hasher.sum();
+    try std.testing.expect(!std.mem.eql(u8, foo_hash.bytes[0..], bar_hash.bytes[0..]));
+
+    const root = try newRootNodeMemWithOptions(a, &mem, null, .{ .index = &idx });
+    defer root.deinit();
+
+    // Materialize children (size/mode from Mem; mtime defaults to 0 on Mem).
+    const kids = try root.noder().children(a);
+    defer a.free(kids);
+    try std.testing.expectEqual(@as(usize, 1), kids.len);
+
+    // Patch mtime before Hash() so metadataMatches runs the racy-git check
+    // (mtime matches entry and is not before idx.ModTime → must rehash).
+    try std.testing.expectEqual(@as(usize, 1), root.node.children_list.items.len);
+    const file_node = root.node.children_list.items[0];
+    file_node.mtime_sec = mod_sec;
+    file_node.hash_buf = null;
+
+    const file_hash = file_node.hash();
+    var expected: [24]u8 = undefined;
+    @memcpy(expected[0..20], bar_hash.bytes[0..]);
+    const mb = filemode.bytes(filemode.Regular);
+    @memcpy(expected[20..24], &mb);
+
+    try std.testing.expectEqualSlices(u8, &expected, file_hash);
+}
+
+// Complementary case: when mtime is older than index ModTime and metadata
+// matches, the index hash is trusted (optimization path; not racy).
+test "filesystem index hash trusted when mtime before index modtime" {
+    const a = std.testing.allocator;
+    var mem = try fs.Mem.init(a);
+    defer mem.deinit();
+    try writeFile(&mem, "stable", "foo", 0o644);
+
+    var foo_hasher = plumbing.Hasher.init(.blob, 3);
+    foo_hasher.update("foo");
+    const foo_hash = foo_hasher.sum();
+
+    const file_mtime: i64 = 1_000;
+    const idx_mtime: i64 = 2_000;
+
+    var idx = Index.init(a);
+    defer idx.deinit();
+    const e = try idx.add("stable");
+    e.hash = foo_hash;
+    e.size = 3;
+    e.mode = filemode.Regular;
+    e.modified_at = index_fmt.Time.unix(file_mtime, 0);
+    idx.mod_time = index_fmt.Time.unix(idx_mtime, 0);
+
+    const root = try newRootNodeMemWithOptions(a, &mem, null, .{ .index = &idx });
+    defer root.deinit();
+
+    const kids = try root.noder().children(a);
+    defer a.free(kids);
+    try std.testing.expectEqual(@as(usize, 1), kids.len);
+    const file_node = root.node.children_list.items[0];
+    file_node.mtime_sec = file_mtime;
+    file_node.hash_buf = null;
+
+    var expected: [24]u8 = undefined;
+    @memcpy(expected[0..20], foo_hash.bytes[0..]);
+    const mb = filemode.bytes(filemode.Regular);
+    @memcpy(expected[20..24], &mb);
+    try std.testing.expectEqualSlices(u8, &expected, file_node.hash());
 }

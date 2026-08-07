@@ -2,4 +2,4 @@ name: pathutil_ntfs_dotgit
 type: file_equals
 actual: actual.txt
 expected: expected.txt
-note: "NTFS-disguised .git names that isNTFSDotGit must treat as true (security table seed)"
+note: "IsNTFSDotGit + WindowsValidPath tables from go-git internal/pathutil/ntfs_test.go"

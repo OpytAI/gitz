@@ -184,46 +184,90 @@ fn runIterTest(allocator: Allocator, tree_s: []const u8, t: IterTest) !void {
     }
 }
 
+// go-git IterSuite.TestEmptyNamedDir
+test "Iter empty named" {
+    const a = std.testing.allocator;
+    try runIterTest(a, "A()", .{ .operations = "n", .expected = "" });
+    try runIterTest(a, "A()", .{ .operations = "s", .expected = "" });
+    try runIterTest(a, "A()", .{ .operations = "nnnssnsnns", .expected = "" });
+    try runIterTest(a, "A()", .{ .operations = "sssnnsnssn", .expected = "" });
+}
+
+// go-git IterSuite.TestEmptyUnnamedDir
 test "Iter empty unnamed" {
     const a = std.testing.allocator;
     try runIterTest(a, "()", .{ .operations = "n", .expected = "" });
     try runIterTest(a, "()", .{ .operations = "s", .expected = "" });
+    try runIterTest(a, "()", .{ .operations = "nnnssnsnns", .expected = "" });
+    try runIterTest(a, "()", .{ .operations = "sssnnsnssn", .expected = "" });
 }
 
+// go-git IterSuite.TestOneFile
 test "Iter one file" {
     const a = std.testing.allocator;
     try runIterTest(a, "(a<>)", .{ .operations = "n", .expected = "a" });
     try runIterTest(a, "(a<>)", .{ .operations = "nn", .expected = "a" });
+    try runIterTest(a, "(a<>)", .{ .operations = "nnnssnsnns", .expected = "a" });
     try runIterTest(a, "(a<>)", .{ .operations = "s", .expected = "a" });
+    try runIterTest(a, "(a<>)", .{ .operations = "sssnnsnssn", .expected = "a" });
 }
 
+// go-git IterSuite.TestTwoFiles
 test "Iter two files" {
     const a = std.testing.allocator;
     try runIterTest(a, "(a<> b<>)", .{ .operations = "nnn", .expected = "a b" });
+    try runIterTest(a, "(a<> b<>)", .{ .operations = "nns", .expected = "a b" });
+    try runIterTest(a, "(a<> b<>)", .{ .operations = "nsn", .expected = "a b" });
+    try runIterTest(a, "(a<> b<>)", .{ .operations = "nss", .expected = "a b" });
+    try runIterTest(a, "(a<> b<>)", .{ .operations = "snn", .expected = "a b" });
+    try runIterTest(a, "(a<> b<>)", .{ .operations = "sns", .expected = "a b" });
+    try runIterTest(a, "(a<> b<>)", .{ .operations = "ssn", .expected = "a b" });
     try runIterTest(a, "(a<> b<>)", .{ .operations = "sss", .expected = "a b" });
 }
 
+// go-git IterSuite.TestDirWithFile
 test "Iter dir with file" {
     const a = std.testing.allocator;
     try runIterTest(a, "(a(b<>))", .{ .operations = "nnn", .expected = "a" });
+    try runIterTest(a, "(a(b<>))", .{ .operations = "nns", .expected = "a" });
     try runIterTest(a, "(a(b<>))", .{ .operations = "nsn", .expected = "a a/b" });
+    try runIterTest(a, "(a(b<>))", .{ .operations = "nss", .expected = "a a/b" });
+    try runIterTest(a, "(a(b<>))", .{ .operations = "snn", .expected = "a" });
+    try runIterTest(a, "(a(b<>))", .{ .operations = "sns", .expected = "a" });
+    try runIterTest(a, "(a(b<>))", .{ .operations = "ssn", .expected = "a a/b" });
     try runIterTest(a, "(a(b<>))", .{ .operations = "sss", .expected = "a a/b" });
 }
 
+// go-git IterSuite.TestThreeSiblings
 test "Iter three siblings" {
     const a = std.testing.allocator;
     try runIterTest(a, "(c<> a<> b<>)", .{ .operations = "nnnn", .expected = "a b c" });
+    try runIterTest(a, "(c<> a<> b<>)", .{ .operations = "nsns", .expected = "a b c" });
+    try runIterTest(a, "(c<> a<> b<>)", .{ .operations = "snss", .expected = "a b c" });
+    try runIterTest(a, "(c<> a<> b<>)", .{ .operations = "ssss", .expected = "a b c" });
 }
 
+// go-git IterSuite.TestThreeVertical
 test "Iter three vertical" {
     const a = std.testing.allocator;
+    try runIterTest(a, "(b(c(a())))", .{ .operations = "nnnn", .expected = "b" });
+    try runIterTest(a, "(b(c(a())))", .{ .operations = "nsnn", .expected = "b b/c" });
     try runIterTest(a, "(b(c(a())))", .{ .operations = "nssn", .expected = "b b/c b/c/a" });
+    try runIterTest(a, "(b(c(a())))", .{ .operations = "sssn", .expected = "b b/c b/c/a" });
+    try runIterTest(a, "(b(c(a())))", .{ .operations = "ssss", .expected = "b b/c b/c/a" });
 }
 
+// go-git IterSuite.TestThreeMix1 / TestThreeMix2
 test "Iter three mix" {
     const a = std.testing.allocator;
+    try runIterTest(a, "(c(b<>) a<>)", .{ .operations = "nnnn", .expected = "a c" });
     try runIterTest(a, "(c(b<>) a<>)", .{ .operations = "nnsn", .expected = "a c c/b" });
+    try runIterTest(a, "(c(b<>) a<>)", .{ .operations = "nsnn", .expected = "a c" });
+    try runIterTest(a, "(c(b<>) a<>)", .{ .operations = "ssss", .expected = "a c c/b" });
+    try runIterTest(a, "(b() a(c<>))", .{ .operations = "nnnn", .expected = "a b" });
     try runIterTest(a, "(b() a(c<>))", .{ .operations = "nsnn", .expected = "a a/c b" });
+    try runIterTest(a, "(b() a(c<>))", .{ .operations = "ssnn", .expected = "a a/c b" });
+    try runIterTest(a, "(b() a(c<>))", .{ .operations = "ssss", .expected = "a a/c b" });
 }
 
 test "Iter NewIterFromPath" {
@@ -270,6 +314,57 @@ test "Iter nil root" {
     defer it.deinit();
     try std.testing.expectError(error.EndOfStream, it.next());
 }
+
+// go-git IterSuite.TestNewIterFailsOnChildrenErrors.
+test "Iter NewIter fails on children errors" {
+    const a = std.testing.allocator;
+    var err_n = ErrorNoder{};
+    const n = noder.noderOf(ErrorNoder, &err_n);
+    try std.testing.expectError(error.MockError, Iter.init(a, n));
+}
+
+// go-git IterSuite.TestCrazy
+test "Iter crazy tree" {
+    const a = std.testing.allocator;
+    const crazy = "(f(e(l<>) a(n(o(p())) k<>)) d<> h(j(i<> c<> m<>) b() g<>))";
+    try runIterTest(a, crazy, .{ .operations = "nnnnn", .expected = "d f h" });
+    try runIterTest(a, crazy, .{ .operations = "nnnns", .expected = "d f h" });
+    try runIterTest(a, crazy, .{ .operations = "nnnsn", .expected = "d f h h/b h/g" });
+    try runIterTest(a, crazy, .{ .operations = "nnnss", .expected = "d f h h/b h/g" });
+    try runIterTest(a, crazy, .{ .operations = "nnsnn", .expected = "d f f/a f/e h" });
+    try runIterTest(a, crazy, .{ .operations = "nnsns", .expected = "d f f/a f/e f/e/l" });
+    try runIterTest(a, crazy, .{ .operations = "nnssn", .expected = "d f f/a f/a/k f/a/n" });
+    try runIterTest(a, crazy, .{ .operations = "nnsss", .expected = "d f f/a f/a/k f/a/n" });
+    try runIterTest(a, crazy, .{ .operations = "nsnnn", .expected = "d f h" });
+    try runIterTest(a, crazy, .{ .operations = "nsnns", .expected = "d f h" });
+    try runIterTest(a, crazy, .{ .operations = "nsnsn", .expected = "d f h h/b h/g" });
+    try runIterTest(a, crazy, .{ .operations = "nsnss", .expected = "d f h h/b h/g" });
+    try runIterTest(a, crazy, .{ .operations = "nssnn", .expected = "d f f/a f/e h" });
+}
+
+const ErrorNoder = struct {
+    pub fn hash(_: *ErrorNoder) []const u8 {
+        return &.{};
+    }
+    pub fn name(_: *ErrorNoder) []const u8 {
+        return "";
+    }
+    pub fn isDir(_: *ErrorNoder) bool {
+        return true;
+    }
+    pub fn children(_: *ErrorNoder, _: Allocator) anyerror![]Noder {
+        return error.MockError;
+    }
+    pub fn numChildren(_: *ErrorNoder) anyerror!usize {
+        return error.MockError;
+    }
+    pub fn skip(_: *ErrorNoder) bool {
+        return false;
+    }
+    pub fn string(_: *ErrorNoder, allocator: Allocator) anyerror![]u8 {
+        return try allocator.dupe(u8, "");
+    }
+};
 
 fn find(allocator: Allocator, tree: Noder, name: []const u8) !Path {
     var it = try Iter.init(allocator, tree);

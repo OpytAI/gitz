@@ -122,6 +122,9 @@ fn diffNodesSameName(changes: *Changes, ii: *DoubleIter) anyerror!void {
         var b = try to.clone(changes.allocator);
         errdefer b.deinit(changes.allocator);
         try changes.add(change_mod.newModify(a, b));
+        // Ownership transferred into Changes; clear so errdefer no-ops.
+        a = .{};
+        b = .{};
         try ii.nextBoth();
     } else if (status.file_and_dir) {
         try changes.addRecursiveDelete(from);
@@ -276,6 +279,7 @@ fn expectDiffBothWays(allocator: Allocator, from_s: []const u8, to_s: []const u8
     try expectDiff(allocator, to_s, from_s, rev);
 }
 
+// go-git DiffTreeSuite.TestEmptyVsEmpty
 test "DiffTree empty vs empty" {
     const a = std.testing.allocator;
     try expectDiffBothWays(a, "()", "()", "");
@@ -284,42 +288,100 @@ test "DiffTree empty vs empty" {
     try expectDiffBothWays(a, "A()", "B()", "");
 }
 
+// go-git DiffTreeSuite.TestBasicCases (full table)
 test "DiffTree basic cases" {
     const a = std.testing.allocator;
+    try expectDiffBothWays(a, "()", "()", "");
     try expectDiffBothWays(a, "()", "(a<>)", "+a");
     try expectDiffBothWays(a, "()", "(a<1>)", "+a");
     try expectDiffBothWays(a, "()", "(a())", "");
+    try expectDiffBothWays(a, "()", "(a(b()))", "");
     try expectDiffBothWays(a, "()", "(a(b<>))", "+a/b");
+    try expectDiffBothWays(a, "()", "(a(b<1>))", "+a/b");
     try expectDiffBothWays(a, "(a<>)", "(a<>)", "");
     try expectDiffBothWays(a, "(a<>)", "(a<1>)", "*a");
     try expectDiffBothWays(a, "(a<>)", "(a())", "-a");
+    try expectDiffBothWays(a, "(a<>)", "(a(b()))", "-a");
     try expectDiffBothWays(a, "(a<>)", "(a(b<>))", "-a +a/b");
+    try expectDiffBothWays(a, "(a<>)", "(a(b<1>))", "-a +a/b");
+    try expectDiffBothWays(a, "(a<>)", "(c())", "-a");
+    try expectDiffBothWays(a, "(a<>)", "(c(b()))", "-a");
+    try expectDiffBothWays(a, "(a<>)", "(c(b<>))", "-a +c/b");
+    try expectDiffBothWays(a, "(a<>)", "(c(b<1>))", "-a +c/b");
+    try expectDiffBothWays(a, "(a<>)", "(c(a()))", "-a");
+    try expectDiffBothWays(a, "(a<>)", "(c(a<>))", "-a +c/a");
+    try expectDiffBothWays(a, "(a<>)", "(c(a<1>))", "-a +c/a");
+    try expectDiffBothWays(a, "(a<1>)", "(a<1>)", "");
     try expectDiffBothWays(a, "(a<1>)", "(a<2>)", "*a");
     try expectDiffBothWays(a, "(a<1>)", "(b<1>)", "-a +b");
+    try expectDiffBothWays(a, "(a<1>)", "(b<2>)", "-a +b");
+    try expectDiffBothWays(a, "(a<1>)", "(a())", "-a");
+    try expectDiffBothWays(a, "(a<1>)", "(a(b()))", "-a");
+    try expectDiffBothWays(a, "(a<1>)", "(a(b<>))", "-a +a/b");
+    try expectDiffBothWays(a, "(a<1>)", "(a(b<1>))", "-a +a/b");
+    try expectDiffBothWays(a, "(a<1>)", "(a(b<2>))", "-a +a/b");
+    try expectDiffBothWays(a, "(a<1>)", "(c())", "-a");
+    try expectDiffBothWays(a, "(a<1>)", "(c(b()))", "-a");
+    try expectDiffBothWays(a, "(a<1>)", "(c(b<>))", "-a +c/b");
+    try expectDiffBothWays(a, "(a<1>)", "(c(b<1>))", "-a +c/b");
+    try expectDiffBothWays(a, "(a<1>)", "(c(b<2>))", "-a +c/b");
+    try expectDiffBothWays(a, "(a<1>)", "(c(a()))", "-a");
+    try expectDiffBothWays(a, "(a<1>)", "(c(a<>))", "-a +c/a");
+    try expectDiffBothWays(a, "(a<1>)", "(c(a<1>))", "-a +c/a");
+    try expectDiffBothWays(a, "(a<1>)", "(c(a<2>))", "-a +c/a");
+    try expectDiffBothWays(a, "(a())", "(a())", "");
+    try expectDiffBothWays(a, "(a())", "(b())", "");
+    try expectDiffBothWays(a, "(a())", "(a(b()))", "");
+    try expectDiffBothWays(a, "(a())", "(b(a()))", "");
     try expectDiffBothWays(a, "(a())", "(a(b<>))", "+a/b");
+    try expectDiffBothWays(a, "(a())", "(a(b<1>))", "+a/b");
+    try expectDiffBothWays(a, "(a())", "(b(a<>))", "+b/a");
+    try expectDiffBothWays(a, "(a())", "(b(a<1>))", "+b/a");
 }
 
+// go-git DiffTreeSuite.TestHorizontals
 test "DiffTree horizontals" {
     const a = std.testing.allocator;
     try expectDiffBothWays(a, "()", "(a<> b<>)", "+a +b");
+    try expectDiffBothWays(a, "()", "(a<> b<1>)", "+a +b");
     try expectDiffBothWays(a, "()", "(a<> b())", "+a");
+    try expectDiffBothWays(a, "()", "(a() b<>)", "+b");
+    try expectDiffBothWays(a, "()", "(a<1> b<>)", "+a +b");
+    try expectDiffBothWays(a, "()", "(a<1> b<1>)", "+a +b");
+    try expectDiffBothWays(a, "()", "(a<1> b<2>)", "+a +b");
+    try expectDiffBothWays(a, "()", "(a<1> b())", "+a");
+    try expectDiffBothWays(a, "()", "(a() b<1>)", "+b");
     try expectDiffBothWays(a, "()", "(a() b())", "");
+    try expectDiffBothWays(a, "()", "(a<> b<> c<> d<>)", "+a +b +c +d");
+    try expectDiffBothWays(a, "()", "(a<> b<1> c() d<> e<2> f())", "+a +b +d +e");
 }
 
+// go-git DiffTreeSuite.TestVerticals
 test "DiffTree verticals" {
     const a = std.testing.allocator;
     try expectDiffBothWays(a, "()", "(z<>)", "+z");
     try expectDiffBothWays(a, "()", "(a(z<>))", "+a/z");
+    try expectDiffBothWays(a, "()", "(a(b(z<>)))", "+a/b/z");
+    try expectDiffBothWays(a, "()", "(a(b(c(z<>))))", "+a/b/c/z");
     try expectDiffBothWays(a, "()", "(a(b(c(d(z<>)))))", "+a/b/c/d/z");
+    try expectDiffBothWays(a, "()", "(a(b(c(d(z<1>)))))", "+a/b/c/d/z");
 }
 
+// go-git DiffTreeSuite.TestSingleInserts (+ TestDebug)
 test "DiffTree single inserts" {
     const a = std.testing.allocator;
+    try expectDiffBothWays(a, "()", "(z<>)", "+z");
     try expectDiffBothWays(a, "(a())", "(a(z<>))", "+a/z");
+    try expectDiffBothWays(a, "(a())", "(a(b(z<>)))", "+a/b/z");
+    try expectDiffBothWays(a, "(a(b(c())))", "(a(b(c(z<>))))", "+a/b/c/z");
     try expectDiffBothWays(a, "(a<> b<> c<>)", "(a<> b<> c<> z<>)", "+z");
+    try expectDiffBothWays(a, "(a(b<> c<> d<>))", "(a(b<> c<> d<> z<>))", "+a/z");
+    try expectDiffBothWays(a, "(a(b(c<> d<> e<>)))", "(a(b(c<> d<> e<> z<>)))", "+a/b/z");
+    try expectDiffBothWays(a, "(a(b<>) f<>)", "(a(b<>) f<> z<>)", "+z");
     try expectDiffBothWays(a, "(a(b<>) f<>)", "(a(b<> z<>) f<>)", "+a/z");
 }
 
+// go-git DiffTreeSuite.TestSameNames
 test "DiffTree same names" {
     const a = std.testing.allocator;
     try expectDiffBothWays(a, "(a(a(a<>)))", "(a(a(a<1>)))", "*a/a/a");
@@ -327,6 +389,7 @@ test "DiffTree same names" {
     try expectDiffBothWays(a, "(a(b(a<>)))", "(a(b()) b(a<>))", "-a/b/a +b/a");
 }
 
+// go-git DiffTreeSuite.TestIssue275
 test "DiffTree issue 275" {
     const a = std.testing.allocator;
     try expectDiffBothWays(
@@ -337,23 +400,89 @@ test "DiffTree issue 275" {
     );
 }
 
+// go-git DiffTreeSuite.TestCrazy
 test "DiffTree crazy tree" {
     const a = std.testing.allocator;
     const crazy = "(f(e(l<1>) a(n(o(p())) k<1>)) d<1> h(j(i<1> c<2> m<>) b() g<>))";
     try expectDiffBothWays(a, crazy, crazy, "");
     try expectDiffBothWays(a, crazy, "()", "-d -f/e/l -f/a/k -h/j/i -h/j/c -h/j/m -h/g");
     try expectDiffBothWays(a, crazy, "(d<1>)", "-f/e/l -f/a/k -h/j/i -h/j/c -h/j/m -h/g");
+    try expectDiffBothWays(a, crazy, "(d<1> h(b() g<>))", "-f/e/l -f/a/k -h/j/i -h/j/c -h/j/m");
+    try expectDiffBothWays(a, crazy, "(d<1> f(e(l()) a()) h(b() g<>))", "-f/e/l -f/a/k -h/j/i -h/j/c -h/j/m");
+    try expectDiffBothWays(a, crazy, "(d<1> f(e(l<1>) a()) h(b() g<>))", "-f/a/k -h/j/i -h/j/c -h/j/m");
+    try expectDiffBothWays(
+        a,
+        crazy,
+        "(f(e(l<1>) a(n(o(p(r<1>))) k<1>)) d<1> h(j(i<1> c<2> b() m<>) g<1>))",
+        "+f/a/n/o/p/r *h/g",
+    );
 }
 
+// go-git DiffTreeSuite.TestCancel
 test "DiffTree cancel" {
     const a = std.testing.allocator;
     var from = try fsnoder.New(a, "()");
     defer from.deinit(a);
-    var to = try fsnoder.New(a, "(a<> b<1>)");
+    var to = try fsnoder.New(a, "(a<> b<1> c() d<> e<2> f())");
     defer to.deinit(a);
     const cancelled = true;
     try std.testing.expectError(
         Error.Canceled,
         diffTreeContext(a, .{ .cancelled = &cancelled }, from.noder(), to.noder(), fsnoder.hashEqual),
+    );
+}
+
+// go-git DiffTreeSuite.TestIssue1057 — precomposed vs combining accents.
+// go-git does not NFC/NFD-normalize path names; byte-different names are
+// distinct tree nodes (same as Path.Compare).
+test "DiffTree issue 1057 unicode path names no normalization" {
+    const a = std.testing.allocator;
+    // p1: ...e + combining acute (U+0301); p2: ... precomposed é (U+00E9)
+    const p1 = "TestAppWithUnicode\u{0301}Path";
+    const p2 = "TestAppWithUnicod\u{00e9}Path";
+    try std.testing.expect(!std.mem.eql(u8, p1, p2));
+
+    const from1 = try std.fmt.allocPrint(a, "({s}(x.go<1>))", .{p1});
+    defer a.free(from1);
+    const to_both = try std.fmt.allocPrint(a, "({s}(x.go<1>) {s}(x.go<1>))", .{ p1, p2 });
+    defer a.free(to_both);
+    const exp_p2 = try std.fmt.allocPrint(a, "+{s}/x.go", .{p2});
+    defer a.free(exp_p2);
+    try expectDiffBothWays(a, from1, to_both, exp_p2);
+
+    const from2 = try std.fmt.allocPrint(a, "({s}(x.go<1>))", .{p2});
+    defer a.free(from2);
+    const exp_p1 = try std.fmt.allocPrint(a, "+{s}/x.go", .{p1});
+    defer a.free(exp_p1);
+    try expectDiffBothWays(a, from2, to_both, exp_p1);
+}
+
+// Modify + delete cases from difftree_test.go basic/same-names/crazy.
+test "DiffTree modify and delete cases" {
+    const a = std.testing.allocator;
+    // Modify content hash
+    try expectDiffBothWays(a, "(a<>)", "(a<1>)", "*a");
+    try expectDiffBothWays(a, "(a<1>)", "(a<2>)", "*a");
+    // Delete file / replace with empty dir
+    try expectDiffBothWays(a, "(a<>)", "(a())", "-a");
+    try expectDiffBothWays(a, "(a<1>)", "(a())", "-a");
+    // Delete + insert (file → dir with child)
+    try expectDiffBothWays(a, "(a<>)", "(a(b<>))", "-a +a/b");
+    try expectDiffBothWays(a, "(a<1>)", "(b<1>)", "-a +b");
+    // Nested modify
+    try expectDiffBothWays(a, "(a(a(a<>)))", "(a(a(a<1>)))", "*a/a/a");
+    // Crazy tree: modify + insert + delete mix
+    const crazy = "(f(e(l<1>) a(n(o(p())) k<1>)) d<1> h(j(i<1> c<2> m<>) b() g<>))";
+    try expectDiffBothWays(
+        a,
+        crazy,
+        "(d<2> f(e(l<2>) a(s(t<1>))) h(b() g<> r<> j(i<> c<3> m<>)))",
+        "+f/a/s/t +h/r -f/a/k *d *f/e/l *h/j/c *h/j/i",
+    );
+    try expectDiffBothWays(
+        a,
+        crazy,
+        "(f(e(l<2>) a(n(o(p<1>)) k<>)) h(j(i<1> c<2> m<>) b() g<>))",
+        "*f/e/l +f/a/n/o/p *f/a/k -d",
     );
 }

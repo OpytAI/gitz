@@ -6,15 +6,43 @@ require:
     - Operation
     - UnifiedEncoder
     - ColorConfig
+    - Patch
+    - FilePatch
+    - File
+    - Chunk
+    - ColorKey
   functions:
     - newUnifiedEncoder
-  constants: []
+    - NewColorConfig
+    - WithColor
+    - Reset
+  constants:
+    - DefaultContextLines
   semantic:
     - Operation
     - UnifiedEncoder
     - ColorConfig
+    - Patch
+    - FilePatch
+    - File
+    - Chunk
+    - ColorKey
+    - newUnifiedEncoder
+    - newColorConfig
+    - withColor
+    - ColorConfig.reset
+    - DefaultContextLines
 zig_map:
   Operation: Operation
   UnifiedEncoder: UnifiedEncoder
   ColorConfig: ColorConfig
+  Patch: Patch
+  FilePatch: FilePatch
+  File: File
+  Chunk: Chunk
+  ColorKey: ColorKey
   NewUnifiedEncoder: newUnifiedEncoder
+  NewColorConfig: newColorConfig
+  WithColor: withColor
+  Reset: ColorConfig.reset
+  DefaultContextLines: DefaultContextLines

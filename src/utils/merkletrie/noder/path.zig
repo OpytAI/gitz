@@ -16,7 +16,10 @@ pub const Path = struct {
     owned: bool = false,
 
     pub fn deinit(self: *Path, allocator: Allocator) void {
-        if (self.owned and self.nodes.len > 0) {
+        // Always free when owned — empty slices may still be allocator-owned
+        // (`alloc(0)` / empty `toOwnedSlice`), and free of `&.{}` is only safe
+        // when `owned` is false (clone/fromNodes return non-owned empty).
+        if (self.owned) {
             allocator.free(@constCast(self.nodes));
         }
         self.nodes = &.{};

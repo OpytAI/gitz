@@ -1,0 +1,36 @@
+# go-git plumbing/format/gitattributes ParsePattern.Match
+# Source: go-git/plumbing/format/gitattributes/pattern_test.go
+# Format: pattern<TAB>domain_slash_or_empty<TAB>path_slash_joined<TAB>result
+# result ∈ {match, no_match}
+#
+# Domain mismatches (TestMatch_domain*)
+value	head/middle/tail	head/middle	no_match
+value	head/middle/tail	head/middle/tail	no_match
+value	head/middle/tail	head/middle/_tail_/value	no_match
+#
+# Simple match (TestSimpleMatch_*)
+vul?ano		value/vulkano	match
+middle/tail	value/volcano	value/volcano/middle/tail	match
+value/volcano	value/volcano	value/volcano/tail	no_match
+value		value/tail	no_match
+value		head/value/tail	no_match
+value		head/value	match
+value		head/val/tail	no_match
+tai		head/value/tail	no_match
+t*l		value/vulkano/tail	match
+ta?l		value/vulkano/tail	match
+v[ou]l[kc]ano		value/volcano	match
+v[ou]l[		value/vol[	no_match
+#
+# Glob match (TestGlobMatch_*)
+/value/vul?ano/tail		value/vulkano/tail	match
+value/vul?ano/tail		value/vulkano/tail	match
+value/vulkano		value/volcano	no_match
+/value/volcano		value/value/volcano	no_match
+**/*lue/vol?ano/ta?l		value/volcano/tail	match
+**/*lue/vol?ano/tail		head/value/volcano/tail	match
+**/*lue/vol?ano/tail		head/value/Volcano/tail	no_match
+/*lue/vol?ano/**		value/volcano/tail/moretail	match
+/*lue/**		value/volcano	match
+/*lue/**/vol?ano		value/middle/volcano	match
+**/head/v[ou]l[kc]ano		value/head/volcano	match

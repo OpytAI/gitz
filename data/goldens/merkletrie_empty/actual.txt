@@ -1,3 +1,24 @@
-from:empty
-to:empty
+# go-git utils/merkletrie DiffTree empty cases
+# Source: go-git/utils/merkletrie/difftree_test.go TestEmptyVsEmpty
+# fsnoder tree notation: () empty root; A() named empty dir
+# expected changes string is empty ⇒ changes:0
+#
+from:()
+to:()
 changes:0
+actions:
+#
+from:A()
+to:A()
+changes:0
+actions:
+#
+from:A()
+to:()
+changes:0
+actions:
+#
+from:A()
+to:B()
+changes:0
+actions:

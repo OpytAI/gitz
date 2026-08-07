@@ -2,4 +2,4 @@ name: revision_parse
 type: file_equals
 actual: actual.txt
 expected: expected.txt
-note: "revision parse(\"HEAD~1\") => Ref + TildePath{1}"
+note: "Parser.Parse valid component dumps (TestParseWithValidExpression) + invalid error reasons (TestParseWithInvalidExpression) from go-git internal/revision/parser_test.go"

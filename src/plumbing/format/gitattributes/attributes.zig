@@ -283,7 +283,8 @@ fn unquote(str: []const u8) UnquoteResult {
 
 const testing = std.testing;
 
-test "ReadAttributes" {
+test "Attributes_ReadAttributes" {
+    // go-git TestAttributes_ReadAttributes — macros + multi-attr line
     const gpa = testing.allocator;
     const text =
         \\[attr]sub -a
@@ -295,26 +296,43 @@ test "ReadAttributes" {
     defer freeMatchAttributes(gpa, mas);
     try testing.expectEqual(@as(usize, 4), mas.len);
 
+    // MatchAttribute[0]: macro "sub" → -a (pattern nil)
     try testing.expectEqualStrings("sub", mas[0].name);
     try testing.expect(mas[0].pattern == null);
+    try testing.expectEqual(@as(usize, 1), mas[0].attributes.len);
+    try testing.expectEqualStrings("a", mas[0].attributes[0].name);
     try testing.expect(mas[0].attributes[0].isUnset());
 
+    // MatchAttribute[1]: macro "add" → a set
     try testing.expectEqualStrings("add", mas[1].name);
     try testing.expect(mas[1].pattern == null);
+    try testing.expectEqual(@as(usize, 1), mas[1].attributes.len);
     try testing.expect(mas[1].attributes[0].isSet());
 
+    // MatchAttribute[2]: pattern "*" with attrs sub, a
     try testing.expectEqualStrings("*", mas[2].name);
     try testing.expect(mas[2].pattern != null);
+    try testing.expectEqual(@as(usize, 2), mas[2].attributes.len);
+    try testing.expectEqualStrings("sub", mas[2].attributes[0].name);
     try testing.expect(mas[2].attributes[0].isSet());
+    try testing.expectEqualStrings("a", mas[2].attributes[1].name);
+    try testing.expect(mas[2].attributes[1].isSet());
 
+    // MatchAttribute[3]: multi-attr !a foo=bar -b c
     try testing.expectEqualStrings("*", mas[3].name);
     try testing.expect(mas[3].pattern != null);
+    try testing.expectEqual(@as(usize, 4), mas[3].attributes.len);
     try testing.expect(mas[3].attributes[0].isUnspecified());
+    try testing.expectEqualStrings("a", mas[3].attributes[0].name);
     try testing.expect(mas[3].attributes[1].isValueSet());
+    try testing.expectEqualStrings("foo", mas[3].attributes[1].name);
     try testing.expectEqualStrings("bar", mas[3].attributes[1].value);
     try testing.expect(mas[3].attributes[2].isUnset());
+    try testing.expectEqualStrings("b", mas[3].attributes[2].name);
     try testing.expect(mas[3].attributes[3].isSet());
+    try testing.expectEqualStrings("c", mas[3].attributes[3].name);
 
+    // Attribute.String() forms from go-git
     const s0 = try mas[3].attributes[0].formatString(gpa);
     defer gpa.free(s0);
     try testing.expectEqualStrings("a: unspecified", s0);
@@ -329,7 +347,8 @@ test "ReadAttributes" {
     try testing.expectEqualStrings("c: set", s3);
 }
 
-test "ReadAttributes disallow macro" {
+test "Attributes_ReadAttributesDisallowMacro" {
+    // go-git TestAttributes_ReadAttributesDisallowMacro
     const gpa = testing.allocator;
     const text =
         \\[attr]sub -a
@@ -338,8 +357,67 @@ test "ReadAttributes disallow macro" {
     try testing.expectError(error.MacroNotAllowed, readAttributes(gpa, text, &.{}, false));
 }
 
-test "ReadAttributes invalid name" {
+test "Attributes_ReadAttributesInvalidName" {
+    // go-git TestAttributes_ReadAttributesInvalidName
     const gpa = testing.allocator;
     const text = "[attr]foo!bar -a\n";
     try testing.expectError(error.InvalidAttributeName, readAttributes(gpa, text, &.{}, true));
+}
+
+test "ParseAttributesLine multi-attr and comment skip" {
+    // Edge cases exercised by ReadAttributes fixtures but not separate go-git methods.
+    const gpa = testing.allocator;
+
+    // Empty / comment → empty name (skipped by ReadAttributes)
+    {
+        const empty = try parseAttributesLine(gpa, "", &.{}, true);
+        try testing.expectEqual(@as(usize, 0), empty.name.len);
+        const comment = try parseAttributesLine(gpa, "# IntelliJ", &.{}, true);
+        try testing.expectEqual(@as(usize, 0), comment.name.len);
+    }
+
+    // Multi-attr line with value + unset + set
+    {
+        var ma = try parseAttributesLine(gpa, "*.iml -text eol=lf custom", &.{}, true);
+        defer ma.deinit(gpa);
+        try testing.expectEqualStrings("*.iml", ma.name);
+        try testing.expect(ma.pattern != null);
+        try testing.expectEqual(@as(usize, 3), ma.attributes.len);
+        try testing.expect(ma.attributes[0].isUnset());
+        try testing.expectEqualStrings("text", ma.attributes[0].name);
+        try testing.expect(ma.attributes[1].isValueSet());
+        try testing.expectEqualStrings("eol", ma.attributes[1].name);
+        try testing.expectEqualStrings("lf", ma.attributes[1].value);
+        try testing.expect(ma.attributes[2].isSet());
+        try testing.expectEqualStrings("custom", ma.attributes[2].name);
+    }
+
+    // Macro line
+    {
+        var ma = try parseAttributesLine(gpa, "[attr]binary -diff -merge -text", &.{}, true);
+        defer ma.deinit(gpa);
+        try testing.expectEqualStrings("binary", ma.name);
+        try testing.expect(ma.pattern == null);
+        try testing.expectEqual(@as(usize, 3), ma.attributes.len);
+        try testing.expect(ma.attributes[0].isUnset());
+        try testing.expectEqualStrings("diff", ma.attributes[0].name);
+        try testing.expect(ma.attributes[1].isUnset());
+        try testing.expect(ma.attributes[2].isUnset());
+    }
+}
+
+test "ReadAttributes skips blank and comment lines" {
+    const gpa = testing.allocator;
+    const text =
+        \\# header
+        \\
+        \\*.o -text
+        \\
+        \\# trailing
+    ;
+    const mas = try readAttributes(gpa, text, &.{}, true);
+    defer freeMatchAttributes(gpa, mas);
+    try testing.expectEqual(@as(usize, 1), mas.len);
+    try testing.expectEqualStrings("*.o", mas[0].name);
+    try testing.expect(mas[0].attributes[0].isUnset());
 }

@@ -1,0 +1,5 @@
+name: gitattributes_simple
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "ParsePattern.Match vectors from go-git plumbing/format/gitattributes/pattern_test.go (domain, simple, glob). Dir loaders stay unit-only in dir.zig."

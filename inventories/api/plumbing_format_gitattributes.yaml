@@ -6,17 +6,43 @@ require:
     - Attribute
     - Pattern
     - Matcher
+    - MatchAttribute
+    - MatcherOptions
   functions:
     - parsePattern
     - newMatcher
+    - ReadAttributes
+    - ParseAttributesLine
+    - ReadAttributesFile
+    - ReadPatterns
+    - LoadGlobalPatterns
+    - LoadSystemPatterns
   constants: []
   semantic:
     - Attribute
     - Pattern
     - Matcher
+    - MatchAttribute
+    - MatcherOptions
+    - parsePattern
+    - newMatcher
+    - readAttributes
+    - parseAttributesLine
+    - readAttributesFile
+    - readPatterns
+    - loadGlobalPatterns
+    - loadSystemPatterns
 zig_map:
   Attribute: Attribute
   Pattern: Pattern
   Matcher: Matcher
+  MatchAttribute: MatchAttribute
+  MatcherOptions: MatcherOptions
   ParsePattern: parsePattern
   NewMatcher: newMatcher
+  ReadAttributes: readAttributes
+  ParseAttributesLine: parseAttributesLine
+  ReadAttributesFile: readAttributesFile
+  ReadPatterns: readPatterns
+  LoadGlobalPatterns: loadGlobalPatterns
+  LoadSystemPatterns: loadSystemPatterns
