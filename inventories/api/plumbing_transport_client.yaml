@@ -1,0 +1,17 @@
+# API inventory: plumbing/transport/client (phase 8)
+package: plumbing/transport/client
+phase: 8
+require:
+  types: []
+  functions:
+    - installProtocol
+    - newClient
+  constants: []
+  semantic:
+    - installProtocol
+    - newClient
+    - init
+    - deinit
+zig_map:
+  InstallProtocol: installProtocol
+  NewClient: newClient

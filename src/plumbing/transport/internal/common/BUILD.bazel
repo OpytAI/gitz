@@ -1,0 +1,46 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/transport/internal/common — pack protocol over Command pipes.
+_SRCS = [
+    "common.zig",
+    "server.zig",
+    "mocks.zig",
+    "common_test.zig",
+]
+
+zig_library(
+    name = "common",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "transport_common",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing/transport",
+        "//src/plumbing/protocol/packp",
+        "//src/plumbing/protocol/packp/capability",
+        "//src/plumbing/protocol/packp/sideband",
+        "//src/plumbing/format/pktline",
+        "//src/utils/ioutil",
+    ],
+)
+
+zig_test(
+    name = "common_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing/transport",
+        "//src/plumbing/protocol/packp",
+        "//src/plumbing/protocol/packp/capability",
+        "//src/plumbing/protocol/packp/sideband",
+        "//src/plumbing/format/pktline",
+        "//src/utils/ioutil",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

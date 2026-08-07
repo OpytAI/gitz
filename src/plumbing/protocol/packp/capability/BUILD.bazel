@@ -1,0 +1,30 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/protocol/packp/capability — capability names and ordered list.
+zig_library(
+    name = "capability",
+    import_name = "capability",
+    main = "root.zig",
+    srcs = [
+        "capability.zig",
+        "list.zig",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "capability_test",
+    size = "small",
+    main = "root.zig",
+    srcs = [
+        "capability.zig",
+        "list.zig",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

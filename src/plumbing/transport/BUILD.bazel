@@ -1,0 +1,46 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/transport — endpoint parsing + transport method sets.
+_SRCS = [
+    "error.zig",
+    "endpoint.zig",
+    "url_helpers.zig",
+]
+
+zig_library(
+    name = "transport",
+    import_name = "transport",
+    main = "root.zig",
+    srcs = _SRCS,
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/protocol/packp/capability",
+    ],
+)
+
+zig_test(
+    name = "transport_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/protocol/packp/capability",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+# Exclude nested Bazel packages (client, server, internal/common).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(
+        ["**/*"],
+        exclude = [
+            "client/**",
+            "server/**",
+            "internal/**",
+        ],
+    ),
+    visibility = ["//visibility:public"],
+)

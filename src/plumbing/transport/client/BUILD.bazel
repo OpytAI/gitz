@@ -1,0 +1,28 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/transport/client — protocol registry + NewClient.
+zig_library(
+    name = "client",
+    import_name = "client",
+    main = "root.zig",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing/transport",
+    ],
+)
+
+zig_test(
+    name = "client_test",
+    size = "small",
+    main = "root.zig",
+    deps = [
+        "//src/plumbing/transport",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

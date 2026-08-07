@@ -246,9 +246,26 @@ test_suite(
     ],
 )
 
+# Phase 8: pack protocol + transport core.
+test_suite(
+    name = "phase_8_packages",
+    tests = [
+        "//src/plumbing/protocol/packp/capability:capability_test",
+        "//src/plumbing/protocol/packp/sideband:sideband_test",
+        "//src/plumbing/protocol/packp:packp_test",
+        "//src/plumbing/transport:transport_test",
+        "//src/plumbing/transport/client:client_test",
+        "//src/plumbing/transport/server:server_test",
+        "//src/plumbing/transport/internal/common:common_test",
+    ],
+)
+
 test_suite(
     name = "phase_8",
-    tests = [":phase_7"],
+    tests = [
+        ":phase_7",
+        ":phase_8_packages",
+    ],
 )
 
 test_suite(

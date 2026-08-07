@@ -1,0 +1,35 @@
+# API inventory: plumbing/transport (phase 8)
+package: plumbing/transport
+phase: 8
+require:
+  types:
+    - Endpoint
+    - ProxyOptions
+    - Transport
+    - AuthMethod
+  functions:
+    - newEndpoint
+    - filterUnsupportedCapabilities
+  constants:
+    - UploadPackServiceName
+    - ReceivePackServiceName
+  semantic:
+    - Endpoint
+    - newEndpoint
+    - Endpoint.string
+    - ProxyOptions
+    - filterUnsupportedCapabilities
+    - UnsupportedCapabilities
+    - UploadPackServiceName
+    - ReceivePackServiceName
+    - Transport
+    - AuthMethod
+zig_map:
+  Endpoint: Endpoint
+  NewEndpoint: newEndpoint
+  ProxyOptions: ProxyOptions
+  FilterUnsupportedCapabilities: filterUnsupportedCapabilities
+  UploadPackServiceName: UploadPackServiceName
+  ReceivePackServiceName: ReceivePackServiceName
+  Transport: Transport
+  AuthMethod: AuthMethod

@@ -1,0 +1,50 @@
+# API inventory: plumbing/protocol/packp/capability (phase 8)
+package: plumbing/protocol/packp/capability
+phase: 8
+require:
+  types:
+    - List
+    - Capability
+  functions:
+    - defaultAgent
+  constants:
+    - MultiACK
+    - Sideband64k
+    - OFSDelta
+    - Agent
+    - ReportStatus
+    - ThinPack
+  semantic:
+    - List
+    - List.init
+    - List.decode
+    - List.add
+    - List.set
+    - List.supports
+    - List.delete
+    - List.string
+    - List.all
+    - List.isEmpty
+    - defaultAgent
+    - MultiACK
+    - MultiACKDetailed
+    - Sideband
+    - Sideband64k
+    - OFSDelta
+    - Agent
+    - ThinPack
+    - ReportStatus
+    - DeleteRefs
+    - SymRef
+    - Filter
+zig_map:
+  List: List
+  Capability: Capability
+  NewList: List.init
+  defaultAgent: defaultAgent
+  MultiACK: MultiACK
+  Sideband64k: Sideband64k
+  OFSDelta: OFSDelta
+  Agent: Agent
+  ReportStatus: ReportStatus
+  ThinPack: ThinPack

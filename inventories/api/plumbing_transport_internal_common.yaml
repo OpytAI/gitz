@@ -1,0 +1,24 @@
+# API inventory: plumbing/transport/internal/common (phase 8)
+package: plumbing/transport/internal/common
+phase: 8
+require:
+  types:
+    - Commander
+    - Command
+    - Client
+    - Session
+  functions:
+    - newClient
+  constants: []
+  semantic:
+    - Commander
+    - Command
+    - Client
+    - Session
+    - newClient
+zig_map:
+  Commander: Commander
+  Command: Command
+  Client: Client
+  Session: Session
+  NewClient: newClient

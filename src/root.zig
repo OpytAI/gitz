@@ -39,6 +39,15 @@ pub const storage = @import("storage");
 /// In-memory storage backend (go-git `storage/memory`). Import name from package.
 pub const memory_storage = @import("memory");
 
+// Phase 8 protocol + transport core.
+pub const capability = @import("capability");
+pub const sideband = @import("sideband");
+pub const packp = @import("packp");
+pub const transport = @import("transport");
+pub const transport_client = @import("client");
+pub const transport_server = @import("server");
+pub const transport_common = @import("transport_common");
+
 test "identity" {
     try std.testing.expectEqualStrings("gitz", name);
     try std.testing.expectEqualStrings("v5.19.2", go_git_pin);
@@ -97,4 +106,19 @@ test "phase4 storer memory cache surface" {
     _ = storer.resolveReference;
     _ = storer.newEncodedObjectSliceIter;
     _ = storer.newReferenceSliceIter;
+}
+
+test "phase8 protocol transport surface" {
+    try std.testing.expectEqualStrings("multi_ack", capability.MultiACK);
+    try std.testing.expectEqual(@as(usize, 1000), sideband.MaxPackedSize);
+    try std.testing.expectEqualStrings("git-upload-pack", transport.UploadPackServiceName);
+    _ = packp.AdvRefs;
+    _ = packp.AdvRefs.init;
+    _ = transport.newEndpoint;
+    _ = transport.filterUnsupportedCapabilities;
+    _ = transport_client.installProtocol;
+    _ = transport_client.newClient;
+    _ = transport_server.newServer;
+    _ = transport_server.MapLoader;
+    _ = transport_common.newClient;
 }

@@ -1,0 +1,4 @@
+name: transport_endpoint_http
+type: file_equals
+actual: actual.txt
+expected: expected.txt

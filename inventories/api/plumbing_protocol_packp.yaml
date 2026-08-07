@@ -1,0 +1,46 @@
+# API inventory: plumbing/protocol/packp (phase 8)
+package: plumbing/protocol/packp
+phase: 8
+require:
+  types:
+    - AdvRefs
+    - UploadRequest
+    - UploadPackRequest
+    - UploadPackResponse
+    - ReferenceUpdateRequest
+    - ReportStatus
+    - ServerResponse
+    - ShallowUpdate
+    - GitProtoRequest
+  functions:
+    - AdvRefs.init
+    - isFlush
+  constants: []
+  semantic:
+    - AdvRefs
+    - AdvRefs.init
+    - AdvRefs.encode
+    - AdvRefs.decode
+    - UploadPackRequest
+    - UploadPackRequest.init
+    - UploadPackResponse
+    - ReferenceUpdateRequest
+    - ReportStatus
+    - ReportStatus.init
+    - ServerResponse
+    - ShallowUpdate
+    - GitProtoRequest
+    - isFlush
+    - Filter
+zig_map:
+  AdvRefs: AdvRefs
+  NewAdvRefs: AdvRefs.init
+  UploadRequest: UploadRequest
+  UploadPackRequest: UploadPackRequest
+  UploadPackResponse: UploadPackResponse
+  ReferenceUpdateRequest: ReferenceUpdateRequest
+  ReportStatus: ReportStatus
+  ServerResponse: ServerResponse
+  ShallowUpdate: ShallowUpdate
+  GitProtoRequest: GitProtoRequest
+  isFlush: isFlush

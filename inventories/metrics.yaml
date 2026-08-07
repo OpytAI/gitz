@@ -14,10 +14,9 @@ packages:
   max_missing: 0
 
 api:
-  # Count of inventories/api/*.yaml (phases 1–7).
-  # Phase 7 adds: plumbing_object, plumbing_format_commitgraph,
-  # plumbing_object_commitgraph, plumbing_revlist.
-  min_files: 28
+  # Count of inventories/api/*.yaml (phases 1–8).
+  # Phase 8 adds: packp, capability, sideband, transport, client, server, internal/common.
+  min_files: 35
   # For due API files (phase ≤ current): zig_map coverage of require names.
   # Phase 1: due API packages should map zig_map names into sources.
   min_mapped_ratio: 0.5
@@ -30,7 +29,8 @@ goldens:
   # storage_fs_loose_object_path (25).
   # Phase 7: object_empty_tree + object_empty_blob + object_empty_commit_tree
   # + revlist_empty_tips (29).
-  min_count: 29
+  # Phase 8: packp_advrefs_empty + sideband_channel_byte + transport_endpoint_http (32).
+  min_count: 32
 
 
 allowlists:

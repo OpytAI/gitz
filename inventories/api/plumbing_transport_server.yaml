@@ -1,0 +1,23 @@
+# API inventory: plumbing/transport/server (phase 8)
+package: plumbing/transport/server
+phase: 8
+require:
+  types:
+    - MapLoader
+    - Loader
+  functions:
+    - newServer
+    - newClient
+  constants: []
+  semantic:
+    - MapLoader
+    - Loader
+    - newServer
+    - newClient
+    - UploadPackSession
+    - ReceivePackSession
+zig_map:
+  MapLoader: MapLoader
+  Loader: Loader
+  NewServer: newServer
+  NewClient: newClient

@@ -1,0 +1,40 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/protocol/packp/sideband — sideband mux/demux over pkt-line.
+zig_library(
+    name = "sideband",
+    main = "root.zig",
+    srcs = [
+        "common.zig",
+        "demux.zig",
+        "muxer.zig",
+    ],
+    import_name = "sideband",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing/format/pktline",
+        "//src/utils/trace",
+    ],
+)
+
+zig_test(
+    name = "sideband_test",
+    size = "small",
+    main = "root.zig",
+    srcs = [
+        "common.zig",
+        "demux.zig",
+        "muxer.zig",
+    ],
+    deps = [
+        "//src/plumbing/format/pktline",
+        "//src/utils/trace",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

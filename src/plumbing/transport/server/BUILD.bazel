@@ -1,0 +1,61 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/transport/server — in-process upload-pack / receive-pack.
+_SRCS = [
+    "loader.zig",
+    "server.zig",
+    "server_test.zig",
+]
+
+zig_library(
+    name = "server",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "server",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/transport",
+        "//src/plumbing/protocol/packp",
+        "//src/plumbing/protocol/packp/capability",
+        "//src/plumbing/protocol/packp/sideband",
+        "//src/plumbing/storer",
+        "//src/plumbing/revlist",
+        "//src/plumbing/format/packfile",
+        "//src/plumbing/cache",
+        "//src/storage/memory",
+        "//src/storage/filesystem",
+        "//src/fs",
+        "//src/utils/ioutil",
+        "//src/utils/sync",
+    ],
+)
+
+zig_test(
+    name = "server_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/transport",
+        "//src/plumbing/protocol/packp",
+        "//src/plumbing/protocol/packp/capability",
+        "//src/plumbing/protocol/packp/sideband",
+        "//src/plumbing/storer",
+        "//src/plumbing/revlist",
+        "//src/plumbing/format/packfile",
+        "//src/plumbing/cache",
+        "//src/storage/memory",
+        "//src/storage/filesystem",
+        "//src/fs",
+        "//src/utils/ioutil",
+        "//src/utils/sync",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

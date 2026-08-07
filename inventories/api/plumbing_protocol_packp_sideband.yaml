@@ -1,0 +1,37 @@
+# API inventory: plumbing/protocol/packp/sideband (phase 8)
+package: plumbing/protocol/packp/sideband
+phase: 8
+require:
+  types:
+    - Demuxer
+    - Muxer
+    - Type
+    - Channel
+  functions: []
+  constants:
+    - MaxPackedSize
+    - MaxPackedSize64k
+    - PackData
+  semantic:
+    - Demuxer
+    - Muxer
+    - Demuxer.init
+    - Demuxer.read
+    - Muxer.init
+    - Muxer.write
+    - Muxer.writeChannel
+    - MaxPackedSize
+    - MaxPackedSize64k
+    - Channel.packData
+    - Channel.progressMessage
+    - Channel.errorMessage
+zig_map:
+  Demuxer: Demuxer
+  Muxer: Muxer
+  Type: Type
+  Channel: Channel
+  NewDemuxer: Demuxer.init
+  NewMuxer: Muxer.init
+  MaxPackedSize: MaxPackedSize
+  MaxPackedSize64k: MaxPackedSize64k
+  PackData: packData

@@ -1,0 +1,64 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/protocol/packp — pack protocol messages.
+_SRCS = [
+    "common.zig",
+    "filter.zig",
+    "gitproto.zig",
+    "shallowupd.zig",
+    "srvresp.zig",
+    "report_status.zig",
+    "advrefs.zig",
+    "advrefs_encode.zig",
+    "advrefs_decode.zig",
+    "ulreq.zig",
+    "ulreq_encode.zig",
+    "ulreq_decode.zig",
+    "uppackreq.zig",
+    "uppackresp.zig",
+    "updreq.zig",
+    "updreq_encode.zig",
+    "updreq_decode.zig",
+]
+
+zig_library(
+    name = "packp",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "packp",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/format/pktline",
+        "//src/plumbing/protocol/packp/capability",
+        "//src/plumbing/protocol/packp/sideband",
+        "//src/storage/memory",
+        "//src/plumbing/storer",
+        "//src/utils/trace",
+        "//src/utils/ioutil",
+    ],
+)
+
+zig_test(
+    name = "packp_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/format/pktline",
+        "//src/plumbing/protocol/packp/capability",
+        "//src/plumbing/protocol/packp/sideband",
+        "//src/storage/memory",
+        "//src/plumbing/storer",
+        "//src/utils/trace",
+        "//src/utils/ioutil",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)
