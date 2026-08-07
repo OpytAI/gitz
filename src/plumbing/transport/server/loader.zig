@@ -98,7 +98,11 @@ pub const RepoStorer = struct {
             }
             fn removeReferenceFn(ptr: *anyopaque, name: ReferenceName) anyerror!void {
                 const s: *T = @ptrCast(@alignCast(ptr));
-                s.removeReference(name);
+                // memory.Storage.removeReference is void; filesystem/transactional return !void.
+                const result = s.removeReference(name);
+                if (comptime @typeInfo(@TypeOf(result)) == .error_union) {
+                    return try result;
+                }
             }
             fn forEachHashRefFn(ptr: *anyopaque, ctx: *anyopaque, cb: HashRefCallback) anyerror!void {
                 const s: *T = @ptrCast(@alignCast(ptr));
@@ -205,8 +209,16 @@ pub fn FilesystemLoader(comptime Fs: type) type {
                 return transport.Error.RepositoryNotFound;
             };
 
+            // Track whether ownership transferred to `owned_*` lists so errdefer
+            // does not double-free after a successful append.
+            var fs_owned = false;
+            var cache_owned = false;
+
             const fs_ptr = try self.allocator.create(Fs);
-            errdefer self.allocator.destroy(fs_ptr);
+            errdefer if (!fs_owned) {
+                fs_ptr.deinit();
+                self.allocator.destroy(fs_ptr);
+            };
             fs_ptr.* = chrooted;
 
             // Bare repo has top-level `config`; non-bare has `.git`.
@@ -216,20 +228,29 @@ pub fn FilesystemLoader(comptime Fs: type) type {
             };
             if (!bare) {
                 _ = fs_ptr.stat(".git") catch {
-                    fs_ptr.deinit();
-                    self.allocator.destroy(fs_ptr);
                     return transport.Error.RepositoryNotFound;
                 };
             }
 
             try self.owned_fs.append(self.allocator, fs_ptr);
+            fs_owned = true;
 
             const cache_ptr = try self.allocator.create(cache_pkg.ObjectLru);
-            errdefer self.allocator.destroy(cache_ptr);
+            errdefer if (!cache_owned) {
+                cache_ptr.deinit();
+                self.allocator.destroy(cache_ptr);
+            };
             cache_ptr.* = cache_pkg.ObjectLru.initDefault(self.allocator);
             try self.owned_caches.append(self.allocator, cache_ptr);
+            cache_owned = true;
 
             const sto = try filesystem.newStorageWithOptionsFor(Fs, self.allocator, fs_ptr, cache_ptr, .{});
+            errdefer {
+                // Storage owns nothing of fs/cache beyond pointers; free on failure
+                // before it is recorded in owned_storages.
+                sto.deinit();
+                self.allocator.destroy(sto);
+            }
             try self.owned_storages.append(self.allocator, sto);
             return RepoStorer.from(StorageT, sto);
         }

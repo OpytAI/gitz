@@ -1,0 +1,4 @@
+name: sideband_pack_channel
+type: file_equals
+actual: actual.txt
+expected: expected.txt

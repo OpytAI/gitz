@@ -120,11 +120,14 @@ pub const MockCommand = struct {
     }
 };
 
-/// Commander that always returns a MockCommand with fixed stderr
+/// Commander that always returns a MockCommand with fixed stderr/stdout
 /// (go-git `MockCommander`).
 pub const MockCommander = struct {
     allocator: Allocator,
     stderr: []const u8 = "",
+    /// Preloaded stdout for the created command (e.g. encoded AdvRefs pkt-lines).
+    /// Empty (default) → EmptyInput path on advertise decode.
+    stdout: []const u8 = "",
     /// Last command created (test inspection); not owned beyond commander lifetime.
     last: ?*MockCommand = null,
     /// Owned commands for deinit.
@@ -162,8 +165,7 @@ pub const MockCommander = struct {
         if (self.stderr.len > 0) {
             try mc.setStderr(self.stderr);
         }
-        // Empty stdout → EmptyInput path on advertise decode.
-        try mc.setStdout(&.{});
+        try mc.setStdout(self.stdout);
         try self.owned.append(self.allocator, mc);
         self.last = mc;
         return mc.asCommand();

@@ -12,9 +12,12 @@ const memory = @import("memory");
 const packfile = @import("packfile");
 const sync = @import("utils/sync");
 const revlist = @import("revlist");
+const fs_pkg = @import("fs");
 
 const server_pkg = @import("root.zig");
 const MapLoader = server_pkg.MapLoader;
+const FilesystemLoaderMem = server_pkg.FilesystemLoaderMem;
+const newFilesystemLoaderMem = server_pkg.newFilesystemLoaderMem;
 const newServer = server_pkg.newServer;
 const newClient = server_pkg.newClient;
 
@@ -82,6 +85,34 @@ fn populateRepo(s: *memory.Storage, allocator: Allocator) !Hash {
     return commit;
 }
 
+/// Store an annotated tag object pointing at `target` (`target_type` is e.g. "commit" or "tag").
+fn storeAnnotatedTag(
+    s: *memory.Storage,
+    allocator: Allocator,
+    target: Hash,
+    target_type: []const u8,
+    name: []const u8,
+) !Hash {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    var hex: [plumbing.HexSize]u8 = undefined;
+    try buf.appendSlice(allocator, "object ");
+    try buf.appendSlice(allocator, target.string(&hex));
+    try buf.append(allocator, '\n');
+    try buf.appendSlice(allocator, "type ");
+    try buf.appendSlice(allocator, target_type);
+    try buf.append(allocator, '\n');
+    try buf.appendSlice(allocator, "tag ");
+    try buf.appendSlice(allocator, name);
+    try buf.append(allocator, '\n');
+    try buf.appendSlice(allocator, "tagger A <a@b> 1 +0000\n\n");
+    try buf.appendSlice(allocator, "annotated tag\n");
+    const obj = try s.newEncodedObject();
+    obj.setType(.tag);
+    _ = try obj.write(buf.items);
+    return s.setEncodedObject(obj);
+}
+
 // ---------------------------------------------------------------------------
 // MapLoader
 // ---------------------------------------------------------------------------
@@ -106,6 +137,134 @@ test "MapLoader load and miss" {
     const got = try loader.load(&ep);
     // Same underlying pointer for memory storage.
     try std.testing.expect(got.ptr == @as(*anyopaque, @ptrCast(sto)));
+}
+
+// ---------------------------------------------------------------------------
+// FilesystemLoader (Mem) — go-git loader_test.go parity
+// ---------------------------------------------------------------------------
+
+/// Write a small file on a Mem FS (parent dirs created by open/create).
+fn writeMemFile(mem: *fs_pkg.Mem, path: []const u8, content: []const u8) !void {
+    var f = try mem.create(path);
+    defer f.close() catch {};
+    if (content.len > 0) _ = try f.write(content);
+}
+
+test "FilesystemLoaderMem loads bare repo" {
+    const allocator = std.testing.allocator;
+
+    var mem = try fs_pkg.Mem.init(allocator);
+    defer mem.deinit();
+
+    // Bare layout: config at repository root (go-git bare = Stat("config") ok).
+    try mem.mkdirAll("/repo", 0o755);
+    try writeMemFile(&mem, "/repo/config", "[core]\n\tbare = true\n");
+    try mem.mkdirAll("/repo/objects/pack", 0o755);
+    try mem.mkdirAll("/repo/objects/info", 0o755);
+    try mem.mkdirAll("/repo/refs/heads", 0o755);
+    try mem.mkdirAll("/repo/refs/tags", 0o755);
+
+    var loader = newFilesystemLoaderMem(allocator, &mem);
+    defer loader.deinit();
+
+    var ep = try makeEndpoint(allocator, "/repo");
+    defer freeEndpoint(allocator, &ep);
+
+    // Load succeeds and yields a non-null type-erased storer (go-git: sto NotNil).
+    const sto = try loader.load(&ep);
+    try std.testing.expect(@intFromPtr(sto.ptr) != 0);
+}
+
+test "FilesystemLoaderMem loads non-bare repo" {
+    const allocator = std.testing.allocator;
+
+    var mem = try fs_pkg.Mem.init(allocator);
+    defer mem.deinit();
+
+    // Non-bare: worktree root has `.git` (no top-level config).
+    try mem.mkdirAll("/work/.git", 0o755);
+    try writeMemFile(&mem, "/work/.git/config", "[core]\n\tbare = false\n");
+    try mem.mkdirAll("/work/.git/objects/pack", 0o755);
+    try mem.mkdirAll("/work/.git/objects/info", 0o755);
+    try mem.mkdirAll("/work/.git/refs/heads", 0o755);
+    try mem.mkdirAll("/work/.git/refs/tags", 0o755);
+
+    var loader = newFilesystemLoaderMem(allocator, &mem);
+    defer loader.deinit();
+
+    var ep = try makeEndpoint(allocator, "/work");
+    defer freeEndpoint(allocator, &ep);
+
+    const sto = try loader.load(&ep);
+    try std.testing.expect(@intFromPtr(sto.ptr) != 0);
+}
+
+test "FilesystemLoaderMem missing path is RepositoryNotFound" {
+    const allocator = std.testing.allocator;
+
+    var mem = try fs_pkg.Mem.init(allocator);
+    defer mem.deinit();
+
+    var loader = newFilesystemLoaderMem(allocator, &mem);
+    defer loader.deinit();
+
+    var ep = try makeEndpoint(allocator, "/does-not-exist");
+    defer freeEndpoint(allocator, &ep);
+
+    try std.testing.expectError(error.RepositoryNotFound, loader.load(&ep));
+}
+
+test "FilesystemLoaderMem ignore host on missing path" {
+    const allocator = std.testing.allocator;
+
+    var mem = try fs_pkg.Mem.init(allocator);
+    defer mem.deinit();
+
+    var loader = newFilesystemLoaderMem(allocator, &mem);
+    defer loader.deinit();
+
+    // Host is ignored; only path `/does-not-exist` is resolved on base FS.
+    var ep = try makeEndpoint(allocator, "https://github.com/does-not-exist");
+    defer freeEndpoint(allocator, &ep);
+
+    try std.testing.expectError(error.RepositoryNotFound, loader.load(&ep));
+}
+
+test "FilesystemLoaderMem empty dir without config or .git is RepositoryNotFound" {
+    const allocator = std.testing.allocator;
+
+    var mem = try fs_pkg.Mem.init(allocator);
+    defer mem.deinit();
+
+    try mem.mkdirAll("/empty", 0o755);
+
+    var loader = newFilesystemLoaderMem(allocator, &mem);
+    defer loader.deinit();
+
+    var ep = try makeEndpoint(allocator, "/empty");
+    defer freeEndpoint(allocator, &ep);
+
+    try std.testing.expectError(error.RepositoryNotFound, loader.load(&ep));
+}
+
+test "FilesystemLoaderMem file URL bare repo" {
+    const allocator = std.testing.allocator;
+
+    var mem = try fs_pkg.Mem.init(allocator);
+    defer mem.deinit();
+
+    try mem.mkdirAll("/bare.git", 0o755);
+    try writeMemFile(&mem, "/bare.git/config", "[core]\n\tbare = true\n");
+
+    var loader = FilesystemLoaderMem.init(allocator, &mem);
+    defer loader.deinit();
+
+    var ep = try makeEndpoint(allocator, "file:///bare.git");
+    defer freeEndpoint(allocator, &ep);
+    try std.testing.expectEqualStrings("/bare.git", ep.path);
+
+    const sto = try loader.load(&ep);
+    try std.testing.expect(@intFromPtr(sto.ptr) != 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -143,6 +302,65 @@ test "advertise refs on memory storage" {
     // HEAD / master present.
     try std.testing.expect(ar.head != null);
     _ = head;
+}
+
+test "advertise peels annotated tag under refs/tags" {
+    const allocator = std.testing.allocator;
+
+    var loader = MapLoader.init(allocator);
+    defer loader.deinit();
+
+    const sto = try memory.newStorage(allocator);
+    defer {
+        sto.deinit();
+        allocator.destroy(sto);
+    }
+    const commit = try populateRepo(sto, allocator);
+
+    // Lightweight tag: hash ref points at commit — no peeled entry.
+    try sto.setReference(Reference.newHashReference(
+        plumbing.ReferenceName.init("refs/tags/v-light"),
+        commit,
+    ));
+
+    // Annotated tag object → commit.
+    const tag_hash = try storeAnnotatedTag(sto, allocator, commit, "commit", "v1.0");
+    try sto.setReference(Reference.newHashReference(
+        plumbing.ReferenceName.init("refs/tags/v1.0"),
+        tag_hash,
+    ));
+
+    // Tag-of-tag: peel recursively to the commit.
+    const outer_tag = try storeAnnotatedTag(sto, allocator, tag_hash, "tag", "v1.0-meta");
+    try sto.setReference(Reference.newHashReference(
+        plumbing.ReferenceName.init("refs/tags/v1.0-meta"),
+        outer_tag,
+    ));
+
+    var ep = try makeEndpoint(allocator, "file://peel-repo");
+    defer freeEndpoint(allocator, &ep);
+    try loader.put(&ep, sto);
+
+    var srv = newServer(allocator, loader.asLoader());
+    var sess = try srv.newUploadPackSession(&ep, null);
+    defer sess.close();
+
+    const ar = try sess.advertisedReferences();
+    defer packp.freeAdvRefs(allocator, ar);
+
+    // Tip refs present with tag object hashes (not commit).
+    try std.testing.expect(ar.references.get("refs/tags/v1.0").?.eql(tag_hash));
+    try std.testing.expect(ar.references.get("refs/tags/v1.0-meta").?.eql(outer_tag));
+    try std.testing.expect(ar.references.get("refs/tags/v-light").?.eql(commit));
+
+    // Peeled map has entry for annotated tags only; value is ultimate non-tag.
+    try std.testing.expect(ar.peeled.get("refs/tags/v1.0") != null);
+    try std.testing.expect(ar.peeled.get("refs/tags/v1.0").?.eql(commit));
+    try std.testing.expect(ar.peeled.get("refs/tags/v1.0-meta") != null);
+    try std.testing.expect(ar.peeled.get("refs/tags/v1.0-meta").?.eql(commit));
+
+    // Lightweight tag must not appear in peeled.
+    try std.testing.expect(ar.peeled.get("refs/tags/v-light") == null);
 }
 
 test "asClient empty repo yields EmptyRemoteRepository" {

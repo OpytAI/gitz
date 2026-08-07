@@ -23,6 +23,8 @@
 //! | TestIsRepoNotFoundError* | `isRepoNotFoundError *` |
 //! | TestCheckNotFoundError | `ensureFirstErrLine empty stderr` |
 //! | TestAdvertisedReferencesWithRemoteError | `AdvertisedReferences * stderr` |
+//! | (extension) real pkt-line AdvRefs | `Session advertisedReferences decodes real AdvRefs pkt-lines` |
+//! | ServeUploadPack / ServeReceivePack stdio | `serve_test.zig` e2e over memory buffers |
 
 const common_mod = @import("common.zig");
 const server_mod = @import("server.zig");
@@ -51,4 +53,5 @@ test {
     _ = @import("server.zig");
     _ = @import("mocks.zig");
     _ = @import("common_test.zig");
+    _ = @import("serve_test.zig");
 }

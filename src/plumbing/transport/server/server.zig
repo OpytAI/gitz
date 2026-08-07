@@ -546,13 +546,64 @@ fn setHEAD(s: RepoStorer, ar: *packp.AdvRefs) !void {
 fn setReferences(s: RepoStorer, ar: *packp.AdvRefs) !void {
     const Ctx = struct {
         ar: *packp.AdvRefs,
+        storer: RepoStorer,
         fn cb(ctx: *anyopaque, name: []const u8, hash: Hash) anyerror!void {
             const self: *@This() = @ptrCast(@alignCast(ctx));
             try self.ar.putReference(name, hash);
+            // Pack-protocol peel for annotated tags under refs/tags/*
+            // (go-git server still leaves this as a TODO).
+            if (std.mem.startsWith(u8, name, "refs/tags/")) {
+                if (try peelToNonTag(self.storer, hash)) |peeled| {
+                    if (!peeled.eql(hash)) {
+                        try self.ar.putPeeled(name, peeled);
+                    }
+                }
+            }
         }
     };
-    var ctx = Ctx{ .ar = ar };
+    var ctx = Ctx{ .ar = ar, .storer = s };
     try s.forEachHashRef(@ptrCast(&ctx), Ctx.cb);
+}
+
+/// Follow annotated tag chains to the first non-tag target hash.
+/// Returns null if the object is not a tag or cannot be read.
+fn peelToNonTag(s: RepoStorer, start: Hash) !?Hash {
+    var current = start;
+    var depth: usize = 0;
+    const max_peel: usize = 16;
+    while (depth < max_peel) : (depth += 1) {
+        // Store-owned pointer (e.g. memory.Storage); do not free.
+        const obj = s.encodedObject(.any, current) catch |err| {
+            if (err == error.ObjectNotFound) return if (depth == 0) null else current;
+            return err;
+        };
+        if (obj.object_type != .tag) {
+            return if (depth == 0) null else current;
+        }
+        const target = parseTagTarget(obj.readerBytes()) orelse return if (depth == 0) null else current;
+        current = target;
+    }
+    return current;
+}
+
+/// Minimal tag body parse: first `object <40-hex>` line.
+fn parseTagTarget(body: []const u8) ?Hash {
+    var line_start: usize = 0;
+    while (line_start < body.len) {
+        const rest = body[line_start..];
+        const nl = std.mem.indexOfScalar(u8, rest, '\n') orelse rest.len;
+        const line = rest[0..nl];
+        if (std.mem.startsWith(u8, line, "object ")) {
+            const hex = line["object ".len..];
+            if (hex.len >= plumbing.HexSize) {
+                return plumbing.newHash(hex[0..plumbing.HexSize]);
+            }
+            return null;
+        }
+        if (line.len == 0) break; // end of headers
+        line_start += nl + 1;
+    }
+    return null;
 }
 
 fn referenceExists(s: RepoStorer, n: ReferenceName) !bool {

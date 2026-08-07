@@ -29,8 +29,10 @@ goldens:
   # storage_fs_loose_object_path (25).
   # Phase 7: object_empty_tree + object_empty_blob + object_empty_commit_tree
   # + revlist_empty_tips (29).
-  # Phase 8: packp_advrefs_empty + sideband_channel_byte + transport_endpoint_http (32).
-  min_count: 32
+  # Phase 8: packp_advrefs_empty + packp_advrefs_with_head + packp_ulreq_simple
+  # + packp_report_status_ok + sideband_channel_byte + sideband_pack_channel
+  # + transport_endpoint_http + transport_endpoint_scp (37).
+  min_count: 37
 
 
 allowlists:

@@ -1,0 +1,4 @@
+name: packp_advrefs_with_head
+type: file_equals
+actual: actual.txt
+expected: expected.txt

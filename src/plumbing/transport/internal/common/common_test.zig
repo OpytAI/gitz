@@ -2,9 +2,14 @@
 //! (go-git `common_test.go` + mock advertise paths).
 
 const std = @import("std");
+const plumbing = @import("plumbing");
 const transport = @import("transport");
+const packp = @import("packp");
+const capability = @import("capability");
 const common = @import("common.zig");
 const mocks = @import("mocks.zig");
+
+const Writer = std.Io.Writer;
 
 test "isRepoNotFoundError unknown source" {
     const msg = "unknown system is complaining of something very sad :(";
@@ -124,6 +129,44 @@ test "AdvertisedReferences GitLab not found on stderr" {
                 err == error.EmptyRemoteRepository,
         );
     }
+}
+
+test "Session advertisedReferences decodes real AdvRefs pkt-lines" {
+    const allocator = std.testing.allocator;
+
+    // Minimal advertise: one hash ref + caps including an unsupported one.
+    var ar_in = packp.AdvRefs.init(allocator);
+    defer ar_in.deinit();
+    const master_hash = plumbing.newHash("a6930aaee06755d1bdcfd943fbf614e4d92bb0c7");
+    try ar_in.putReference("refs/heads/master", master_hash);
+    try ar_in.capabilities.add(capability.MultiACK, &.{});
+    try ar_in.capabilities.add(capability.OFSDelta, &.{});
+
+    var aw: Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    try ar_in.encode(&aw.writer);
+    const encoded = try allocator.dupe(u8, aw.written());
+    defer allocator.free(encoded);
+
+    var cmdr = mocks.MockCommander.init(allocator);
+    defer cmdr.deinit();
+    cmdr.stdout = encoded;
+
+    var client = common.newClient(allocator, cmdr.asCommander());
+    var ep = makeEp();
+    var sess = try client.newUploadPackSession(&ep, null);
+    // Session owns cached AdvRefs — free only via close.
+    defer sess.close() catch {};
+
+    const ar = try sess.advertisedReferences();
+    try std.testing.expect(ar.references.get("refs/heads/master").?.eql(master_hash));
+    // Supported cap kept; unsupported MultiACK filtered by Session.
+    try std.testing.expect(ar.capabilities.supports(capability.OFSDelta));
+    try std.testing.expect(!ar.capabilities.supports(capability.MultiACK));
+
+    // Cached: second call returns the same pointer.
+    const ar2 = try sess.advertisedReferences();
+    try std.testing.expect(ar2 == ar);
 }
 
 test "MockCommand stdin capture" {

@@ -1,0 +1,4 @@
+name: packp_report_status_ok
+type: file_equals
+actual: actual.txt
+expected: expected.txt
