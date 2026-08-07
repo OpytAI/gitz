@@ -1,0 +1,22 @@
+# API inventory: plumbing/format/commitgraph/v2 (phase 7)
+# Folded into src/plumbing/format/commitgraph (PHASE_PLAN: v2 only).
+package: plumbing/format/commitgraph/v2
+phase: 7
+require:
+  types:
+    - CommitData
+    - MemoryIndex
+    - Encoder
+  functions: []
+  semantic:
+    - CommitData
+    - MemoryIndex
+    - Encoder
+    - Index
+zig_map:
+  CommitData: CommitData
+  MemoryIndex: MemoryIndex
+  Encoder: Encoder
+  Index: MemoryIndex
+  # Implemented in folded package path:
+  # zig: src/plumbing/format/commitgraph

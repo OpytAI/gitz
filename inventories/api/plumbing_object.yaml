@@ -1,0 +1,63 @@
+# API inventory: plumbing/object (phase 7)
+package: plumbing/object
+phase: 7
+require:
+  types:
+    - Blob
+    - Tree
+    - TreeEntry
+    - Commit
+    - Tag
+    - Signature
+    - File
+    - Change
+  functions:
+    - getBlob
+    - getTree
+    - getCommit
+    - getTag
+    - getObject
+    - decodeObject
+    - decodeBlob
+    - decodeTree
+    - decodeCommit
+    - decodeTag
+    - newCommitPreorderIter
+    - newCommitPostorderIter
+    - diffTree
+  semantic:
+    - Blob
+    - Tree
+    - Commit
+    - Tag
+    - Signature
+    - getObject
+    - decodeObject
+    - CommitIter
+zig_map:
+  Blob: Blob
+  Tree: Tree
+  TreeEntry: TreeEntry
+  Commit: Commit
+  Tag: Tag
+  Signature: Signature
+  File: File
+  GetBlob: getBlob
+  GetTree: getTree
+  GetCommit: getCommit
+  GetTag: getTag
+  GetObject: getObject
+  DecodeObject: decodeObject
+  DecodeBlob: decodeBlob
+  DecodeTree: decodeTree
+  DecodeCommit: decodeCommit
+  DecodeTag: decodeTag
+  NewCommitPreorderIter: newCommitPreorderIter
+  NewCommitPostorderIter: newCommitPostorderIter
+  DiffTree: diffTree
+  Change: Change
+  Changes: Changes
+  DiffTreeOptions: DiffTreeOptions
+  DetectRenames: detectRenames
+  Patch: Patch
+  GetPatch: getPatch

@@ -227,9 +227,23 @@ test_suite(
     ],
 )
 
+# Phase 7: logical objects, commitgraph, revlist.
+test_suite(
+    name = "phase_7_packages",
+    tests = [
+        "//src/plumbing/object:object_test",
+        "//src/plumbing/format/commitgraph:commitgraph_test",
+        "//src/plumbing/object/commitgraph:object_commitgraph_test",
+        "//src/plumbing/revlist:revlist_test",
+    ],
+)
+
 test_suite(
     name = "phase_7",
-    tests = [":phase_6"],
+    tests = [
+        ":phase_6",
+        ":phase_7_packages",
+    ],
 )
 
 test_suite(

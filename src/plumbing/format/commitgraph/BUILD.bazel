@@ -1,0 +1,38 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/format/commitgraph (+ v2 API folded in).
+_SRCS = [
+    "error.zig",
+    "commitgraph.zig",
+    "memory.zig",
+    "file.zig",
+    "encoder.zig",
+    "chunk.zig",
+]
+
+zig_library(
+    name = "commitgraph",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "commitgraph",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+    ],
+)
+
+zig_test(
+    name = "commitgraph_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

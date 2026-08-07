@@ -14,10 +14,10 @@ packages:
   max_missing: 0
 
 api:
-  # Count of inventories/api/*.yaml (phases 1–6: foundation through fs + filesystem storage).
-  # Phase 6 adds: go_billy, storage_filesystem_dotgit, storage_filesystem, storage_transactional.
-  # Bump when adding API inventory files.
-  min_files: 23
+  # Count of inventories/api/*.yaml (phases 1–7).
+  # Phase 7 adds: plumbing_object, plumbing_format_commitgraph,
+  # plumbing_object_commitgraph, plumbing_revlist.
+  min_files: 28
   # For due API files (phase ≤ current): zig_map coverage of require names.
   # Phase 1: due API packages should map zig_map names into sources.
   min_mapped_ratio: 0.5
@@ -28,7 +28,8 @@ goldens:
   # + pack_encode_empty + pack_encode_one_empty_commit (22).
   # Phase 6: storage_fs_init_layout + storage_fs_packed_refs +
   # storage_fs_loose_object_path (25).
-  min_count: 25
+  # Phase 7: object_empty_tree + object_empty_blob (27).
+  min_count: 27
 
 
 allowlists:

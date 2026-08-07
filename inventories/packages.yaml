@@ -12,8 +12,8 @@
 #   test_only — helpers / suites; not production library surface
 
 pin: v5.19.2
-# Feature branch: enforce phase-6 packages. Bump on develop only after merge review.
-current_phase: 6
+# Feature branch: enforce phase-7 packages. Bump on develop only after merge review.
+current_phase: 7
 
 packages:
   # --- Phase 1: foundation ---

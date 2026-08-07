@@ -1,0 +1,42 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/object/commitgraph — CommitNode over object storer + format index.
+_SRCS = [
+    "commitnode.zig",
+    "commitnode_object.zig",
+    "commitnode_graph.zig",
+    "commitnode_walker.zig",
+]
+
+zig_library(
+    name = "object_commitgraph",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "object_commitgraph",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/object",
+        "//src/plumbing/format/commitgraph",
+        "//src/storage/memory",
+    ],
+)
+
+zig_test(
+    name = "object_commitgraph_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/object",
+        "//src/plumbing/format/commitgraph",
+        "//src/storage/memory",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

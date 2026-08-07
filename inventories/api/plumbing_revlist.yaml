@@ -1,0 +1,14 @@
+# API inventory: plumbing/revlist (phase 7)
+package: plumbing/revlist
+phase: 7
+require:
+  types: []
+  functions:
+    - objects
+    - objectsWithStorageForIgnores
+  semantic:
+    - Objects
+    - ObjectsWithStorageForIgnores
+zig_map:
+  Objects: objects
+  ObjectsWithStorageForIgnores: objectsWithStorageForIgnores

@@ -1,0 +1,22 @@
+# API inventory: plumbing/object/commitgraph (phase 7)
+package: plumbing/object/commitgraph
+phase: 7
+require:
+  types:
+    - CommitNode
+    - CommitNodeIndex
+    - CommitNodeIter
+  functions:
+    - newObjectCommitNodeIndex
+    - newGraphCommitNodeIndex
+  semantic:
+    - CommitNode
+    - CommitNodeIndex
+    - newObjectCommitNodeIndex
+    - newGraphCommitNodeIndex
+zig_map:
+  CommitNode: CommitNode
+  CommitNodeIndex: CommitNodeIndex
+  CommitNodeIter: CommitNodeIter
+  NewObjectCommitNodeIndex: newObjectCommitNodeIndex
+  NewGraphCommitNodeIndex: newGraphCommitNodeIndex

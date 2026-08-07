@@ -1,0 +1,4 @@
+name: object_empty_tree
+type: file_equals
+actual: actual.txt
+expected: expected.txt

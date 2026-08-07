@@ -1,0 +1,40 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/revlist — reachable object hash sets.
+_SRCS = [
+    "revlist.zig",
+]
+
+zig_library(
+    name = "revlist",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "revlist",
+    visibility = ["//visibility:public"],
+    # Walks EncodedObject content directly (minimal commit/tree/tag parse).
+    # When //src/plumbing/object exposes decodeObject + walkers completely,
+    # prefer those APIs and re-add the object dep.
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/filemode",
+        "//src/storage/memory",
+    ],
+)
+
+zig_test(
+    name = "revlist_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/filemode",
+        "//src/storage/memory",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

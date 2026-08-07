@@ -1,0 +1,58 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/object — logical Blob/Tree/Commit/Tag + walkers.
+_SRCS = [
+    "error.zig",
+    "signature.zig",
+    "blob.zig",
+    "file.zig",
+    "tree.zig",
+    "commit.zig",
+    "tag.zig",
+    "object.zig",
+    "commit_walker.zig",
+    "change.zig",
+    "difftree.zig",
+    "rename.zig",
+    "similarity.zig",
+    "patch.zig",
+    "openpgp.zig",
+]
+
+zig_library(
+    name = "object",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "object",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/filemode",
+        "//src/plumbing/storer",
+        "//src/storage/memory",
+        "//src/utils/sync",
+    ],
+)
+
+zig_test(
+    name = "object_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/filemode",
+        "//src/plumbing/storer",
+        "//src/storage/memory",
+        "//src/utils/sync",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(
+        ["**/*"],
+        exclude = ["commitgraph/**"],
+    ),
+    visibility = ["//visibility:public"],
+)
