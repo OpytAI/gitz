@@ -63,6 +63,11 @@ pub const noder = @import("noder");
 pub const merkletrie_index = @import("merkletrie_index");
 pub const merkletrie_filesystem = @import("merkletrie_filesystem");
 
+// Phase 10 typed config + repository facades.
+/// High-level repository config (go-git `config`). Import name `gitconfig`.
+pub const gitconfig = @import("gitconfig");
+pub const repo = @import("repo");
+
 test "identity" {
     try std.testing.expectEqualStrings("gitz", name);
     try std.testing.expectEqualStrings("v5.19.2", go_git_pin);
@@ -136,4 +141,34 @@ test "phase8 protocol transport surface" {
     _ = transport_server.newServer;
     _ = transport_server.MapLoader;
     _ = transport_common.newClient;
+}
+
+test "phase10 config and repository facade surface" {
+    _ = gitconfig.Config;
+    _ = gitconfig.RemoteConfig;
+    _ = gitconfig.Branch;
+    _ = gitconfig.RefSpec;
+    _ = gitconfig.OptBool;
+    _ = gitconfig.newConfig;
+    _ = gitconfig.readConfig;
+    _ = gitconfig.loadConfig;
+    _ = gitconfig.paths;
+    try std.testing.expectEqual(@as(u32, 10), gitconfig.default_pack_window);
+
+    _ = repo.Repository;
+    _ = repo.newRepository;
+    _ = repo.init;
+    _ = repo.open;
+    _ = repo.LogOptions;
+    _ = repo.LogOrder;
+    _ = repo.Repository.commitObject;
+    _ = repo.Repository.blobObject;
+    _ = repo.Repository.treeObject;
+    _ = repo.Repository.tagObject;
+    _ = repo.Repository.object;
+    _ = repo.Repository.log;
+    _ = repo.Repository.resolveRevision;
+    _ = repo.Repository.branches;
+    _ = repo.Repository.tags;
+    _ = repo.Repository.notes;
 }

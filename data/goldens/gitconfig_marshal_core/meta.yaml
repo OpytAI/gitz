@@ -1,0 +1,5 @@
+name: gitconfig_marshal_core
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "Empty NewConfig.Marshal — only [core] bare=false (go-git Config.Marshal)."

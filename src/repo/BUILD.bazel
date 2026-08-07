@@ -1,0 +1,41 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git root repository: Init/Open + object/ref facades.
+_SRCS = [
+    "error.zig",
+    "repository.zig",
+    "facade.zig",
+]
+
+_DEPS = [
+    "//src/plumbing",
+    "//src/plumbing/object",
+    "//src/plumbing/storer",
+    "//src/plumbing/revlist",
+    "//src/storage/memory",
+    "//src/internal/revision",
+    "//src/fs",
+]
+
+zig_library(
+    name = "repo",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "repo",
+    visibility = ["//visibility:public"],
+    deps = _DEPS,
+)
+
+zig_test(
+    name = "repo_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = _DEPS,
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

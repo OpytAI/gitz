@@ -1,0 +1,57 @@
+# API inventory: repo (phase 10) — go-git root repository partial
+# packages.yaml go key is git/repository (zig: src/repo).
+package: git/repository
+phase: 10
+require:
+  types:
+    - Repository
+    - InitOptions
+    - LogOptions
+    - LogOrder
+    - LogResult
+  functions:
+    - newRepository
+    - init
+    - initWithOptions
+    - open
+  constants:
+    - git_dir_name
+  semantic:
+    - Repository
+    - Repository.config
+    - Repository.setConfig
+    - Repository.head
+    - Repository.reference
+    - Repository.references
+    - Repository.isBare
+    - Repository.setIsBare
+    - Repository.commitObject
+    - Repository.blobObject
+    - Repository.treeObject
+    - Repository.tagObject
+    - Repository.object
+    - Repository.commitObjects
+    - Repository.blobObjects
+    - Repository.treeObjects
+    - Repository.tagObjects
+    - Repository.objects
+    - Repository.branches
+    - Repository.tags
+    - Repository.notes
+    - Repository.log
+    - Repository.resolveRevision
+    - newRepository
+    - init
+    - initWithOptions
+    - open
+    - git_dir_name
+zig_map:
+  Repository: Repository
+  InitOptions: InitOptions
+  LogOptions: LogOptions
+  LogOrder: LogOrder
+  Init: init
+  InitWithOptions: initWithOptions
+  Open: open
+  NewRepository: newRepository
+  GitDirName: git_dir_name

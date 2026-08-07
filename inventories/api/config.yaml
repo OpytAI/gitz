@@ -1,0 +1,78 @@
+# API inventory: config (phase 10) — import_name gitconfig
+package: config
+phase: 10
+require:
+  types:
+    - Config
+    - RemoteConfig
+    - Branch
+    - RefSpec
+    - URL
+    - Modules
+    - Submodule
+    - OptBool
+    - Scope
+    - Core
+    - Identity
+    - Pack
+    - Init
+    - Extensions
+  functions:
+    - newConfig
+    - readConfig
+    - loadConfig
+    - paths
+    - parseConfigBool
+    - matchAny
+    - findLongestInsteadOfMatch
+    - unmarshalSubmodules
+  constants:
+    - default_fetch_ref_spec
+    - default_push_ref_spec
+    - default_pack_window
+  semantic:
+    - Config
+    - Config.create
+    - Config.deinit
+    - Config.validate
+    - Config.unmarshal
+    - Config.marshal
+    - Config.putRemote
+    - Config.putBranch
+    - RemoteConfig
+    - RemoteConfig.validate
+    - Branch
+    - Branch.validate
+    - RefSpec
+    - RefSpec.validate
+    - RefSpec.match
+    - URL
+    - URL.validate
+    - Modules
+    - Modules.create
+    - Submodule
+    - OptBool
+    - newConfig
+    - readConfig
+    - loadConfig
+    - paths
+zig_map:
+  NewConfig: newConfig
+  ReadConfig: readConfig
+  LoadConfig: loadConfig
+  Paths: paths
+  Config: Config
+  RemoteConfig: RemoteConfig
+  Branch: Branch
+  RefSpec: RefSpec
+  URL: URL
+  Modules: Modules
+  NewModules: create
+  Submodule: Submodule
+  OptBool: OptBool
+  Scope: Scope
+  DefaultFetchRefSpec: default_fetch_ref_spec
+  DefaultPushRefSpec: default_push_ref_spec
+  DefaultPackWindow: default_pack_window
+  MatchAny: matchAny
+  FindLongestInsteadOfMatch: findLongestInsteadOfMatch

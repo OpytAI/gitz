@@ -1,0 +1,5 @@
+# go-git Init bare (memory storage)
+is_bare=true
+head_type=symbolic
+head_target=refs/heads/master
+config_is_bare=true

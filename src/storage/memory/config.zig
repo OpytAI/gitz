@@ -1,7 +1,7 @@
 //! Minimal config storage for memory backend (go-git `ConfigStorage`).
 //!
-//! Full high-level `config` package is phase 10. This holds `is_bare` plus a
-//! remotes map sufficient for BaseStorageSuite (Validate empty name / key match).
+//! Storer-shaped config: `is_bare` + remotes map for BaseStorageSuite.
+//! High-level remotes/branches/URLs live in `//src/config` (`gitconfig`).
 
 const std = @import("std");
 

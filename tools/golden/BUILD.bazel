@@ -47,6 +47,10 @@ _GOLDEN_SUITES = [
     "merkletrie_empty",
     "merkletrie_insert",
     "merkletrie_modify_delete",
+    # Phase 10
+    "gitconfig_new_defaults",
+    "gitconfig_marshal_core",
+    "repo_init_bare",
 ]
 
 # Bake expected.txt bodies into a Zig module so recompute_test is hermetic.
@@ -92,5 +96,9 @@ zig_test(
         "//src/utils/merkletrie/internal/fsnoder",
         "//src/plumbing",
         "//src/plumbing/filemode",
+        # Phase 10
+        "//src/config",
+        "//src/repo",
+        "//src/storage/memory",
     ],
 )

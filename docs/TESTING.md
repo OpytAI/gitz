@@ -167,3 +167,47 @@ bazel --output_user_root=/mnt/workspace/gitz/bazel-cache test //check:goldens_sm
 Merge-complete on `develop` also requires `current_phase: 9` in
 `inventories/packages.yaml` so file/API inventory enforce phase ≤ 9 packages
 (already set on this phase branch).
+
+---
+
+## Phase 10 — Typed config + repository core
+
+**Gate:** `//check:phase_10`  
+**Purpose:** go-git `config` package (typed remotes/branches/URLs/modules) and
+root repository Init/Open plus thin object/ref facades. No full Worktree engine
+or Remote fetch/push (phases 11–12).
+
+### Packages (go-git → gitz)
+
+| go-git | gitz | Role |
+|--------|------|------|
+| `config` | `src/config` (`import_name = gitconfig`) | Typed Config, RemoteConfig, Branch, RefSpec, URL, Modules, OptBool |
+| root repository (partial) | `src/repo` | Init/Open over `*memory.Storage`, config/refs, object getters, thin Log, ResolveRevision |
+
+`//src/plumbing/format/config` remains `@import("config")` (format codec).  
+High-level config is `@import("gitconfig")`.
+
+### Class A goldens (phase 10)
+
+Static `file_equals` plus **executable** recompute in `//tools/golden:recompute_test`
+(rebuilds the same non-comment payload from library APIs).
+
+| Suite | Locks |
+|-------|--------|
+| `gitconfig_new_defaults` | `Config.create` pack window + empty maps + not bare |
+| `gitconfig_marshal_core` | Empty `Marshal` → `[core]` + tab-indented `bare = false` |
+| `repo_init_bare` | bare `init`: `is_bare`, symbolic HEAD → `refs/heads/master` |
+
+### How to run
+
+```bash
+cd /mnt/workspace/gitz/gitz-phase-10   # or develop after merge
+
+bazel --output_user_root=/mnt/workspace/gitz/bazel-cache test //check:phase_10
+
+# Package slice only:
+bazel --output_user_root=/mnt/workspace/gitz/bazel-cache test //check:phase_10_packages
+```
+
+Merge-complete on `develop` also requires `current_phase: 10` in
+`inventories/packages.yaml` (set on this phase branch).

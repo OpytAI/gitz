@@ -17,6 +17,9 @@ const merkletrie = @import("merkletrie");
 const fsnoder = @import("fsnoder");
 const plumbing = @import("plumbing");
 const filemode = @import("filemode");
+const gitconfig = @import("gitconfig");
+const repo = @import("repo");
+const memory = @import("memory");
 
 // ---------------------------------------------------------------------------
 // Expected fixtures (generated vectors.zig from data/goldens/**/expected.txt)
@@ -709,4 +712,62 @@ test "recompute merkletrie_modify_delete" {
     const computed = try recomputeMerkle(gpa, expected);
     defer gpa.free(computed);
     try expectMerkle(computed, expected);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 10 — gitconfig + repo
+// ---------------------------------------------------------------------------
+
+test "recompute gitconfig_new_defaults" {
+    const gpa = std.testing.allocator;
+    var cfg = try gitconfig.Config.create(gpa);
+    defer cfg.deinit();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try appendFmt(&out, gpa, "pack_window={d}\n", .{cfg.pack.window});
+    try appendFmt(&out, gpa, "remotes={d}\n", .{cfg.remotes.count()});
+    try appendFmt(&out, gpa, "branches={d}\n", .{cfg.branches.count()});
+    try appendFmt(&out, gpa, "submodules={d}\n", .{cfg.submodules.count()});
+    try appendFmt(&out, gpa, "urls={d}\n", .{cfg.urls.count()});
+    try appendFmt(&out, gpa, "is_bare={s}\n", .{if (cfg.core.is_bare) "true" else "false"});
+
+    try expectPayload(out.items, expectedFor("gitconfig_new_defaults"));
+}
+
+test "recompute gitconfig_marshal_core" {
+    const gpa = std.testing.allocator;
+    var cfg = try gitconfig.Config.create(gpa);
+    defer cfg.deinit();
+    const out = try cfg.marshal();
+    defer gpa.free(out);
+    try expectPayload(out, expectedFor("gitconfig_marshal_core"));
+}
+
+test "recompute repo_init_bare" {
+    const gpa = std.testing.allocator;
+    const s = try memory.newStorage(gpa);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+
+    var r = try repo.init(s, null);
+    const head_sym = try r.reference(plumbing.HEAD, false);
+    const cfg = try r.config();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try out.appendSlice(gpa, "is_bare=");
+    try out.appendSlice(gpa, if (r.isBare()) "true" else "false");
+    try out.append(gpa, '\n');
+    try out.appendSlice(gpa, "head_type=");
+    try out.appendSlice(gpa, if (head_sym.type == .symbolic) "symbolic" else "other");
+    try out.append(gpa, '\n');
+    try appendFmt(&out, gpa, "head_target={s}\n", .{head_sym.target.raw});
+    try out.appendSlice(gpa, "config_is_bare=");
+    try out.appendSlice(gpa, if (cfg.is_bare) "true" else "false");
+    try out.append(gpa, '\n');
+
+    try expectPayload(out.items, expectedFor("repo_init_bare"));
 }

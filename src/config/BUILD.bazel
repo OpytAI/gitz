@@ -1,0 +1,47 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git `config` package — typed repository configuration.
+# import_name is `gitconfig` so `@import("config")` stays the format codec.
+_SRCS = [
+    "branch.zig",
+    "config.zig",
+    "modules.zig",
+    "optbool.zig",
+    "owned.zig",
+    "refspec.zig",
+    "url.zig",
+]
+
+zig_library(
+    name = "config",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "gitconfig",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/internal/pathutil",
+        "//src/internal/url",
+        "//src/plumbing",
+        "//src/plumbing/format/config",
+    ],
+)
+
+zig_test(
+    name = "config_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/internal/pathutil",
+        "//src/internal/url",
+        "//src/plumbing",
+        "//src/plumbing/format/config",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

@@ -37,10 +37,12 @@ pub const newFile = file_mod.newFile;
 
 pub const Tree = tree_mod.Tree;
 pub const TreeEntry = tree_mod.TreeEntry;
+pub const TreeIter = tree_mod.TreeIter;
 pub const getTree = tree_mod.getTree;
 pub const decodeTree = tree_mod.decodeTree;
 pub const decodeTreeNoStore = tree_mod.decodeTreeNoStore;
 pub const freeTree = tree_mod.freeTree;
+pub const newTreeIter = tree_mod.newTreeIter;
 
 pub const Commit = commit_mod.Commit;
 pub const getCommit = commit_mod.getCommit;
@@ -56,10 +58,15 @@ pub const decodeTag = tag_mod.decodeTag;
 pub const TagIter = tag_mod.TagIter;
 pub const newTagIter = tag_mod.newTagIter;
 
+pub const Object = object_mod.Object;
+pub const ObjectIter = object_mod.ObjectIter;
 pub const getObject = object_mod.getObject;
 pub const decodeObject = object_mod.decodeObject;
+pub const newObjectIter = object_mod.newObjectIter;
 
 pub const CommitIter = walker_mod.CommitIter;
+pub const PreorderIter = walker_mod.PreorderIter;
+pub const PostorderIter = walker_mod.PostorderIter;
 pub const HashSet = walker_mod.HashSet;
 pub const CommitFilter = walker_mod.CommitFilter;
 pub const CTimeIter = walker_mod.CTimeIter;

@@ -1,0 +1,5 @@
+name: repo_init_bare
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "repo.init(storage, null) bare: core.bare, symbolic HEAD → master."

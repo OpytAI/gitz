@@ -1,0 +1,7 @@
+# go-git config.NewConfig defaults
+pack_window=10
+remotes=0
+branches=0
+submodules=0
+urls=0
+is_bare=false

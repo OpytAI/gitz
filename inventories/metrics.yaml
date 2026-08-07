@@ -18,7 +18,8 @@ api:
   # Phase 8 adds: packp, capability, sideband, transport, client, server, internal/common.
   # Phase 9 adds: merkletrie(+noder/index/filesystem/frame), gitignore, gitattributes,
   # format/diff, utils/diff, pathutil, path_util, revision, url, internal/reference.
-  min_files: 49
+  # Phase 10 adds: config (gitconfig), repo.
+  min_files: 51
   # For due API files (phase ≤ current): zig_map coverage of require names.
   # Phase 1: due API packages should map zig_map names into sources.
   min_mapped_ratio: 0.5
@@ -38,7 +39,8 @@ goldens:
   # diff_do_equal + merkletrie_empty + pathutil_tree_reject +
   # unified_diff_one_line + merkletrie_insert + merkletrie_modify_delete +
   # gitattributes_simple (47).
-  min_count: 47
+  # Phase 10: gitconfig_new_defaults + gitconfig_marshal_core + repo_init_bare (50).
+  min_count: 50
 
 
 allowlists:

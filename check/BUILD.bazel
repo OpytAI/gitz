@@ -301,9 +301,21 @@ test_suite(
     ],
 )
 
+# Phase 10: typed config (gitconfig) + repository Init/Open/facades.
+test_suite(
+    name = "phase_10_packages",
+    tests = [
+        "//src/config:config_test",
+        "//src/repo:repo_test",
+    ],
+)
+
 test_suite(
     name = "phase_10",
-    tests = [":phase_9"],
+    tests = [
+        ":phase_9",
+        ":phase_10_packages",
+    ],
 )
 
 test_suite(
