@@ -7,6 +7,8 @@
 const repository = @import("repository.zig");
 const facade = @import("facade.zig");
 const error_mod = @import("error.zig");
+const remote_mod = @import("remote.zig");
+const crud = @import("crud.zig");
 
 pub const Error = error_mod.Error;
 
@@ -27,8 +29,14 @@ pub const TagObjectsIter = facade.TagObjectsIter;
 pub const ObjectsIter = facade.ObjectsIter;
 pub const FilteredRefIter = facade.FilteredRefIter;
 
+pub const Remote = remote_mod.Remote;
+pub const CreateTagOptions = crud.CreateTagOptions;
+pub const AnonymousRemote = crud.AnonymousRemote;
+
 test {
     _ = repository;
     _ = facade;
     _ = error_mod;
+    _ = remote_mod;
+    _ = crud;
 }

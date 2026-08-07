@@ -1215,17 +1215,119 @@ test "RemoteConfig.validate" {
         defer r.deinit();
         try std.testing.expectError(error.RemoteConfigEmptyName, r.validate());
     }
+}
+
+test "RemoteConfig default fetch after validate when fetch empty" {
+    // go-git TestRemoteConfigValidateDefault
+    const gpa = std.testing.allocator;
+    var r = RemoteConfig.init(gpa);
+    defer r.deinit();
+    try setOwned(gpa, &r.name, "foo");
+    const urls = try gpa.alloc([]const u8, 1);
+    urls[0] = try dupe(gpa, "http://foo/bar");
+    r.urls = urls;
+    try std.testing.expectEqual(@as(usize, 0), r.fetch.len);
+    try r.validate();
+    try std.testing.expectEqual(@as(usize, 1), r.fetch.len);
+    try std.testing.expectEqualStrings("+refs/heads/*:refs/remotes/foo/*", r.fetch[0].raw);
+}
+
+test "RemoteConfig.isFirstURLLocal" {
+    const gpa = std.testing.allocator;
     {
         var r = RemoteConfig.init(gpa);
         defer r.deinit();
-        try setOwned(gpa, &r.name, "foo");
         const urls = try gpa.alloc([]const u8, 1);
-        urls[0] = try dupe(gpa, "http://foo/bar");
+        urls[0] = try dupe(gpa, "/home/user/src/go-git");
         r.urls = urls;
-        try r.validate();
-        try std.testing.expectEqual(@as(usize, 1), r.fetch.len);
-        try std.testing.expectEqualStrings("+refs/heads/*:refs/remotes/foo/*", r.fetch[0].raw);
+        try std.testing.expect(r.isFirstURLLocal());
     }
+    {
+        var r = RemoteConfig.init(gpa);
+        defer r.deinit();
+        const urls = try gpa.alloc([]const u8, 1);
+        urls[0] = try dupe(gpa, "./relative/path");
+        r.urls = urls;
+        try std.testing.expect(r.isFirstURLLocal());
+    }
+    {
+        var r = RemoteConfig.init(gpa);
+        defer r.deinit();
+        const urls = try gpa.alloc([]const u8, 1);
+        urls[0] = try dupe(gpa, "https://github.com/src-d/go-git");
+        r.urls = urls;
+        try std.testing.expect(!r.isFirstURLLocal());
+    }
+    {
+        var r = RemoteConfig.init(gpa);
+        defer r.deinit();
+        const urls = try gpa.alloc([]const u8, 1);
+        urls[0] = try dupe(gpa, "git@github.com:james/bond");
+        r.urls = urls;
+        try std.testing.expect(!r.isFirstURLLocal());
+    }
+    {
+        var r = RemoteConfig.init(gpa);
+        defer r.deinit();
+        try std.testing.expect(!r.isFirstURLLocal());
+    }
+}
+
+test "paths GlobalScope with XDG_CONFIG_HOME and HOME" {
+    // go-git Paths(GlobalScope) — Zig 0.16: build Environ from a map (no getenv).
+    const gpa = std.testing.allocator;
+    var map: std.process.Environ.Map = .init(gpa);
+    defer map.deinit();
+    try map.put("XDG_CONFIG_HOME", "/tmp/xdg-test");
+    try map.put("HOME", "/home/testuser");
+    const environ: std.process.Environ = .{ .block = try map.createPosixBlock(gpa, .{}) };
+    defer environ.block.deinit(gpa);
+
+    const list = try paths(.global, gpa, environ);
+    defer {
+        for (list) |p| gpa.free(p);
+        gpa.free(list);
+    }
+    try std.testing.expectEqual(@as(usize, 3), list.len);
+    try std.testing.expectEqualStrings("/tmp/xdg-test/git/config", list[0]);
+    try std.testing.expectEqualStrings("/home/testuser/.gitconfig", list[1]);
+    try std.testing.expectEqualStrings("/home/testuser/.config/git/config", list[2]);
+}
+
+test "paths GlobalScope HOME only" {
+    const gpa = std.testing.allocator;
+    var map: std.process.Environ.Map = .init(gpa);
+    defer map.deinit();
+    try map.put("HOME", "/home/only");
+    const environ: std.process.Environ = .{ .block = try map.createPosixBlock(gpa, .{}) };
+    defer environ.block.deinit(gpa);
+
+    const list = try paths(.global, gpa, environ);
+    defer {
+        for (list) |p| gpa.free(p);
+        gpa.free(list);
+    }
+    try std.testing.expectEqual(@as(usize, 2), list.len);
+    try std.testing.expectEqualStrings("/home/only/.gitconfig", list[0]);
+    try std.testing.expectEqualStrings("/home/only/.config/git/config", list[1]);
+}
+
+test "paths SystemScope" {
+    const gpa = std.testing.allocator;
+    const list = try paths(.system, gpa, std.process.Environ.empty);
+    defer {
+        for (list) |p| gpa.free(p);
+        gpa.free(list);
+    }
+    try std.testing.expectEqual(@as(usize, 1), list.len);
+    try std.testing.expectEqualStrings("/etc/gitconfig", list[0]);
+}
+
+test "paths LocalScope empty" {
+    const gpa = std.testing.allocator;
+    const list = try paths(.local, gpa, std.process.Environ.empty);
+    defer gpa.free(list);
+    try std.testing.expectEqual(@as(usize, 0), list.len);
 }
 
 test "Config.validate invalid branch key" {
@@ -1274,6 +1376,16 @@ test "LoadConfig LocalScope" {
         error.LocalScopeNotSupported,
         loadConfig(gpa, .local, std.testing.io, std.testing.environ),
     );
+}
+
+test "LoadConfig SystemScope empty or host file" {
+    // go-git LoadConfig(SystemScope): empty NewConfig when no file, else first hit.
+    // Soft: host may or may not have /etc/gitconfig; either outcome is valid.
+    const gpa = std.testing.allocator;
+    var cfg = try loadConfig(gpa, .system, std.testing.io, std.process.Environ.empty);
+    defer cfg.deinit();
+    // Success is enough; do not assert defaults (host file may override pack.window).
+    _ = &cfg;
 }
 
 test "Remove URL options" {

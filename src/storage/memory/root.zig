@@ -47,6 +47,7 @@ pub const ReferenceSliceIter = reference_mod.ReferenceSliceIter;
 pub const ConfigStorage = config_mod.ConfigStorage;
 pub const Config = config_mod.Config;
 pub const RemoteConfig = config_mod.RemoteConfig;
+pub const BranchConfig = config_mod.BranchConfig;
 pub const ConfigError = config_mod.Error;
 
 pub const IndexStorage = index_mod.IndexStorage;

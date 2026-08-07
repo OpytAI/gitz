@@ -5,6 +5,8 @@ _SRCS = [
     "error.zig",
     "repository.zig",
     "facade.zig",
+    "remote.zig",
+    "crud.zig",
 ]
 
 _DEPS = [

@@ -193,10 +193,129 @@ test "RefSpec force delete src" {
     try std.testing.expect(!RefSpec.init("foo:refs/heads/master").isExactSHA1());
 }
 
-test "RefSpec.match and matchAny" {
-    const rs = RefSpec.init("+refs/heads/*:refs/remotes/origin/*");
-    try std.testing.expect(rs.match(plumbing.ReferenceName.init("refs/heads/master")));
-    try std.testing.expect(!rs.match(plumbing.ReferenceName.init("refs/tags/v1")));
-    const list = [_]RefSpec{rs};
-    try std.testing.expect(matchAny(&list, plumbing.ReferenceName.init("refs/heads/foo")));
+test "RefSpec.match exact" {
+    // go-git TestRefSpecMatch
+    {
+        const rs = RefSpec.init("refs/heads/master:refs/remotes/origin/master");
+        try std.testing.expect(!rs.match(plumbing.ReferenceName.init("refs/heads/foo")));
+        try std.testing.expect(rs.match(plumbing.ReferenceName.init("refs/heads/master")));
+    }
+    {
+        const rs = RefSpec.init("+refs/heads/master:refs/remotes/origin/master");
+        try std.testing.expect(!rs.match(plumbing.ReferenceName.init("refs/heads/foo")));
+        try std.testing.expect(rs.match(plumbing.ReferenceName.init("refs/heads/master")));
+    }
+    {
+        const rs = RefSpec.init(":refs/heads/master");
+        try std.testing.expect(rs.match(plumbing.ReferenceName.init("")));
+        try std.testing.expect(!rs.match(plumbing.ReferenceName.init("refs/heads/master")));
+    }
+    {
+        const rs = RefSpec.init("refs/heads/love+hate:heads/love+hate");
+        try std.testing.expect(rs.match(plumbing.ReferenceName.init("refs/heads/love+hate")));
+    }
+    {
+        const rs = RefSpec.init("+refs/heads/love+hate:heads/love+hate");
+        try std.testing.expect(rs.match(plumbing.ReferenceName.init("refs/heads/love+hate")));
+    }
+}
+
+test "RefSpec.matchGlob" {
+    // go-git TestRefSpecMatchGlob
+    const Case = struct { ref: []const u8, matches: bool };
+    const SpecCases = struct { spec: []const u8, cases: []const Case };
+
+    const table = [_]SpecCases{
+        .{
+            .spec = "refs/heads/*:refs/remotes/origin/*",
+            .cases = &[_]Case{
+                .{ .ref = "refs/tag/foo", .matches = false },
+                .{ .ref = "refs/heads/foo", .matches = true },
+            },
+        },
+        .{
+            .spec = "refs/heads/*bc:refs/remotes/origin/*bc",
+            .cases = &[_]Case{
+                .{ .ref = "refs/heads/abc", .matches = true },
+                .{ .ref = "refs/heads/bc", .matches = true },
+                .{ .ref = "refs/heads/abx", .matches = false },
+            },
+        },
+        .{
+            .spec = "refs/heads/a*c:refs/remotes/origin/a*c",
+            .cases = &[_]Case{
+                .{ .ref = "refs/heads/abc", .matches = true },
+                .{ .ref = "refs/heads/ac", .matches = true },
+                .{ .ref = "refs/heads/abx", .matches = false },
+            },
+        },
+        .{
+            .spec = "refs/heads/ab*:refs/remotes/origin/ab*",
+            .cases = &[_]Case{
+                .{ .ref = "refs/heads/abc", .matches = true },
+                .{ .ref = "refs/heads/ab", .matches = true },
+                .{ .ref = "refs/heads/xbc", .matches = false },
+            },
+        },
+    };
+
+    for (table) |row| {
+        const rs = RefSpec.init(row.spec);
+        for (row.cases) |c| {
+            try std.testing.expectEqual(c.matches, rs.match(plumbing.ReferenceName.init(c.ref)));
+        }
+    }
+}
+
+test "RefSpec.dst exact" {
+    // go-git TestRefSpecDst
+    const gpa = std.testing.allocator;
+    const rs = RefSpec.init("refs/heads/master:refs/remotes/origin/master");
+    const d = try rs.dst(gpa, plumbing.ReferenceName.init("refs/heads/master"));
+    defer gpa.free(d.raw);
+    try std.testing.expectEqualStrings("refs/remotes/origin/master", d.string());
+}
+
+test "RefSpec.dst wildcard" {
+    // go-git TestRefSpecDstBlob
+    const gpa = std.testing.allocator;
+    const ref = plumbing.ReferenceName.init("refs/heads/abc");
+    const Case = struct { spec: []const u8, dst: []const u8 };
+    const table = [_]Case{
+        .{ .spec = "refs/heads/*:refs/remotes/origin/*", .dst = "refs/remotes/origin/abc" },
+        .{ .spec = "refs/heads/*bc:refs/remotes/origin/*", .dst = "refs/remotes/origin/a" },
+        .{ .spec = "refs/heads/*bc:refs/remotes/origin/*bc", .dst = "refs/remotes/origin/abc" },
+        .{ .spec = "refs/heads/a*c:refs/remotes/origin/*", .dst = "refs/remotes/origin/b" },
+        .{ .spec = "refs/heads/a*c:refs/remotes/origin/a*c", .dst = "refs/remotes/origin/abc" },
+        .{ .spec = "refs/heads/ab*:refs/remotes/origin/*", .dst = "refs/remotes/origin/c" },
+        .{ .spec = "refs/heads/ab*:refs/remotes/origin/ab*", .dst = "refs/remotes/origin/abc" },
+        .{ .spec = "refs/heads/*abc:refs/remotes/origin/*abc", .dst = "refs/remotes/origin/abc" },
+        .{ .spec = "refs/heads/abc*:refs/remotes/origin/abc*", .dst = "refs/remotes/origin/abc" },
+    };
+    for (table) |c| {
+        const rs = RefSpec.init(c.spec);
+        const d = try rs.dst(gpa, ref);
+        defer gpa.free(d.raw);
+        try std.testing.expectEqualStrings(c.dst, d.string());
+    }
+}
+
+test "RefSpec.reverse" {
+    // go-git TestRefSpecReverse
+    const gpa = std.testing.allocator;
+    const rs = RefSpec.init("refs/heads/*:refs/remotes/origin/*");
+    const rev = try rs.reverse(gpa);
+    defer gpa.free(rev);
+    try std.testing.expectEqualStrings("refs/remotes/origin/*:refs/heads/*", rev);
+}
+
+test "matchAny multi-list" {
+    // go-git TestMatchAny
+    const specs = [_]RefSpec{
+        RefSpec.init("refs/heads/bar:refs/remotes/origin/foo"),
+        RefSpec.init("refs/heads/foo:refs/remotes/origin/bar"),
+    };
+    try std.testing.expect(matchAny(&specs, plumbing.ReferenceName.init("refs/heads/foo")));
+    try std.testing.expect(matchAny(&specs, plumbing.ReferenceName.init("refs/heads/bar")));
+    try std.testing.expect(!matchAny(&specs, plumbing.ReferenceName.init("refs/heads/master")));
 }

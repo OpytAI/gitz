@@ -2,7 +2,8 @@
 //!
 //! On-disk form is real git-config text via `plumbing/format/config` encode/decode.
 //! In-memory surface is the shared storage `memory.Config` (`is_bare` + remotes
-//! name/urls) used by BaseStorageSuite and the memory backend.
+//! name/urls/fetch/mirror + branches remote/merge) used by BaseStorageSuite and
+//! the memory backend.
 //!
 //! `config()` re-reads the file every call (go-git `Config()`). `setConfig`
 //! validates, marshals, writes, and takes ownership of the heap `*Config`
@@ -19,6 +20,7 @@ const Allocator = std.mem.Allocator;
 
 pub const Config = memory.Config;
 pub const RemoteConfig = memory.RemoteConfig;
+pub const BranchConfig = memory.BranchConfig;
 pub const ConfigError = memory.ConfigError;
 
 pub const Error = Allocator.Error || ConfigError || fs_pkg.Error || format_config.Error ||
@@ -108,7 +110,20 @@ pub const ConfigStorageOs = ConfigStorage(fs_pkg.Os);
 
 // --- memory.Config ↔ format.Config ↔ git-config text -------------------------
 
-/// Encode `memory.Config` as git-config bytes (go-git `Marshal` for bare + remotes).
+fn sortedMapKeys(allocator: Allocator, map: anytype) Allocator.Error![][]const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    errdefer names.deinit(allocator);
+    var it = map.keyIterator();
+    while (it.next()) |k| try names.append(allocator, k.*);
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn less(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.less);
+    return try names.toOwnedSlice(allocator);
+}
+
+/// Encode `memory.Config` as git-config bytes (bare + remotes + branches).
 fn encodeMemoryConfig(allocator: Allocator, cfg: *const Config) Error![]u8 {
     var raw = format_config.Config.init(allocator);
     defer raw.deinit();
@@ -117,22 +132,36 @@ fn encodeMemoryConfig(allocator: Allocator, cfg: *const Config) Error![]u8 {
     _ = try raw.setOption("core", format_config.NoSubsection, "bare", bare);
 
     // Stable remote order for deterministic on-disk output (sorted by name).
-    var names: std.ArrayList([]const u8) = .empty;
-    defer names.deinit(allocator);
-    {
-        var it = cfg.remotes.keyIterator();
-        while (it.next()) |k| try names.append(allocator, k.*);
-    }
-    std.mem.sort([]const u8, names.items, {}, struct {
-        fn less(_: void, a: []const u8, b: []const u8) bool {
-            return std.mem.order(u8, a, b) == .lt;
-        }
-    }.less);
+    const remote_names = try sortedMapKeys(allocator, cfg.remotes);
+    defer allocator.free(remote_names);
 
-    for (names.items) |name| {
+    for (remote_names) |name| {
         const remote = cfg.remotes.get(name) orelse continue;
         for (remote.urls) |url| {
             _ = try raw.addOption("remote", name, "url", url);
+        }
+        for (remote.fetch) |spec| {
+            _ = try raw.addOption("remote", name, "fetch", spec);
+        }
+        if (remote.mirror) {
+            _ = try raw.setOption("remote", name, "mirror", "true");
+        }
+    }
+
+    const branch_names = try sortedMapKeys(allocator, cfg.branches);
+    defer allocator.free(branch_names);
+
+    for (branch_names) |name| {
+        const branch = cfg.branches.get(name) orelse continue;
+        if (branch.remote.len > 0) {
+            _ = try raw.setOption("branch", name, "remote", branch.remote);
+        }
+        if (branch.merge.len > 0) {
+            _ = try raw.setOption("branch", name, "merge", branch.merge);
+        }
+        // Ensure subsection exists even if remote/merge empty (name-only branch).
+        if (branch.remote.len == 0 and branch.merge.len == 0) {
+            _ = try (try raw.section("branch")).subsection(name);
         }
     }
 
@@ -143,7 +172,7 @@ fn encodeMemoryConfig(allocator: Allocator, cfg: *const Config) Error![]u8 {
     return try aw.toOwnedSlice();
 }
 
-/// Decode git-config bytes into a heap `memory.Config` (go-git `ReadConfig` for bare + remotes).
+/// Decode git-config bytes into a heap `memory.Config` (bare + remotes + branches).
 fn decodeMemoryConfig(allocator: Allocator, data: []const u8) Error!*Config {
     var raw = format_config.Config.init(allocator);
     defer raw.deinit();
@@ -170,14 +199,37 @@ fn decodeMemoryConfig(allocator: Allocator, data: []const u8) Error!*Config {
         for (remote_sec.subsections.items) |ss| {
             var urls: std.ArrayList([]const u8) = .empty;
             defer urls.deinit(allocator);
+            var fetch: std.ArrayList([]const u8) = .empty;
+            defer fetch.deinit(allocator);
+            var mirror = false;
             for (ss.options.items) |opt| {
                 if (std.ascii.eqlIgnoreCase(opt.key, "url") or
                     std.ascii.eqlIgnoreCase(opt.key, "pushurl"))
                 {
                     try urls.append(allocator, opt.value);
+                } else if (std.ascii.eqlIgnoreCase(opt.key, "fetch")) {
+                    try fetch.append(allocator, opt.value);
+                } else if (std.ascii.eqlIgnoreCase(opt.key, "mirror")) {
+                    mirror = std.mem.eql(u8, opt.value, "true");
                 }
             }
-            try c.putRemote(ss.name, urls.items);
+            try c.putRemoteFull(ss.name, urls.items, fetch.items, mirror);
+        }
+    }
+
+    if (raw.hasSection("branch")) {
+        const branch_sec = try raw.section("branch");
+        for (branch_sec.subsections.items) |ss| {
+            var remote: []const u8 = "";
+            var merge: []const u8 = "";
+            for (ss.options.items) |opt| {
+                if (std.ascii.eqlIgnoreCase(opt.key, "remote")) {
+                    remote = opt.value;
+                } else if (std.ascii.eqlIgnoreCase(opt.key, "merge")) {
+                    merge = opt.value;
+                }
+            }
+            try c.putBranch(ss.name, remote, merge);
         }
     }
 
@@ -221,6 +273,57 @@ test "encode/decode memory Config bare and remotes" {
     try std.testing.expectEqualStrings("https://example.com/a.git", origin.urls[0]);
     const foo = got.remotes.get("foo") orelse return error.TestExpectedEqual;
     try std.testing.expectEqualStrings("http://foo/bar.git", foo.urls[0]);
+}
+
+test "encode/decode remote fetch mirror and branch" {
+    const gpa = std.testing.allocator;
+
+    const cfg = try gpa.create(Config);
+    defer {
+        cfg.deinit();
+        gpa.destroy(cfg);
+    }
+    cfg.* = Config.init(gpa);
+    cfg.is_bare = false;
+    try cfg.putRemoteFull(
+        "origin",
+        &[_][]const u8{"https://example.com/r.git"},
+        &[_][]const u8{
+            "+refs/heads/*:refs/remotes/origin/*",
+            "+refs/tags/*:refs/tags/*",
+        },
+        true,
+    );
+    try cfg.putBranch("main", "origin", "refs/heads/main");
+    try cfg.putBranch("dev", "upstream", "refs/heads/develop");
+
+    const bytes = try encodeMemoryConfig(gpa, cfg);
+    defer gpa.free(bytes);
+
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "fetch = +refs/heads/*:refs/remotes/origin/*") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "fetch = +refs/tags/*:refs/tags/*") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "mirror = true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "[branch \"dev\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "[branch \"main\"]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "merge = refs/heads/main") != null);
+
+    const got = try decodeMemoryConfig(gpa, bytes);
+    defer {
+        got.deinit();
+        gpa.destroy(got);
+    }
+    try std.testing.expect(!got.is_bare);
+    const origin = got.remotes.get("origin") orelse return error.TestExpectedEqual;
+    try std.testing.expect(origin.mirror);
+    try std.testing.expectEqual(@as(usize, 2), origin.fetch.len);
+    try std.testing.expectEqualStrings("+refs/heads/*:refs/remotes/origin/*", origin.fetch[0]);
+    try std.testing.expectEqualStrings("+refs/tags/*:refs/tags/*", origin.fetch[1]);
+    const main_b = got.branches.get("main") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("origin", main_b.remote);
+    try std.testing.expectEqualStrings("refs/heads/main", main_b.merge);
+    const dev_b = got.branches.get("dev") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqualStrings("upstream", dev_b.remote);
+    try std.testing.expectEqualStrings("refs/heads/develop", dev_b.merge);
 }
 
 test "ConfigStorage setConfig writes git-config and reloads from disk" {

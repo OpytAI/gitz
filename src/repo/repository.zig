@@ -21,6 +21,8 @@ const fs_pkg = @import("fs");
 
 const error_mod = @import("error.zig");
 const facade = @import("facade.zig");
+const crud = @import("crud.zig");
+const remote_mod = @import("remote.zig");
 const objpkg = @import("object");
 
 const Allocator = std.mem.Allocator;
@@ -31,6 +33,9 @@ const Config = memory.Config;
 pub const LogOptions = facade.LogOptions;
 pub const LogOrder = facade.LogOrder;
 pub const LogResult = facade.LogResult;
+pub const CreateTagOptions = crud.CreateTagOptions;
+pub const Remote = remote_mod.Remote;
+pub const AnonymousRemote = crud.AnonymousRemote;
 
 pub const Error = error_mod.Error;
 
@@ -104,8 +109,74 @@ pub const Repository = struct {
         try self.setConfig(cfg);
     }
 
+    /// go-git `Repository.Worktree` — attached FS or `error.IsBareRepository`.
+    pub fn worktreeFs(self: *Repository) error{IsBareRepository}!*fs_pkg.Mem {
+        return crud.worktreeFs(self);
+    }
+
     // -----------------------------------------------------------------------
-    // Object getters, Log, ResolveRevision, Branches/Tags/Notes
+    // Remotes / config branches / tags (no network)
+    // -----------------------------------------------------------------------
+
+    pub fn remote(self: *Repository, name: []const u8) !Remote {
+        return crud.remote(self, name);
+    }
+    pub fn remotes(self: *Repository, allocator: Allocator) ![]Remote {
+        return crud.remotes(self, allocator);
+    }
+    pub fn createRemote(self: *Repository, name: []const u8, urls: []const []const u8) !Remote {
+        return crud.createRemote(self, name, urls);
+    }
+    pub fn createRemoteFull(
+        self: *Repository,
+        name: []const u8,
+        urls: []const []const u8,
+        fetch: []const []const u8,
+        mirror: bool,
+    ) !Remote {
+        return crud.createRemoteFull(self, name, urls, fetch, mirror);
+    }
+    pub fn createRemoteAnonymous(
+        self: *Repository,
+        allocator: Allocator,
+        urls: []const []const u8,
+    ) !AnonymousRemote {
+        return crud.createRemoteAnonymous(self, allocator, urls);
+    }
+    pub fn deleteRemote(self: *Repository, name: []const u8) !void {
+        return crud.deleteRemote(self, name);
+    }
+    pub fn branch(self: *Repository, name: []const u8) !*const memory.BranchConfig {
+        return crud.branch(self, name);
+    }
+    pub fn createBranch(
+        self: *Repository,
+        name: []const u8,
+        remote_name: []const u8,
+        merge: []const u8,
+    ) !void {
+        return crud.createBranch(self, name, remote_name, merge);
+    }
+    pub fn deleteBranch(self: *Repository, name: []const u8) !void {
+        return crud.deleteBranch(self, name);
+    }
+    pub fn tag(self: *Repository, name: []const u8) !Reference {
+        return crud.tag(self, name);
+    }
+    pub fn createTag(
+        self: *Repository,
+        name: []const u8,
+        hash: plumbing.Hash,
+        opts: ?CreateTagOptions,
+    ) !Reference {
+        return crud.createTag(self, name, hash, opts);
+    }
+    pub fn deleteTag(self: *Repository, name: []const u8) !void {
+        return crud.deleteTag(self, name);
+    }
+
+    // -----------------------------------------------------------------------
+    // Object getters, Log, ResolveRevision, ref filters
     // -----------------------------------------------------------------------
 
     pub fn commitObject(self: *Repository, h: plumbing.Hash) !*objpkg.Commit {

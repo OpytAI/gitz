@@ -59,15 +59,23 @@ fn cloneConfig(allocator: Allocator, src: *const Config) Allocator.Error!*Config
         allocator.destroy(dst);
     }
     dst.is_bare = src.is_bare;
-    var it = src.remotes.iterator();
-    while (it.next()) |e| {
-        // Collect url slices as const for putRemote.
+    var rit = src.remotes.iterator();
+    while (rit.next()) |e| {
         var urls_buf: std.ArrayList([]const u8) = .empty;
         defer urls_buf.deinit(allocator);
         for (e.value_ptr.urls) |u| {
             try urls_buf.append(allocator, u);
         }
-        try dst.putRemote(e.key_ptr.*, urls_buf.items);
+        var fetch_buf: std.ArrayList([]const u8) = .empty;
+        defer fetch_buf.deinit(allocator);
+        for (e.value_ptr.fetch) |f| {
+            try fetch_buf.append(allocator, f);
+        }
+        try dst.putRemoteFull(e.key_ptr.*, urls_buf.items, fetch_buf.items, e.value_ptr.mirror);
+    }
+    var bit = src.branches.iterator();
+    while (bit.next()) |e| {
+        try dst.putBranch(e.value_ptr.name, e.value_ptr.remote, e.value_ptr.merge);
     }
     return dst;
 }

@@ -67,6 +67,7 @@ pub const newObjectIter = object_mod.newObjectIter;
 pub const CommitIter = walker_mod.CommitIter;
 pub const PreorderIter = walker_mod.PreorderIter;
 pub const PostorderIter = walker_mod.PostorderIter;
+pub const BfsIter = walker_mod.BfsIter;
 pub const HashSet = walker_mod.HashSet;
 pub const CommitFilter = walker_mod.CommitFilter;
 pub const CTimeIter = walker_mod.CTimeIter;

@@ -1276,6 +1276,25 @@ pub const AllIter = struct {
         self.curr = null;
     }
 
+    /// Free commits still on the path (`curr` → tail). Call before `close`/`deinit`
+    /// when the caller owns yielded commits and used a heap loader (FromHashes).
+    /// Do **not** use with stack-backed tip loaders (FromTips unit tests).
+    pub fn freeUnyielded(self: *AllIter) void {
+        var n = self.curr;
+        while (n) |node| {
+            const c = node.commit;
+            c.deinit();
+            self.allocator.destroy(c);
+            n = node.next;
+        }
+        self.curr = null;
+    }
+
+    /// Clear tip ownership so `deinit` does not free tip commits (caller owns them).
+    pub fn disownTips(self: *AllIter) void {
+        self.owned_tips.clearRetainingCapacity();
+    }
+
     pub fn asIter(self: *AllIter) CommitIter {
         return .{
             .ptr = self,

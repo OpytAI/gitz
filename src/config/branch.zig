@@ -213,6 +213,25 @@ test "Branch.validate name and merge" {
     try std.testing.expectError(error.BranchInvalidMerge, bad_merge.validate());
 }
 
+test "Branch.validate invalid rebase" {
+    // go-git Branch.Validate — rebase must be true | interactive | false (or empty).
+    const gpa = std.testing.allocator;
+    var bad = Branch.init(gpa);
+    defer bad.deinit();
+    try setOwned(gpa, &bad.name, "master");
+    try setOwned(gpa, &bad.remote, "origin");
+    bad.merge = .{ .raw = "refs/heads/master" };
+    try setOwned(gpa, &bad.rebase, "bogus");
+    try std.testing.expectError(error.BranchInvalidRebase, bad.validate());
+
+    try setOwned(gpa, &bad.rebase, "true");
+    try bad.validate();
+    try setOwned(gpa, &bad.rebase, "false");
+    try bad.validate();
+    try setOwned(gpa, &bad.rebase, "interactive");
+    try bad.validate();
+}
+
 test "quoteDescription and unquoteDescriptionAlloc" {
     const gpa = std.testing.allocator;
     const q = try quoteDescription(gpa, "a\nb\n");

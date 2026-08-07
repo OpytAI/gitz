@@ -9,6 +9,9 @@ require:
     - LogOptions
     - LogOrder
     - LogResult
+    - Remote
+    - CreateTagOptions
+    - AnonymousRemote
   functions:
     - newRepository
     - init
@@ -25,6 +28,18 @@ require:
     - Repository.references
     - Repository.isBare
     - Repository.setIsBare
+    - Repository.worktreeFs
+    - Repository.remote
+    - Repository.remotes
+    - Repository.createRemote
+    - Repository.createRemoteAnonymous
+    - Repository.deleteRemote
+    - Repository.branch
+    - Repository.createBranch
+    - Repository.deleteBranch
+    - Repository.tag
+    - Repository.createTag
+    - Repository.deleteTag
     - Repository.commitObject
     - Repository.blobObject
     - Repository.treeObject
@@ -45,6 +60,8 @@ require:
     - initWithOptions
     - open
     - git_dir_name
+    - Remote
+    - CreateTagOptions
 zig_map:
   Repository: Repository
   InitOptions: InitOptions
@@ -55,3 +72,10 @@ zig_map:
   Open: open
   NewRepository: newRepository
   GitDirName: git_dir_name
+  Remote: Remote
+  CreateTag: createTag
+  DeleteTag: deleteTag
+  CreateRemote: createRemote
+  DeleteRemote: deleteRemote
+  CreateBranch: createBranch
+  DeleteBranch: deleteBranch

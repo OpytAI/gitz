@@ -7,7 +7,7 @@
 //! - Transactioner — true on memory (`begin`); false on filesystem
 //!
 //! Capability-gated tests stay suite members and early-return when unsupported.
-//! Config checks use the minimal memory Config (is_bare + remotes name/urls).
+//! Config checks use the minimal memory Config (is_bare + remotes + branches).
 //!
 //! Runners:
 //! - `runAllMemory` — `//src/storage:suite_test`
