@@ -30,6 +30,13 @@ pub const idxfile = @import("idxfile");
 // Phase 3 packfile read.
 pub const packfile = @import("packfile");
 
+// Phase 4 storer + cache + storage/memory.
+pub const storer = @import("storer");
+pub const cache = @import("cache");
+pub const storage = @import("storage");
+/// In-memory storage backend (go-git `storage/memory`). Import name from package.
+pub const memory_storage = @import("memory");
+
 test "identity" {
     try std.testing.expectEqualStrings("gitz", name);
     try std.testing.expectEqualStrings("v5.19.2", go_git_pin);
@@ -63,4 +70,17 @@ test "phase3 packfile read surface" {
     _ = packfile.Packfile.init;
     _ = packfile.patchDelta;
     _ = packfile.applyDelta;
+}
+
+test "phase4 storer memory cache surface" {
+    try std.testing.expectEqual(@as(usize, 1024), storer.MaxResolveRecursion);
+    try std.testing.expect(storer.Error.Stop == storer.Error.Stop);
+    try std.testing.expect(storage.Error.ReferenceHasChanged == storage.Error.ReferenceHasChanged);
+    try std.testing.expectEqual(cache.DefaultMaxSize, @as(cache.FileSize, 96 * cache.MiByte));
+    _ = cache.ObjectLru.initDefault;
+    _ = cache.BufferLru.initDefault;
+    _ = memory_storage.Storage.init;
+    _ = storer.resolveReference;
+    _ = storer.newEncodedObjectSliceIter;
+    _ = storer.newReferenceSliceIter;
 }

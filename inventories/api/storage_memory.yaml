@@ -1,0 +1,83 @@
+# API inventory: storage/memory (phase 4)
+# NewStorage → newStorage (heap *Storage). Method names camelCase (setEncodedObject, …).
+# Encoded objects are *plumbing.MemoryObject.
+# Capabilities: Transactioner=true; PackfileWriter=false; DeltaObjectStorer=false.
+package: storage/memory
+phase: 4
+require:
+  types:
+    - Storage
+    - ConfigStorage
+    - ObjectStorage
+    - ShallowStorage
+    - IndexStorage
+    - ReferenceStorage
+    - ModuleStorage
+    - TxObjectStorage
+    - ObjectSnapshotIter
+    - Error
+  functions:
+    - NewStorage
+  constants:
+    - ErrUnsupportedObjectType
+  semantic:
+    - Storage
+    - Storage.init
+    - Storage.deinit
+    - ConfigStorage
+    - ObjectStorage
+    - ShallowStorage
+    - IndexStorage
+    - ReferenceStorage
+    - ModuleStorage
+    - TxObjectStorage
+    - ObjectSnapshotIter
+    - Error
+    - Error.UnsupportedObjectType
+    - Error.NotSupported
+    - implements_transactioner
+    - implements_packfile_writer
+    - implements_delta_object_storer
+    - newEncodedObject
+    - setEncodedObject
+    - encodedObject
+    - iterEncodedObjects
+    - hasEncodedObject
+    - encodedObjectSize
+    - addAlternate
+    - begin
+    - forEachObjectHash
+    - objectPacks
+    - deleteOldObjectPackAndIndex
+    - looseObjectTime
+    - deleteLooseObject
+    - setReference
+    - checkAndSetReference
+    - reference
+    - iterReferences
+    - removeReference
+    - countLooseRefs
+    - packRefs
+    - setShallow
+    - shallow
+    - setIndex
+    - index
+    - setConfig
+    - config
+    - module
+    - TxObjectStorage.setEncodedObject
+    - TxObjectStorage.encodedObject
+    - TxObjectStorage.commit
+    - TxObjectStorage.rollback
+zig_map:
+  Storage: Storage
+  ConfigStorage: ConfigStorage
+  ObjectStorage: ObjectStorage
+  ShallowStorage: ShallowStorage
+  IndexStorage: IndexStorage
+  ReferenceStorage: ReferenceStorage
+  ModuleStorage: ModuleStorage
+  TxObjectStorage: TxObjectStorage
+  Error: Error
+  NewStorage: newStorage
+  ErrUnsupportedObjectType: Error.UnsupportedObjectType

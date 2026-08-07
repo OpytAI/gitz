@@ -1,0 +1,4 @@
+name: cache_default_max
+type: file_equals
+actual: actual.txt
+expected: expected.txt

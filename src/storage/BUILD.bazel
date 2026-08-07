@@ -1,0 +1,43 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git storage package — façade + ErrReferenceHasChanged.
+zig_library(
+    name = "storage",
+    main = "root.zig",
+    import_name = "storage",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/storage/memory",
+        "//src/plumbing",
+    ],
+)
+
+zig_test(
+    name = "storage_test",
+    size = "small",
+    main = "root.zig",
+    deps = [
+        "//src/storage/memory",
+        "//src/plumbing",
+    ],
+)
+
+# BaseStorageSuite over memory (go-git storage/test + storage/memory tests).
+zig_test(
+    name = "suite_test",
+    size = "small",
+    main = "test/suite.zig",
+    deps = [
+        "//src/storage/memory",
+        "//src/plumbing",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(
+        ["**/*"],
+        exclude = ["memory/**"],
+    ),
+    visibility = ["//visibility:public"],
+)

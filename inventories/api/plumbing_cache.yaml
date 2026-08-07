@@ -1,0 +1,59 @@
+# API inventory: plumbing/cache (phase 4)
+# ObjectLRU → ObjectLru; BufferLRU → BufferLru; New* → init / initDefault.
+# Object / Buffer are go-git interfaces; methods live on ObjectLru / BufferLru.
+package: plumbing/cache
+phase: 4
+require:
+  types:
+    - FileSize
+    - Object
+    - Buffer
+    - ObjectLRU
+    - BufferLRU
+  functions:
+    - NewObjectLRU
+    - NewObjectLRUDefault
+    - NewBufferLRU
+    - NewBufferLRUDefault
+  constants:
+    - Byte
+    - KiByte
+    - MiByte
+    - GiByte
+    - DefaultMaxSize
+  semantic:
+    - FileSize
+    - Object
+    - Buffer
+    - ObjectLru
+    - ObjectLru.init
+    - ObjectLru.initDefault
+    - ObjectLru.put
+    - ObjectLru.get
+    - ObjectLru.clear
+    - BufferLru
+    - BufferLru.init
+    - BufferLru.initDefault
+    - BufferLru.put
+    - BufferLru.get
+    - BufferLru.clear
+    - Byte
+    - KiByte
+    - MiByte
+    - GiByte
+    - DefaultMaxSize
+zig_map:
+  FileSize: FileSize
+  Object: Object
+  Buffer: Buffer
+  ObjectLRU: ObjectLru
+  BufferLRU: BufferLru
+  NewObjectLRU: ObjectLru.init
+  NewObjectLRUDefault: ObjectLru.initDefault
+  NewBufferLRU: BufferLru.init
+  NewBufferLRUDefault: BufferLru.initDefault
+  Byte: Byte
+  KiByte: KiByte
+  MiByte: MiByte
+  GiByte: GiByte
+  DefaultMaxSize: DefaultMaxSize

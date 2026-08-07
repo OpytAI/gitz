@@ -1,0 +1,11 @@
+# Memory storer empty-blob set/get golden (phase 4 Class A)
+# Path: storage/memory Storage.init → newEncodedObject → setType(blob) →
+# setContent("") → setEncodedObject → encodedObject(any|blob, hash)
+# OID is SHA-1 of git object "blob 0\0" (empty body).
+# Matches go-git plumbing empty blob / ComputeHash(BlobObject, []).
+path: storage/memory
+ops: setEncodedObject,encodedObject
+type: blob
+size: 0
+body: empty
+oid: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391

@@ -1,6 +1,6 @@
 load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
 
-# Core library root — re-exports Phase 1 foundation packages.
+# Core library root — re-exports foundation + phase 2–4 packages.
 zig_library(
     name = "gitz",
     main = "root.zig",
@@ -15,6 +15,10 @@ zig_library(
         "//src/plumbing/format/config",
         "//src/plumbing/format/idxfile",
         "//src/plumbing/format/packfile",
+        "//src/plumbing/storer",
+        "//src/plumbing/cache",
+        "//src/storage",
+        "//src/storage/memory",
         "//src/utils/binary",
         "//src/utils/sync",
         "//src/utils/ioutil",
@@ -35,6 +39,10 @@ zig_test(
         "//src/plumbing/format/config",
         "//src/plumbing/format/idxfile",
         "//src/plumbing/format/packfile",
+        "//src/plumbing/storer",
+        "//src/plumbing/cache",
+        "//src/storage",
+        "//src/storage/memory",
         "//src/utils/binary",
         "//src/utils/sync",
         "//src/utils/ioutil",
@@ -59,6 +67,10 @@ filegroup(
         "//src/plumbing/format/config:package_srcs",
         "//src/plumbing/format/idxfile:package_srcs",
         "//src/plumbing/format/packfile:package_srcs",
+        "//src/plumbing/storer:package_srcs",
+        "//src/plumbing/cache:package_srcs",
+        "//src/storage:package_srcs",
+        "//src/storage/memory:package_srcs",
         "//src/crypto/sha1cd:package_srcs",
         "//src/utils/binary:package_srcs",
         "//src/utils/sync:package_srcs",

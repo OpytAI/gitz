@@ -1,0 +1,8 @@
+# plumbing/cache DefaultMaxSize (phase 4 Class A)
+# go-git: DefaultMaxSize FileSize = 96 * MiByte; MiByte = 1 << 20
+# ObjectLru.initDefault / BufferLru.initDefault use this max size.
+package: plumbing/cache
+symbol: DefaultMaxSize
+mibyte_shift: 20
+multiplier: 96
+bytes: 100663296

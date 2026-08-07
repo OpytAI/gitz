@@ -1,0 +1,41 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/storer — method-set contracts + iterator helpers.
+zig_library(
+    name = "storer",
+    main = "root.zig",
+    srcs = [
+        "error.zig",
+        "object.zig",
+        "reference.zig",
+        "shallow.zig",
+        "index_stub.zig",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+    ],
+)
+
+zig_test(
+    name = "storer_test",
+    size = "small",
+    main = "root.zig",
+    srcs = [
+        "error.zig",
+        "object.zig",
+        "reference.zig",
+        "shallow.zig",
+        "index_stub.zig",
+    ],
+    deps = [
+        "//src/plumbing",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

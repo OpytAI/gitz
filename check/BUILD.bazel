@@ -166,9 +166,24 @@ test_suite(
     ],
 )
 
+# Phase 4 storer contracts + cache + storage/memory.
+test_suite(
+    name = "phase_4_packages",
+    tests = [
+        "//src/plumbing/storer:storer_test",
+        "//src/plumbing/cache:cache_test",
+        "//src/storage:storage_test",
+        "//src/storage:suite_test",
+        "//src/storage/memory:memory_test",
+    ],
+)
+
 test_suite(
     name = "phase_4",
-    tests = [":phase_3"],
+    tests = [
+        ":phase_3",
+        ":phase_4_packages",
+    ],
 )
 
 test_suite(

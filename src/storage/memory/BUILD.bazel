@@ -1,0 +1,39 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git storage/memory — ephemeral repository storage backend.
+_SRCS = [
+    "error.zig",
+    "storage.zig",
+    "object.zig",
+    "reference.zig",
+    "config.zig",
+    "index.zig",
+    "module.zig",
+]
+
+zig_library(
+    name = "memory",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "memory",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+    ],
+)
+
+zig_test(
+    name = "memory_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)
