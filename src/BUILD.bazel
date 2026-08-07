@@ -1,0 +1,14 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# Core library root. Subpackages (plumbing/, storage/, …) will be added as the port grows.
+zig_library(
+    name = "gitz",
+    main = "root.zig",
+    visibility = ["//visibility:public"],
+)
+
+# Unit tests embedded in root.zig (and later package tests).
+zig_test(
+    name = "gitz_test",
+    main = "root.zig",
+)

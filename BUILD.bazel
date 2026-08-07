@@ -1,0 +1,18 @@
+# Root package — package metadata and repo-wide aliases.
+
+exports_files([
+    "MODULE.bazel",
+    "zig_index.json",
+    "AGENTS.md",
+    "GO_GIT_PIN.md",
+    "PORT_STRATEGY.md",
+    "README.md",
+    "LICENSE",
+])
+
+# Convenience alias for the core library.
+alias(
+    name = "gitz",
+    actual = "//src:gitz",
+    visibility = ["//visibility:public"],
+)
