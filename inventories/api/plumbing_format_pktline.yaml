@@ -1,22 +1,51 @@
 # API inventory: plumbing/format/pktline (phase 2)
+# Go constructors NewEncoder/NewScanner map to Zig Encoder.init / Scanner.init.
 package: plumbing/format/pktline
 phase: 2
 require:
   types:
     - Encoder
     - Scanner
+    - ErrorLine
   functions:
     - NewEncoder
     - NewScanner
   constants:
     - MaxPayloadSize
+    - OversizePayloadMax
+    - FlushPkt
+    - Flush
+    - FlushString
   semantic:
-    - pktline.Encoder
-    - pktline.Scanner
-    - pktline.MaxPayloadSize
+    - Encoder
+    - Scanner
+    - ErrorLine
+    - Encoder.init
+    - Scanner.init
+    - Encoder.flush
+    - Encoder.encode
+    - Encoder.encodeLine
+    - Encoder.encodeString
+    - Encoder.encodef
+    - Scanner.scan
+    - Scanner.bytes
+    - Scanner.err
+    - Scanner.errorLineText
+    - ErrorLine.encode
+    - ErrorLine.decode
+    - MaxPayloadSize
+    - OversizePayloadMax
+    - FlushPkt
+    - Flush
+    - FlushString
 zig_map:
-  Encoder: pktline.Encoder
-  Scanner: pktline.Scanner
+  Encoder: Encoder
+  Scanner: Scanner
+  ErrorLine: ErrorLine
   NewEncoder: Encoder.init
   NewScanner: Scanner.init
-  MaxPayloadSize: pktline.MaxPayloadSize
+  MaxPayloadSize: MaxPayloadSize
+  OversizePayloadMax: OversizePayloadMax
+  FlushPkt: FlushPkt
+  Flush: Flush
+  FlushString: FlushString

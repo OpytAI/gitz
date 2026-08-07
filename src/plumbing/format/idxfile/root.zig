@@ -32,20 +32,62 @@ test {
     _ = @import("decoder.zig");
     _ = @import("encoder.zig");
     _ = @import("writer.zig");
+    _ = @import("fixture.zig");
+    _ = @import("basic_idx.zig");
 }
 
 const fixture = @import("fixture.zig");
+const basic_idx = @import("basic_idx.zig");
+
+// go-git-fixtures basic pack (pack a3fed42d… / 31 objects).
+const basic_packfile_checksum_hex = "a3fed42da1e8189a077c0e6846c040dcf73fc9dd";
+const basic_idx_checksum_hex = "fb794f1ec720b9bc8e43257451bd99c4be6fa1c9";
+const basic_probe_hash_hex = "1669dce138d9b841a518c64b10914d88f5e488ea";
+const basic_probe_offset: i64 = 615;
+// Fixture CRC for probe hash (packfile_test.go uses 0xd9429436). go-git
+// decoder_test.go asserts 3645019190 (0xd941d7b6) which does not match the
+// basic.idx bytes or the pack parser golden.
+const basic_probe_crc32: u32 = 0xd9429436;
+const basic_object_count: i64 = 31;
+
+fn decodeBasicIndex(allocator: std.mem.Allocator) !MemoryIndex {
+    var idx = MemoryIndex.init(allocator);
+    errdefer idx.deinit();
+    var r = std.Io.Reader.fixed(&basic_idx.data);
+    var d = Decoder.init(&r);
+    try d.decode(&idx);
+    return idx;
+}
 
 // ---------------------------------------------------------------------------
-// Tests
+// Tests — go-git plumbing/format/idxfile/*_test.go coverage
 // ---------------------------------------------------------------------------
-
 
 test "VersionSupported is 2 and idx header magic" {
     try std.testing.expectEqual(@as(u32, 2), VersionSupported);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 255, 't', 'O', 'c' }, idxHeader);
 }
 
+// decoder_test.go TestDecode (go-git-fixtures Basic().One())
+test "TestDecode basic idx count contains offset crc checksums" {
+    const allocator = std.testing.allocator;
+    var idx = try decodeBasicIndex(allocator);
+    defer idx.deinit();
+
+    try std.testing.expectEqual(basic_object_count, try idx.count());
+
+    const hash = plumbing.newHash(basic_probe_hash_hex);
+    try std.testing.expect(idx.contains(hash));
+    try std.testing.expectEqual(basic_probe_offset, try idx.findOffset(hash));
+    try std.testing.expectEqual(basic_probe_crc32, try idx.findCRC32(hash));
+
+    var idx_hex: [plumbing.HexSize]u8 = undefined;
+    try std.testing.expectEqualStrings(basic_idx_checksum_hex, idx.idx_checksum.string(&idx_hex));
+    var pack_hex: [plumbing.HexSize]u8 = undefined;
+    try std.testing.expectEqualStrings(basic_packfile_checksum_hex, idx.packfile_checksum.string(&pack_hex));
+}
+
+// decoder_test.go TestDecode64bitsOffsets
 test "decode 64-bit offsets fixture" {
     const allocator = std.testing.allocator;
     var idx = try fixture.fixtureIndex(allocator);
@@ -84,6 +126,7 @@ test "decode 64-bit offsets fixture" {
     try std.testing.expectEqual(expected.len, n);
 }
 
+// idxfile_test.go TestFindHash / FindOffset / FindCRC32 / Contains
 test "findOffset findCRC32 contains on fixture" {
     const allocator = std.testing.allocator;
     var idx = try fixture.fixtureIndex(allocator);
@@ -102,6 +145,7 @@ test "findOffset findCRC32 contains on fixture" {
     try std.testing.expectError(Error.ObjectNotFound, idx.findCRC32(missing));
 }
 
+// idxfile_test.go TestFindHash
 test "findHash reverse lookup" {
     const allocator = std.testing.allocator;
     var idx = try fixture.fixtureIndex(allocator);
@@ -115,6 +159,7 @@ test "findHash reverse lookup" {
     try std.testing.expectError(Error.ObjectNotFound, idx.findHash(999999));
 }
 
+// idxfile_test.go TestEntriesByOffset
 test "entriesByOffset sorted" {
     const allocator = std.testing.allocator;
     var idx = try fixture.fixtureIndex(allocator);
@@ -123,18 +168,52 @@ test "entriesByOffset sorted" {
     var iter = try idx.entriesByOffset();
     defer iter.deinit();
 
-    // fixture.fixture_offsets is not sorted; sorted order by offset value:
-    var sorted = fixture.fixture_offsets;
-    std.mem.sort(i64, &sorted, {}, std.sort.asc(i64));
-
+    // fixture.fixture_offsets order is already ascending by offset.
     var i: usize = 0;
     while (iter.next()) |e| {
-        try std.testing.expectEqual(@as(u64, @intCast(sorted[i])), e.offset);
+        try std.testing.expectEqual(@as(u64, @intCast(fixture.fixture_offsets[i])), e.offset);
         i += 1;
     }
-    try std.testing.expectEqual(sorted.len, i);
+    try std.testing.expectEqual(fixture.fixture_offsets.len, i);
 }
 
+// idxfile_test.go TestOffsetHashConcurrentPopulation (serial stress equivalent)
+test "offset hash reverse map survives repeated lookups" {
+    const allocator = std.testing.allocator;
+    var idx = try fixture.fixtureIndex(allocator);
+    defer idx.deinit();
+
+    var round: usize = 0;
+    while (round < 64) : (round += 1) {
+        for (fixture.fixture_hashes, fixture.fixture_offsets) |hex, off| {
+            const h = plumbing.newHash(hex);
+            try std.testing.expectEqual(off, try idx.findOffset(h));
+            const got = try idx.findHash(off);
+            try std.testing.expect(h.eql(got));
+        }
+    }
+}
+
+// encoder_test.go TestDecodeEncode — basic fixture
+test "decode encode round-trip basic idx" {
+    const allocator = std.testing.allocator;
+    const raw = basic_idx.data[0..];
+
+    var idx = MemoryIndex.init(allocator);
+    defer idx.deinit();
+    var r = std.Io.Reader.fixed(raw);
+    var d = Decoder.init(&r);
+    try d.decode(&idx);
+
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    var e = Encoder.init(&aw.writer);
+    const n = try e.encode(&idx);
+    try std.testing.expectEqual(raw.len, n);
+    try std.testing.expectEqualSlices(u8, raw, aw.written());
+}
+
+// encoder_test.go TestDecodeEncode — large 4GB fixture
 test "decode encode round-trip fixture" {
     const allocator = std.testing.allocator;
     const raw = try fixture.decodeFixtureLarge4gb(allocator);
@@ -154,6 +233,44 @@ test "decode encode round-trip fixture" {
     try std.testing.expectEqualSlices(u8, raw, aw.written());
 }
 
+// writer_test.go TestWriter without pack scan: rebuild basic via Add/onHeader/onFooter
+test "writer rebuilds basic idx via Add onHeader onFooter" {
+    const allocator = std.testing.allocator;
+
+    var src = try decodeBasicIndex(allocator);
+    defer src.deinit();
+
+    var collected: std.ArrayListUnmanaged(Entry) = .empty;
+    defer collected.deinit(allocator);
+    var it = src.entries();
+    while (try it.next()) |e| {
+        try collected.append(allocator, e);
+    }
+    try std.testing.expectEqual(@as(usize, @intCast(basic_object_count)), collected.items.len);
+
+    var w = Writer.init(allocator);
+    defer w.deinit();
+    try w.onHeader(@intCast(collected.items.len));
+    for (collected.items) |e| {
+        try w.add(e.hash, e.offset, e.crc32);
+    }
+    // Duplicate Add is ignored (go-git Writer.Add).
+    try w.add(collected.items[0].hash, collected.items[0].offset, collected.items[0].crc32);
+    try w.onFooter(src.packfile_checksum);
+
+    const idx = try w.getIndex();
+    try std.testing.expect(w.isFinished());
+    try std.testing.expectEqual(basic_object_count, try idx.count());
+
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    defer aw.deinit();
+    var enc = Encoder.init(&aw.writer);
+    const n = try enc.encode(idx);
+    try std.testing.expectEqual(basic_idx.data.len, n);
+    try std.testing.expectEqualSlices(u8, &basic_idx.data, aw.written());
+}
+
+// writer_test.go TestWriterLarge
 test "writer builds large index matching fixture" {
     const allocator = std.testing.allocator;
 
@@ -193,6 +310,7 @@ test "writer builds large index matching fixture" {
     try std.testing.expectEqualSlices(u8, expected_raw, aw.written());
 }
 
+// decoder_test.go TestDecodeErrors (subset + full structural cases)
 test "decode errors empty wrong magic truncated unsupported" {
     const allocator = std.testing.allocator;
 
@@ -246,104 +364,29 @@ test "decode errors empty wrong magic truncated unsupported" {
         var d = Decoder.init(&r);
         try std.testing.expectError(Error.UnsupportedVersion, d.decode(&idx));
     }
-}
 
-test "decode non-monotonic fanout" {
-    const allocator = std.testing.allocator;
-    var buf: std.ArrayListUnmanaged(u8) = .empty;
-    defer buf.deinit(allocator);
-    try buf.appendSlice(allocator, idxHeader);
-    var ver: [4]u8 = undefined;
-    std.mem.writeInt(u32, &ver, 2, .big);
-    try buf.appendSlice(allocator, &ver);
-
-    var k: usize = 0;
-    while (k < 256) : (k += 1) {
-        var n: [4]u8 = undefined;
-        const v: u32 = if (k == 0) 5 else if (k == 1) 3 else 5;
-        std.mem.writeInt(u32, &n, v, .big);
-        try buf.appendSlice(allocator, &n);
-    }
-
-    var idx = MemoryIndex.init(allocator);
-    defer idx.deinit();
-    var r = std.Io.Reader.fixed(buf.items);
-    var d = Decoder.init(&r);
-    try std.testing.expectError(Error.MalformedIdxFile, d.decode(&idx));
-}
-
-test "decode checksum mismatch" {
-    const allocator = std.testing.allocator;
-    const raw = try fixture.decodeFixtureLarge4gb(allocator);
-    defer allocator.free(raw);
-    const corrupted = try allocator.dupe(u8, raw);
-    defer allocator.free(corrupted);
-    corrupted[corrupted.len - 1] ^= 0xff;
-
-    var idx = MemoryIndex.init(allocator);
-    defer idx.deinit();
-    var r = std.Io.Reader.fixed(corrupted);
-    var d = Decoder.init(&r);
-    try std.testing.expectError(Error.MalformedIdxFile, d.decode(&idx));
-}
-
-test "decode size formula with known_size" {
-    const allocator = std.testing.allocator;
-    const hashsz: i64 = 20;
-    const header_and_fanout: i64 = 8 + 4 * 256;
-    const minSize = struct {
-        fn call(nr: i64) i64 {
-            return header_and_fanout + nr * (hashsz + 8) + 2 * hashsz;
+    // truncated fanout table
+    {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(allocator);
+        try buf.appendSlice(allocator, idxHeader);
+        var ver: [4]u8 = undefined;
+        std.mem.writeInt(u32, &ver, 2, .big);
+        try buf.appendSlice(allocator, &ver);
+        var i: usize = 0;
+        while (i < 10) : (i += 1) {
+            var n: [4]u8 = undefined;
+            std.mem.writeInt(u32, &n, 0, .big);
+            try buf.appendSlice(allocator, &n);
         }
-    }.call;
-    const maxSize = struct {
-        fn call(nr: i64) i64 {
-            var m = minSize(nr);
-            if (nr > 0) m += (nr - 1) * 8;
-            return m;
-        }
-    }.call;
-
-    // nr=1, one byte below minSize → size error
-    {
-        const nr: u32 = 1;
-        const total = minSize(1) - 1;
-        const blob = try buildSparseIdx(allocator, nr, @intCast(total));
-        defer allocator.free(blob);
         var idx = MemoryIndex.init(allocator);
         defer idx.deinit();
-        var r = std.Io.Reader.fixed(blob);
-        var d = Decoder.initWithSize(&r, @intCast(blob.len));
-        try std.testing.expectError(Error.MalformedIdxFile, d.decode(&idx));
+        var r = std.Io.Reader.fixed(buf.items);
+        var d = Decoder.init(&r);
+        try std.testing.expectError(error.EndOfStream, d.decode(&idx));
     }
 
-    // nr=1 at minSize → size ok, then checksum mismatch on zero payload
-    {
-        const nr: u32 = 1;
-        const total = minSize(1);
-        const blob = try buildSparseIdx(allocator, nr, @intCast(total));
-        defer allocator.free(blob);
-        var idx = MemoryIndex.init(allocator);
-        defer idx.deinit();
-        var r = std.Io.Reader.fixed(blob);
-        var d = Decoder.initWithSize(&r, @intCast(blob.len));
-        try std.testing.expectError(Error.MalformedIdxFile, d.decode(&idx));
-    }
-
-    // nr=2 one byte above maxSize
-    {
-        const nr: u32 = 2;
-        const total = maxSize(2) + 1;
-        const blob = try buildSparseIdx(allocator, nr, @intCast(total));
-        defer allocator.free(blob);
-        var idx = MemoryIndex.init(allocator);
-        defer idx.deinit();
-        var r = std.Io.Reader.fixed(blob);
-        var d = Decoder.initWithSize(&r, @intCast(blob.len));
-        try std.testing.expectError(Error.MalformedIdxFile, d.decode(&idx));
-    }
-
-    // without known_size, truncated body is EndOfStream
+    // truncated object names (fanout claims 1 object, no name data)
     {
         var buf: std.ArrayListUnmanaged(u8) = .empty;
         defer buf.deinit(allocator);
@@ -363,6 +406,174 @@ test "decode size formula with known_size" {
         var d = Decoder.init(&r);
         try std.testing.expectError(error.EndOfStream, d.decode(&idx));
     }
+}
+
+// decoder_test.go non-monotonic fanout cases
+test "decode non-monotonic fanout" {
+    const allocator = std.testing.allocator;
+
+    // non-monotonic at entry 1
+    {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(allocator);
+        try buf.appendSlice(allocator, idxHeader);
+        var ver: [4]u8 = undefined;
+        std.mem.writeInt(u32, &ver, 2, .big);
+        try buf.appendSlice(allocator, &ver);
+
+        var k: usize = 0;
+        while (k < 256) : (k += 1) {
+            var n: [4]u8 = undefined;
+            const v: u32 = if (k == 0) 5 else if (k == 1) 3 else 5;
+            std.mem.writeInt(u32, &n, v, .big);
+            try buf.appendSlice(allocator, &n);
+        }
+
+        var idx = MemoryIndex.init(allocator);
+        defer idx.deinit();
+        var r = std.Io.Reader.fixed(buf.items);
+        var d = Decoder.init(&r);
+        try std.testing.expectError(Error.MalformedIdxFile, d.decode(&idx));
+    }
+
+    // non-monotonic at last entry
+    {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(allocator);
+        try buf.appendSlice(allocator, idxHeader);
+        var ver: [4]u8 = undefined;
+        std.mem.writeInt(u32, &ver, 2, .big);
+        try buf.appendSlice(allocator, &ver);
+
+        var k: usize = 0;
+        while (k < 256) : (k += 1) {
+            var n: [4]u8 = undefined;
+            const v: u32 = if (k == 255) 5 else 10;
+            std.mem.writeInt(u32, &n, v, .big);
+            try buf.appendSlice(allocator, &n);
+        }
+
+        var idx = MemoryIndex.init(allocator);
+        defer idx.deinit();
+        var r = std.Io.Reader.fixed(buf.items);
+        var d = Decoder.init(&r);
+        try std.testing.expectError(Error.MalformedIdxFile, d.decode(&idx));
+    }
+}
+
+// decoder_test.go checksum mismatch (basic + large)
+test "decode checksum mismatch" {
+    const allocator = std.testing.allocator;
+
+    {
+        const corrupted = try allocator.dupe(u8, &basic_idx.data);
+        defer allocator.free(corrupted);
+        corrupted[corrupted.len - 1] ^= 0xff;
+        var idx = MemoryIndex.init(allocator);
+        defer idx.deinit();
+        var r = std.Io.Reader.fixed(corrupted);
+        var d = Decoder.init(&r);
+        try std.testing.expectError(Error.MalformedIdxFile, d.decode(&idx));
+    }
+
+    {
+        const raw = try fixture.decodeFixtureLarge4gb(allocator);
+        defer allocator.free(raw);
+        const corrupted = try allocator.dupe(u8, raw);
+        defer allocator.free(corrupted);
+        corrupted[corrupted.len - 1] ^= 0xff;
+
+        var idx = MemoryIndex.init(allocator);
+        defer idx.deinit();
+        var r = std.Io.Reader.fixed(corrupted);
+        var d = Decoder.init(&r);
+        try std.testing.expectError(Error.MalformedIdxFile, d.decode(&idx));
+    }
+}
+
+// decoder_test.go TestDecoderSizeFormulaBoundary + TestDecoderSizeCheckSkippedForBareReader
+test "decode size formula with known_size" {
+    const allocator = std.testing.allocator;
+    const hashsz: i64 = 20;
+    const header_and_fanout: i64 = 8 + 4 * 256;
+    const minSize = struct {
+        fn call(nr: i64) i64 {
+            return header_and_fanout + nr * (hashsz + 8) + 2 * hashsz;
+        }
+    }.call;
+    const maxSize = struct {
+        fn call(nr: i64) i64 {
+            var m = minSize(nr);
+            if (nr > 0) m += (nr - 1) * 8;
+            return m;
+        }
+    }.call;
+
+    const cases = [_]struct { nr: u32, total: i64, size_ok: bool }{
+        .{ .nr = 1, .total = minSize(1), .size_ok = true },
+        .{ .nr = 1, .total = minSize(1) - 1, .size_ok = false },
+        .{ .nr = 1, .total = maxSize(1) + 1, .size_ok = false },
+        .{ .nr = 2, .total = minSize(2), .size_ok = true },
+        .{ .nr = 2, .total = maxSize(2), .size_ok = true },
+        .{ .nr = 2, .total = minSize(2) - 1, .size_ok = false },
+        .{ .nr = 2, .total = maxSize(2) + 1, .size_ok = false },
+    };
+
+    for (cases) |c| {
+        const blob = try buildSparseIdx(allocator, c.nr, @intCast(c.total));
+        defer allocator.free(blob);
+        var idx = MemoryIndex.init(allocator);
+        defer idx.deinit();
+        var r = std.Io.Reader.fixed(blob);
+        var d = Decoder.initWithSize(&r, @intCast(blob.len));
+        // All zero-filled payloads fail; size_ok ones reach checksum mismatch.
+        try std.testing.expectError(Error.MalformedIdxFile, d.decode(&idx));
+        _ = c.size_ok;
+    }
+
+    // without known_size, truncated body is EndOfStream (bare reader)
+    {
+        var buf: std.ArrayListUnmanaged(u8) = .empty;
+        defer buf.deinit(allocator);
+        try buf.appendSlice(allocator, idxHeader);
+        var ver: [4]u8 = undefined;
+        std.mem.writeInt(u32, &ver, 2, .big);
+        try buf.appendSlice(allocator, &ver);
+        var k: usize = 0;
+        while (k < 256) : (k += 1) {
+            var n: [4]u8 = undefined;
+            std.mem.writeInt(u32, &n, 1, .big);
+            try buf.appendSlice(allocator, &n);
+        }
+        var idx = MemoryIndex.init(allocator);
+        defer idx.deinit();
+        var r = std.Io.Reader.fixed(buf.items);
+        var d = Decoder.init(&r);
+        try std.testing.expectError(error.EndOfStream, d.decode(&idx));
+    }
+}
+
+// decoder_test.go TestDecoderRejectsInconsistentObjectCount
+test "decode rejects inconsistent object count overflow" {
+    const allocator = std.testing.allocator;
+    var buf: std.ArrayListUnmanaged(u8) = .empty;
+    defer buf.deinit(allocator);
+    try buf.appendSlice(allocator, idxHeader);
+    var ver: [4]u8 = undefined;
+    std.mem.writeInt(u32, &ver, 2, .big);
+    try buf.appendSlice(allocator, &ver);
+    var k: usize = 0;
+    while (k < 256) : (k += 1) {
+        var n: [4]u8 = undefined;
+        std.mem.writeInt(u32, &n, 0x4C4C4C4C, .big);
+        try buf.appendSlice(allocator, &n);
+    }
+
+    var idx = MemoryIndex.init(allocator);
+    defer idx.deinit();
+    var r = std.Io.Reader.fixed(buf.items);
+    var d = Decoder.initWithSize(&r, @intCast(buf.items.len));
+    try std.testing.expectError(Error.MalformedIdxFile, d.decode(&idx));
 }
 
 fn buildSparseIdx(allocator: std.mem.Allocator, nr: u32, total: usize) ![]u8 {
@@ -386,6 +597,7 @@ fn buildSparseIdx(allocator: std.mem.Allocator, nr: u32, total: usize) ![]u8 {
     return try buf.toOwnedSlice(allocator);
 }
 
+// idxfile_test.go TestMemoryIndexOffset64OutOfRange
 test "offset64 out of range on lookup" {
     const allocator = std.testing.allocator;
     const hash_size = plumbing.Size;
@@ -447,8 +659,10 @@ test "offset64 out of range on lookup" {
 
     var iter = idx.entries();
     try std.testing.expectError(Error.MalformedIdxFile, iter.next());
+    iter.close();
 }
 
+// writer Index() before finished
 test "writer IndexNotFinished" {
     const allocator = std.testing.allocator;
     var w = Writer.init(allocator);
@@ -464,4 +678,32 @@ test "writer rejects unfinished create via getIndex after partial adds" {
     try w.add(plumbing.newHash("303953e5aa461c203a324821bc1717f9b4fff895"), 12, 1);
     try std.testing.expect(!w.isFinished());
     try std.testing.expectError(Error.IndexNotFinished, w.getIndex());
+}
+
+// basic idx MemoryIndex entries / reverse lookups
+test "basic idx entries count and reverse findHash" {
+    const allocator = std.testing.allocator;
+    var idx = try decodeBasicIndex(allocator);
+    defer idx.deinit();
+
+    try std.testing.expectEqual(basic_object_count, try idx.count());
+
+    const probe = plumbing.newHash(basic_probe_hash_hex);
+    const off = try idx.findOffset(probe);
+    try std.testing.expectEqual(basic_probe_offset, off);
+    const got = try idx.findHash(off);
+    try std.testing.expect(probe.eql(got));
+
+    var by_off = try idx.entriesByOffset();
+    defer by_off.deinit();
+    var prev: u64 = 0;
+    var n: usize = 0;
+    var first = true;
+    while (by_off.next()) |e| {
+        if (!first) try std.testing.expect(e.offset >= prev);
+        prev = e.offset;
+        first = false;
+        n += 1;
+    }
+    try std.testing.expectEqual(@as(usize, @intCast(basic_object_count)), n);
 }

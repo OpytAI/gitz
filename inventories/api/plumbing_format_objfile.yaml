@@ -1,20 +1,33 @@
 # API inventory: plumbing/format/objfile (phase 2)
+# Go constructors NewReader/NewWriter map to Zig Reader.open / Writer.open.
 package: plumbing/format/objfile
 phase: 2
 require:
   types:
     - Reader
     - Writer
+    - Error
   functions:
     - NewReader
     - NewWriter
   constants: []
   semantic:
-    - objfile.Reader
-    - objfile.Writer
-    - objfile.open
+    - Reader
+    - Writer
+    - Error
+    - Reader.open
+    - Writer.open
+    - Reader.header
+    - Reader.read
+    - Reader.hash
+    - Reader.close
+    - Writer.writeHeader
+    - Writer.write
+    - Writer.hash
+    - Writer.close
 zig_map:
-  Reader: objfile.Reader
-  Writer: objfile.Writer
+  Reader: Reader
+  Writer: Writer
+  Error: Error
   NewReader: Reader.open
   NewWriter: Writer.open

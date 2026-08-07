@@ -52,6 +52,7 @@ test {
     _ = @import("section.zig");
     _ = @import("option.zig");
     _ = @import("format.zig");
+    _ = @import("fixtures.zig");
     _ = @import("decoder.zig");
     _ = @import("encoder.zig");
 }

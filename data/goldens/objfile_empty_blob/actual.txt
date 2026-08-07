@@ -1,3 +1,2 @@
-# Loose empty blob round-trip OID (phase 2 objfile)
-# Same as plumbing hash empty blob
-oid_hex: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
+objfile_b64: eAFLyslPUjBgAAAJsAHw
+oid: e69de29bb2d1d6434b8b29ae775ad8c2e48c5391

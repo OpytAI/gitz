@@ -26,3 +26,13 @@ pub const SHA256: ObjectFormat = "sha256";
 
 /// Default object format (SHA1).
 pub const DefaultObjectFormat: ObjectFormat = SHA1;
+
+test "format constants match go-git" {
+    const std = @import("std");
+    try std.testing.expectEqualStrings("0", Version0);
+    try std.testing.expectEqualStrings("1", Version1);
+    try std.testing.expectEqualStrings(Version0, DefaultRepositoryFormatVersion);
+    try std.testing.expectEqualStrings("sha1", SHA1);
+    try std.testing.expectEqualStrings("sha256", SHA256);
+    try std.testing.expectEqualStrings(SHA1, DefaultObjectFormat);
+}

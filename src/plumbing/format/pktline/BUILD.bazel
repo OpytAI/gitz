@@ -5,12 +5,18 @@ zig_library(
     name = "pktline",
     main = "root.zig",
     visibility = ["//visibility:public"],
+    deps = [
+        "//src/utils/trace",
+    ],
 )
 
 zig_test(
     name = "pktline_test",
     size = "small",
     main = "root.zig",
+    deps = [
+        "//src/utils/trace",
+    ],
 )
 
 # Sources for //check file/API inventory (parent globs do not cross package borders).

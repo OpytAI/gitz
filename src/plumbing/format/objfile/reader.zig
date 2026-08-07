@@ -22,6 +22,8 @@ const Error = @import("error.zig").Error;
 
 /// Reads and decodes compressed objfile data from a provided `*std.Io.Reader`.
 /// Close does not close the underlying reader.
+///
+/// go-git: `type Reader struct` / `NewReader` / methods on `*Reader`.
 pub const Reader = struct {
     allocator: Allocator,
     decompress: flate.Decompress,
@@ -32,15 +34,42 @@ pub const Reader = struct {
     header_ready: bool = false,
     closed: bool = false,
 
+    /// Open a loose-object reader on `r` (go-git `NewReader`).
+    ///
+    /// Validates the zlib framing eagerly so empty/garbage input fails here
+    /// (go-git `zlib.NewReader` / `Reset` behaviour via `packfile.ErrZLib`).
+    pub fn open(allocator: Allocator, r: *IoReader) (Error || error{OutOfMemory})!Reader {
+        const window = try allocator.alloc(u8, flate.max_window_len);
+        errdefer allocator.free(window);
+
+        var reader: Reader = .{
+            .allocator = allocator,
+            .decompress = flate.Decompress.init(r, .zlib, window),
+            .window = window,
+        };
+
+        // Force zlib header (and first content byte) so open fails on empty
+        // or garbage streams — matching go-git NewReader error path.
+        _ = reader.decompress.reader.peekByte() catch return error.ZLib;
+
+        return reader;
+    }
+
     /// Reads type and size, then prepares for content reads.
     /// go-git `(*Reader).Header`.
-    pub fn header(self: *Reader) Error!struct { t: ObjectType, size: i64 } {
+    ///
+    /// On invalid type name, returns `error.InvalidType` (go-git
+    /// `plumbing.ErrInvalidType` from `ParseObjectType`). On non-integer size
+    /// or truncated header, returns `error.Header` (`ErrHeader`).
+    pub fn header(self: *Reader) (Error || error{InvalidType})!struct { t: ObjectType, size: i64 } {
         var type_buf: [32]u8 = undefined;
-        const type_raw = self.readUntil(' ', &type_buf) catch return error.Header;
-        const t = ObjectType.parse(type_raw) catch return error.Header;
+        const type_raw = try self.readUntil(' ', &type_buf);
+        // go-git: ParseObjectType error is returned as-is (not ErrHeader).
+        const t = ObjectType.parse(type_raw) catch return error.InvalidType;
 
         var size_buf: [32]u8 = undefined;
-        const size_raw = self.readUntil(0, &size_buf) catch return error.Header;
+        const size_raw = try self.readUntil(0, &size_buf);
+        // go-git maps strconv.ParseInt failure to ErrHeader.
         const size = std.fmt.parseInt(i64, size_raw, 10) catch return error.Header;
 
         self.prepareForRead(t, size);
@@ -48,7 +77,8 @@ pub const Reader = struct {
     }
 
     /// Reads content bytes into `p`. Returns `error.HeaderNotRead` if `header`
-    /// has not succeeded. Returns `error.EndOfStream` at end of content.
+    /// has not succeeded. Returns `error.EndOfStream` at end of content stream
+    /// (go-git `io.EOF`).
     /// go-git `(*Reader).Read`.
     pub fn read(self: *Reader, p: []u8) (Error || error{EndOfStream})!usize {
         if (!self.header_ready) return error.HeaderNotRead;
@@ -61,7 +91,7 @@ pub const Reader = struct {
     }
 
     /// Hash of object data read so far. ZeroHash before successful `header`.
-    /// go-git `(*Reader).Hash`.
+    /// go-git `(*Reader).Hash` (guards nil hasher when Header not ready).
     pub fn hash(self: *const Reader) Hash {
         if (!self.header_ready) return ZeroHash;
         // plumbing.Hasher.sum finalises; copy so further reads still hash.
@@ -70,7 +100,8 @@ pub const Reader = struct {
     }
 
     /// Releases the inflate window. Does not close the underlying reader.
-    /// go-git `(*Reader).Close`.
+    /// go-git `(*Reader).Close` (returns the pooled zlib reader there; here
+    /// frees the owned window). Always succeeds.
     pub fn close(self: *Reader) void {
         if (self.closed) return;
         self.closed = true;
@@ -86,36 +117,18 @@ pub const Reader = struct {
     }
 
     /// Read bytes until `delim` (exclusive). go-git `readUntil`.
+    ///
+    /// On EOF before delim, go-git returns `ErrHeader`. Other inflate errors
+    /// are also mapped to `error.Header` for header parsing (corrupt streams
+    /// surface as header failures in the go-git tests).
     fn readUntil(self: *Reader, delim: u8, buf: []u8) Error![]u8 {
         var n: usize = 0;
         while (true) {
-            // Map any inflate/IO failure to Header (go-git returns generic header/zlib errors).
             const b = self.decompress.reader.takeByte() catch return error.Header;
             if (b == delim) return buf[0..n];
             if (n >= buf.len) return error.Header;
             buf[n] = b;
             n += 1;
         }
-    }
-
-    /// Open a loose-object reader on `r` (go-git `NewReader`).
-    ///
-    /// Validates the zlib framing eagerly so empty/garbage input fails here
-    /// (go-git `zlib.Reset` behaviour).
-    pub fn open(allocator: Allocator, r: *IoReader) (Error || error{OutOfMemory})!Reader {
-        const window = try allocator.alloc(u8, flate.max_window_len);
-        errdefer allocator.free(window);
-
-        var reader: Reader = .{
-            .allocator = allocator,
-            .decompress = flate.Decompress.init(r, .zlib, window),
-            .window = window,
-        };
-
-        // Force zlib header (and first content byte) so open fails on empty
-        // or garbage streams.
-        _ = reader.decompress.reader.peekByte() catch return error.ZLib;
-
-        return reader;
     }
 };

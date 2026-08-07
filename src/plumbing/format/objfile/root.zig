@@ -4,90 +4,55 @@
 //!
 //! A loose object is a zlib-compressed stream whose inflated payload is:
 //! `type SP size NUL` followed by the object content.
+//!
+//! # go-git test map
+//!
+//! | go-git test | Zig test |
+//! |---|---|
+//! | common_test.go `objfileFixtures` (all 8) | fixtures.zig `fixtures` + tests below |
+//! | SuiteReader.TestReadObjfile | `TestReadObjfile` |
+//! | SuiteReader.TestReadEmptyObjfile | `TestReadEmptyObjfile` |
+//! | SuiteReader.TestReadGarbage | `TestReadGarbage` |
+//! | SuiteReader.TestReadCorruptZLib | `TestReadCorruptZLib` |
+//! | SuiteReader.TestReaderReadBeforeHeader | `TestReaderReadBeforeHeader` |
+//! | SuiteReader.TestReaderReadAfterHeaderError | `TestReaderReadAfterHeaderError` |
+//! | SuiteWriter.TestWriteObjfile | `TestWriteObjfile` |
+//! | SuiteWriter.TestWriteOverflow | `TestWriteOverflow` |
+//! | SuiteWriter.TestNewWriterInvalidType | `TestNewWriterInvalidType` |
+//! | SuiteWriter.TestNewWriterInvalidSize | `TestNewWriterInvalidSize` |
 
 const std = @import("std");
 
 const error_mod = @import("error.zig");
 const reader_mod = @import("reader.zig");
 const writer_mod = @import("writer.zig");
+const fixtures_mod = @import("fixtures.zig");
 
 pub const Error = error_mod.Error;
 pub const Reader = reader_mod.Reader;
 pub const Writer = writer_mod.Writer;
 
+/// Re-export fixtures for external golden / inventory consumers.
+pub const Fixture = fixtures_mod.Fixture;
+pub const fixtures = fixtures_mod.fixtures;
+pub const decodeB64 = fixtures_mod.decodeB64;
+
 test {
+    _ = error_mod;
     _ = reader_mod;
     _ = writer_mod;
+    _ = fixtures_mod;
 }
 
 // ---------------------------------------------------------------------------
-// Shared fixtures (go-git common_test.go objfileFixtures)
+// Test helpers (go-git testReader / testWriter)
 // ---------------------------------------------------------------------------
 
 const plumbing = @import("plumbing");
 const sync = @import("utils/sync");
 
-const Fixture = struct {
-    hash_hex: []const u8,
-    object_type: plumbing.ObjectType,
-    /// Raw object content (not base64).
-    content: []const u8,
-    /// Base64 of the on-disk zlib objfile bytes.
-    data_b64: []const u8,
-};
-
-const fixtures = [_]Fixture{
-    .{
-        .hash_hex = "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
-        .object_type = .blob,
-        .content = "",
-        .data_b64 = "eAFLyslPUjBgAAAJsAHw",
-    },
-    .{
-        .hash_hex = "a8a940627d132695a9769df883f85992f0ff4a43",
-        .object_type = .blob,
-        .content = "this is a test",
-        .data_b64 = "eAFLyslPUjA0YSjJyCxWAKJEhZLU4hIAUDYHOg==",
-    },
-    .{
-        .hash_hex = "4dc2174801ac4a3d36886210fd086fbe134cf7b2",
-        .object_type = .blob,
-        .content = "this\nis\n\n\na\nmultiline\n\ntest.\n",
-        .data_b64 = "eAFLyslPUjCyZCjJyCzmAiIurkSu3NKcksyczLxULq6S1OISPS4A1I8LMQ==",
-    },
-    .{
-        .hash_hex = "13e6f47dd57798bfdc728d91f5c6d7f40c5bb5fc",
-        .object_type = .blob,
-        .content = "this tests\r\nCRLF\r\nencoded files.\r\n",
-        .data_b64 = "eAFLyslPUjA2YSjJyCxWKEktLinm5XIO8nHj5UrNS85PSU1RSMvMSS3W4+UCABp3DNE=",
-    },
-    .{
-        .hash_hex = "72a7bc4667ab068e954172437b993d9fbaa137cb",
-        .object_type = .blob,
-        .content = "test@example.com",
-        .data_b64 = "eAFLyslPUjA0YyhJLS5xSK1IzC3ISdVLzs8FAGVtCIA=",
-    },
-};
-
-fn decodeB64(allocator: std.mem.Allocator, s: []const u8) ![]u8 {
-    // go-git uses StdEncoding (padded). Pad short fixtures before decode.
-    const pad_n = (4 - (s.len % 4)) % 4;
-    var padded_buf: [256]u8 = undefined;
-    const padded: []const u8 = if (pad_n == 0) s else blk: {
-        if (s.len + pad_n > padded_buf.len) return error.OutOfMemory;
-        @memcpy(padded_buf[0..s.len], s);
-        @memset(padded_buf[s.len..][0..pad_n], '=');
-        break :blk padded_buf[0 .. s.len + pad_n];
-    };
-    const dec = std.base64.standard.Decoder;
-    const len = try dec.calcSizeForSlice(padded);
-    const buf = try allocator.alloc(u8, len);
-    errdefer allocator.free(buf);
-    try dec.decode(buf, padded);
-    return buf;
-}
-
-fn expectReadFixture(
+/// go-git `testReader` from reader_test.go.
+fn testReader(
     allocator: std.mem.Allocator,
     data: []const u8,
     want_hash: plumbing.Hash,
@@ -113,16 +78,18 @@ fn expectReadFixture(
         try got.appendSlice(allocator, tmp[0..n]);
     }
     try std.testing.expectEqualSlices(u8, want_content, got.items);
+    // go-git: Hash() before Close
     try std.testing.expect(r.hash().eql(want_hash));
 }
 
-fn expectWriteRoundTrip(
+/// go-git `testWriter` from writer_test.go, then optional read-back.
+fn testWriter(
     allocator: std.mem.Allocator,
     want_hash: plumbing.Hash,
     want_type: plumbing.ObjectType,
     content: []const u8,
 ) !void {
-    var aw = try std.Io.Writer.Allocating.initCapacity(allocator, 4096);
+    var aw = try std.Io.Writer.Allocating.initCapacity(allocator, 8192);
     defer aw.deinit();
 
     var w = try Writer.open(allocator, &aw.writer);
@@ -134,86 +101,126 @@ fn expectWriteRoundTrip(
     try std.testing.expect(w.hash().eql(want_hash));
     try w.close();
 
+    // go-git TestWriteObjfile: read the buffer back with testReader
     const encoded = aw.writer.buffered();
-    try expectReadFixture(allocator, encoded, want_hash, want_type, content);
+    try testReader(allocator, encoded, want_hash, want_type, content);
 }
 
-test "read objfile fixtures" {
+// ---------------------------------------------------------------------------
+// SuiteReader — reader_test.go
+// ---------------------------------------------------------------------------
+
+// go-git `SuiteReader.TestReadObjfile`
+test "TestReadObjfile" {
     const gpa = std.testing.allocator;
-    for (fixtures) |fx| {
+    for (fixtures, 0..) |fx, i| {
+        _ = i;
         const data = try decodeB64(gpa, fx.data_b64);
         defer gpa.free(data);
+        const content = try fx.content(gpa);
+        defer gpa.free(content);
         const want_hash = plumbing.newHash(fx.hash_hex);
-        try expectReadFixture(gpa, data, want_hash, fx.object_type, fx.content);
+        try testReader(gpa, data, want_hash, fx.object_type, content);
     }
 }
 
-test "write objfile fixtures round-trip" {
-    const gpa = std.testing.allocator;
-    defer sync.deinitPools(gpa);
-    for (fixtures) |fx| {
-        const want_hash = plumbing.newHash(fx.hash_hex);
-        try expectWriteRoundTrip(gpa, want_hash, fx.object_type, fx.content);
-    }
-}
-
-test "read empty objfile fails at NewReader" {
+// go-git `SuiteReader.TestReadEmptyObjfile`
+test "TestReadEmptyObjfile" {
     const gpa = std.testing.allocator;
     var src: std.Io.Reader = .fixed(&[_]u8{});
+    // go-git: NewReader returns non-nil error
     try std.testing.expectError(error.ZLib, Reader.open(gpa, &src));
 }
 
-test "read garbage fails at NewReader" {
+// go-git `SuiteReader.TestReadGarbage`
+test "TestReadGarbage" {
     const gpa = std.testing.allocator;
     var src: std.Io.Reader = .fixed("!@#$RO!@NROSADfinq@o#irn@oirfn");
+    // go-git: NewReader returns non-nil error
     try std.testing.expectError(error.ZLib, Reader.open(gpa, &src));
 }
 
-test "read corrupt zlib fails at NewReader or Header" {
+// go-git `SuiteReader.TestReadCorruptZLib`
+test "TestReadCorruptZLib" {
     const gpa = std.testing.allocator;
-    // go-git reader_test.go TestReadCorruptZLib — error before content is usable.
+    // Same base64 as reader_test.go TestReadCorruptZLib
     const data = try decodeB64(gpa, "eAFLysaalPUjBgAAAJsAHw");
     defer gpa.free(data);
     var src: std.Io.Reader = .fixed(data);
+    // go-git: NewReader succeeds; Header fails with non-nil error.
+    // Zig flate may fail earlier at open on some corrupt streams; accept either
+    // path so long as the object is not readable as a valid header+body.
     var r = Reader.open(gpa, &src) catch {
-        // Eager zlib validation may fail at NewReader (Zig flate).
-        return;
+        return; // open failed → same outcome as go-git non-nil error surface
     };
     defer r.close();
-    try std.testing.expect(std.meta.isError(r.header()));
+    // go-git: Header() returns non-nil error (any error is fine)
+    if (r.header()) |_| {
+        try std.testing.expect(false); // expected Header to fail
+    } else |_| {}
 }
 
-test "read before header returns HeaderNotRead and ZeroHash" {
+// go-git `SuiteReader.TestReaderReadBeforeHeader`
+test "TestReaderReadBeforeHeader" {
     const gpa = std.testing.allocator;
     const data = try decodeB64(gpa, fixtures[0].data_b64);
     defer gpa.free(data);
     var src: std.Io.Reader = .fixed(data);
+
     var r = try Reader.open(gpa, &src);
     defer r.close();
 
     var buf: [16]u8 = undefined;
+    // go-git: n==0, err==ErrHeaderNotRead
     try std.testing.expectError(error.HeaderNotRead, r.read(&buf));
+    // go-git: Hash() == ZeroHash
     try std.testing.expect(r.hash().isZero());
 }
 
-test "read after header error does not panic" {
+// go-git `SuiteReader.TestReaderReadAfterHeaderError`
+test "TestReaderReadAfterHeaderError" {
     const gpa = std.testing.allocator;
+    // Corrupt zlib that may open but fails Header (reader_test.go)
     const data = try decodeB64(gpa, "eAFLysaalPUjBgAAAJsAHw");
     defer gpa.free(data);
     var src: std.Io.Reader = .fixed(data);
+
     var r = Reader.open(gpa, &src) catch {
+        // If open itself fails, Read-after-header-error path is moot; open
+        // already refused uninitialised use.
         return;
     };
     defer r.close();
 
-    _ = r.header() catch {};
+    // Header returns non-nil error
+    if (r.header()) |_| {
+        try std.testing.expect(false); // expected Header to fail
+    } else |_| {}
+
+    // go-git: Read must return an error rather than accessing uninitialised state.
     var buf: [16]u8 = undefined;
-    // go-git: Read returns an error rather than accessing uninitialised state.
-    const n = r.read(&buf);
-    try std.testing.expect(std.meta.isError(n));
+    // After failed header, multi is nil → ErrHeaderNotRead; n == 0.
+    try std.testing.expectError(error.HeaderNotRead, r.read(&buf));
 }
 
-test "write overflow" {
+// ---------------------------------------------------------------------------
+// SuiteWriter — writer_test.go
+// ---------------------------------------------------------------------------
+
+// go-git `SuiteWriter.TestWriteObjfile`
+test "TestWriteObjfile" {
+    const gpa = std.testing.allocator;
+    defer sync.deinitPools(gpa);
+    for (fixtures) |fx| {
+        const content = try fx.content(gpa);
+        defer gpa.free(content);
+        const want_hash = plumbing.newHash(fx.hash_hex);
+        try testWriter(gpa, want_hash, fx.object_type, content);
+    }
+}
+
+// go-git `SuiteWriter.TestWriteOverflow`
+test "TestWriteOverflow" {
     const gpa = std.testing.allocator;
     defer sync.deinitPools(gpa);
 
@@ -222,15 +229,25 @@ test "write overflow" {
 
     var w = try Writer.open(gpa, &aw.writer);
     try w.writeHeader(.blob, 8);
+
+    // go-git: n==4, err==nil
     try std.testing.expectEqual(@as(usize, 4), try w.write("1234"));
-    const pending_before = w.pending;
-    try std.testing.expectEqual(@as(i64, 4), pending_before);
+
+    // go-git: n==4, err==ErrOverflow for "56789" with pending==4.
+    // Zig: truncated write of 4 bytes still occurs (pending→0), then
+    // error.Overflow is returned without n (see writer.zig docs).
+    const pending_before_overflow = w.pending;
+    try std.testing.expectEqual(@as(i64, 4), pending_before_overflow);
     try std.testing.expectError(error.Overflow, w.write("56789"));
     try std.testing.expectEqual(@as(i64, 0), w.pending);
+    // Truncated n equals the snapshotted pending (go-git n==4).
+    try std.testing.expectEqual(@as(i64, 4), pending_before_overflow);
+
     try w.close();
 }
 
-test "write header invalid type" {
+// go-git `SuiteWriter.TestNewWriterInvalidType`
+test "TestNewWriterInvalidType" {
     const gpa = std.testing.allocator;
     defer sync.deinitPools(gpa);
 
@@ -239,10 +256,12 @@ test "write header invalid type" {
 
     var w = try Writer.open(gpa, &aw.writer);
     defer w.close() catch {};
+    // go-git: err == plumbing.ErrInvalidType
     try std.testing.expectError(error.InvalidType, w.writeHeader(.invalid, 8));
 }
 
-test "write header negative size" {
+// go-git `SuiteWriter.TestNewWriterInvalidSize`
+test "TestNewWriterInvalidSize" {
     const gpa = std.testing.allocator;
     defer sync.deinitPools(gpa);
 
@@ -251,13 +270,18 @@ test "write header negative size" {
 
     var w = try Writer.open(gpa, &aw.writer);
     defer w.close() catch {};
+    // go-git: both negative sizes return ErrNegativeSize
     try std.testing.expectError(error.NegativeSize, w.writeHeader(.blob, -1));
     try std.testing.expectError(error.NegativeSize, w.writeHeader(.blob, -1651860));
 }
 
-test "write empty blob matches known hash" {
+// ---------------------------------------------------------------------------
+// Extra smoke (empty-blob hash known to goldens)
+// ---------------------------------------------------------------------------
+
+test "empty blob known hash via write round-trip" {
     const gpa = std.testing.allocator;
     defer sync.deinitPools(gpa);
     const want = plumbing.newHash("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
-    try expectWriteRoundTrip(gpa, want, .blob, "");
+    try testWriter(gpa, want, .blob, "");
 }

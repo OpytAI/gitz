@@ -9,6 +9,7 @@ zig_library(
         "encoder.zig",
         "idxfile.zig",
         "fixture.zig",
+        "basic_idx.zig",
         "writer.zig",
     ],
     visibility = ["//visibility:public"],
@@ -27,6 +28,7 @@ zig_test(
         "encoder.zig",
         "idxfile.zig",
         "fixture.zig",
+        "basic_idx.zig",
         "writer.zig",
     ],
     deps = [

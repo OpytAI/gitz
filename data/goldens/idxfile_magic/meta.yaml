@@ -1,4 +1,4 @@
 name: idxfile_magic
-type: static_contains
+type: file_equals
 actual: actual.txt
 expected: expected.txt

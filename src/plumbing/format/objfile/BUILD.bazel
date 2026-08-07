@@ -6,6 +6,7 @@ zig_library(
     main = "root.zig",
     srcs = [
         "error.zig",
+        "fixtures.zig",
         "reader.zig",
         "writer.zig",
     ],
@@ -22,6 +23,7 @@ zig_test(
     main = "root.zig",
     srcs = [
         "error.zig",
+        "fixtures.zig",
         "reader.zig",
         "writer.zig",
     ],

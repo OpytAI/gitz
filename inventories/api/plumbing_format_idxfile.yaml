@@ -1,21 +1,67 @@
 # API inventory: plumbing/format/idxfile (phase 2)
+# Go NewMemoryIndex/NewDecoder/NewEncoder/NewWriter map to Zig *.init.
 package: plumbing/format/idxfile
 phase: 2
 require:
   types:
     - MemoryIndex
+    - Entry
+    - EntryIterator
+    - OffsetEntryIterator
     - Decoder
     - Encoder
-  functions: []
+    - Writer
+  functions:
+    - NewMemoryIndex
+    - NewDecoder
+    - NewEncoder
+    - NewWriter
   constants:
     - VersionSupported
+    - idxHeader
   semantic:
-    - idxfile.MemoryIndex
-    - idxfile.Decoder
-    - idxfile.Encoder
-    - idxfile.VersionSupported
+    - MemoryIndex
+    - MemoryIndex.init
+    - MemoryIndex.deinit
+    - MemoryIndex.contains
+    - MemoryIndex.findOffset
+    - MemoryIndex.findCRC32
+    - MemoryIndex.findHash
+    - MemoryIndex.count
+    - MemoryIndex.entries
+    - MemoryIndex.entriesByOffset
+    - Entry
+    - EntryIterator
+    - OffsetEntryIterator
+    - Decoder
+    - Decoder.init
+    - Decoder.initWithSize
+    - Decoder.decode
+    - Encoder
+    - Encoder.init
+    - Encoder.encode
+    - Writer
+    - Writer.init
+    - Writer.deinit
+    - Writer.getIndex
+    - Writer.add
+    - Writer.isFinished
+    - Writer.onHeader
+    - Writer.onInflatedObjectContent
+    - Writer.onFooter
+    - VersionSupported
+    - idxHeader
 zig_map:
-  MemoryIndex: idxfile.MemoryIndex
-  Decoder: idxfile.Decoder
-  Encoder: idxfile.Encoder
-  VersionSupported: idxfile.VersionSupported
+  MemoryIndex: MemoryIndex
+  Entry: Entry
+  EntryIterator: EntryIterator
+  OffsetEntryIterator: OffsetEntryIterator
+  Decoder: Decoder
+  Encoder: Encoder
+  Writer: Writer
+  NewMemoryIndex: MemoryIndex.init
+  NewDecoder: Decoder.init
+  NewEncoder: Encoder.init
+  NewWriter: Writer.init
+  VersionSupported: VersionSupported
+  idxHeader: idxHeader

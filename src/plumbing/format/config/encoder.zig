@@ -39,7 +39,8 @@ pub const Encoder = struct {
     }
 
     fn encodeSubsection(self: *Encoder, section_name: []const u8, s: *const Subsection) Writer.Error!void {
-        try self.writer.print("[", .{});
+        // [section "subsection"] with subsection escapes for " and \.
+        try self.writer.writeAll("[");
         try self.writer.writeAll(section_name);
         try self.writer.writeAll(" \"");
         try writeEscapedSubsection(self.writer, s.name);
@@ -58,6 +59,7 @@ pub const Encoder = struct {
     }
 };
 
+/// go-git `subsectionReplacer`: `"` -> `\"`, `\` -> `\\`.
 fn writeEscapedSubsection(w: *Writer, name: []const u8) Writer.Error!void {
     for (name) |c| {
         switch (c) {
@@ -70,6 +72,7 @@ fn writeEscapedSubsection(w: *Writer, name: []const u8) Writer.Error!void {
     }
 }
 
+/// go-git: quote when value contains `#;"\t\n\` or leading/trailing space.
 fn needsQuotes(value: []const u8) bool {
     if (value.len == 0) return false;
     if (value[0] == ' ' or value[value.len - 1] == ' ') return true;
@@ -82,6 +85,7 @@ fn needsQuotes(value: []const u8) bool {
     return false;
 }
 
+/// go-git `valueReplacer` inside quotes: `" \ n t b`.
 fn writeValue(w: *Writer, value: []const u8) Writer.Error!void {
     if (!needsQuotes(value)) {
         try w.writeAll(value);
@@ -102,80 +106,51 @@ fn writeValue(w: *Writer, value: []const u8) Writer.Error!void {
 }
 
 // ---------------------------------------------------------------------------
-// Tests (go-git encoder_test.go / fixtures)
+// Tests (go-git encoder_test.go — every fixture Text)
 // ---------------------------------------------------------------------------
 
-test "Encoder empty config" {
+test "Encoder.Encode all fixtures" {
+    const fixtures_mod = @import("fixtures.zig");
     const gpa = std.testing.allocator;
-    var cfg = common.Config.init(gpa);
-    defer cfg.deinit();
-    var aw: Writer.Allocating = .init(gpa);
-    defer aw.deinit();
-    var enc = Encoder.init(&aw.writer);
-    try enc.encode(&cfg);
-    try std.testing.expectEqualStrings("", aw.written());
+    for (fixtures_mod.fixtures, 0..) |fixture, idx| {
+        var cfg = common.Config.init(gpa);
+        defer cfg.deinit();
+        try fixture.fill(&cfg);
+
+        var aw: Writer.Allocating = .init(gpa);
+        defer aw.deinit();
+        var enc = Encoder.init(&aw.writer);
+        try enc.encode(&cfg);
+        try std.testing.expectEqualStrings(fixture.text, aw.written());
+        _ = idx;
+    }
 }
 
-test "Encoder core repositoryformatversion" {
+test "Encoder subsection quote and backslash escape" {
     const gpa = std.testing.allocator;
     var cfg = common.Config.init(gpa);
     defer cfg.deinit();
-    _ = try cfg.addOption("core", common.NoSubsection, "repositoryformatversion", "0");
-    var aw: Writer.Allocating = .init(gpa);
-    defer aw.deinit();
-    var enc = Encoder.init(&aw.writer);
-    try enc.encode(&cfg);
-    try std.testing.expectEqualStrings("[core]\n\trepositoryformatversion = 0\n", aw.written());
-}
-
-test "Encoder special option values" {
-    const gpa = std.testing.allocator;
-    var cfg = common.Config.init(gpa);
-    defer cfg.deinit();
-    _ = try cfg.addOption("section", "", "option1", "has # hash");
-    _ = try cfg.addOption("section", "", "option2", "has \" quote");
-    _ = try cfg.addOption("section", "", "option3", "has \\ backslash");
-    _ = try cfg.addOption("section", "", "option4", "has ; semicolon");
-    _ = try cfg.addOption("section", "", "option5", "has \n line-feed");
-    _ = try cfg.addOption("section", "", "option6", "has \t tab");
-    _ = try cfg.addOption("section", "", "option7", "  has leading spaces");
-    _ = try cfg.addOption("section", "", "option8", "has trailing spaces  ");
-    _ = try cfg.addOption("section", "", "option9", "has no special characters");
-    _ = try cfg.addOption("section", "", "option10", "has unusual \x01\x7f\u{0200} characters");
+    _ = try cfg.addOption("remote", "ori\"gin\\x", "url", "u");
 
     var aw: Writer.Allocating = .init(gpa);
     defer aw.deinit();
     var enc = Encoder.init(&aw.writer);
     try enc.encode(&cfg);
-
-    // Tab-indented options (multiline string literals cannot embed raw tab in Zig 0.16).
-    const expected = "[section]\n" ++
-        "\toption1 = \"has # hash\"\n" ++
-        "\toption2 = \"has \\\" quote\"\n" ++
-        "\toption3 = \"has \\\\ backslash\"\n" ++
-        "\toption4 = \"has ; semicolon\"\n" ++
-        "\toption5 = \"has \\n line-feed\"\n" ++
-        "\toption6 = \"has \\t tab\"\n" ++
-        "\toption7 = \"  has leading spaces\"\n" ++
-        "\toption8 = \"has trailing spaces  \"\n" ++
-        "\toption9 = has no special characters\n" ++
-        "\toption10 = has unusual \x01\x7f\u{0200} characters\n";
+    const expected = "[remote \"ori\\\"gin\\\\x\"]\n" ++ "\turl = u\n";
     try std.testing.expectEqualStrings(expected, aw.written());
 }
 
-test "Encoder sections and subsections" {
+test "Encoder quotes value with backspace when other special present" {
     const gpa = std.testing.allocator;
     var cfg = common.Config.init(gpa);
     defer cfg.deinit();
-    _ = try cfg.addOption("sect1", "", "opt1", "value1");
-    _ = try cfg.addOption("sect1", "subsect1", "opt2", "value2");
+    // `#` forces quotes; `\b` must be escaped inside.
+    _ = try cfg.addOption("s", "", "k", "a#b\x08c");
+
     var aw: Writer.Allocating = .init(gpa);
     defer aw.deinit();
     var enc = Encoder.init(&aw.writer);
     try enc.encode(&cfg);
-    const expected = "[sect1]\n" ++
-        "\topt1 = value1\n" ++
-        "[sect1 \"subsect1\"]\n" ++
-        "\topt2 = value2\n";
+    const expected = "[s]\n" ++ "\tk = \"a#b\\bc\"\n";
     try std.testing.expectEqualStrings(expected, aw.written());
 }

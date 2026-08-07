@@ -1,4 +1,4 @@
-name: objfile_empty_blob
+name: pktline_hello
 type: file_equals
 actual: actual.txt
 expected: expected.txt

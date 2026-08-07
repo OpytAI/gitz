@@ -9,6 +9,7 @@ const std = @import("std");
 const Reader = std.Io.Reader;
 const Writer = std.Io.Writer;
 const testing = std.testing;
+const trace = @import("trace");
 
 // ---------------------------------------------------------------------------
 // Constants (go-git names)
@@ -63,6 +64,7 @@ pub const Encoder = struct {
 
     /// Encodes a flush-pkt (`0000`).
     pub fn flush(self: *Encoder) Writer.Error!void {
+        defer trace.print(trace.packet, "packet: > 0000", .{});
         try self.w.writeAll(&FlushPkt);
     }
 
@@ -80,6 +82,7 @@ pub const Encoder = struct {
         if (p.len == 0) return self.flush();
 
         const n = p.len + len_size;
+        defer trace.print(trace.packet, "packet: > {x:0>4} {s}", .{ n, p });
         var hex: [len_size]u8 = undefined;
         asciiHex16(n, &hex);
         try self.w.writeAll(&hex);
@@ -98,7 +101,6 @@ pub const Encoder = struct {
         try self.encodeLine(formatted);
     }
 };
-
 
 // ---------------------------------------------------------------------------
 // Scanner
@@ -165,6 +167,8 @@ pub const Scanner = struct {
         }
         self.payload_len = plen;
 
+        trace.print(trace.packet, "packet: < {x:0>4} {s}", .{ plen, self.bytes() });
+
         if (std.mem.startsWith(u8, self.bytes(), err_prefix)) {
             // Trim ASCII whitespace like go-git `strings.TrimSpace` for ERR text.
             var start: usize = err_prefix.len;
@@ -196,7 +200,6 @@ pub const Scanner = struct {
     }
 };
 
-
 // ---------------------------------------------------------------------------
 // ErrorLine
 // ---------------------------------------------------------------------------
@@ -206,7 +209,7 @@ pub const Scanner = struct {
 pub const ErrorLine = struct {
     text: []const u8 = "",
     /// Owned storage filled by `decode` so `text` can outlive the scanner buffer.
-    owned: [256]u8 = undefined,
+    owned: [MaxPayloadSize]u8 = undefined,
     owned_len: usize = 0,
 
     /// Error message string (go-git `Error()`).
@@ -240,7 +243,7 @@ pub const ErrorLine = struct {
         }
         const line = sc.bytes();
         if (!std.mem.startsWith(u8, line, err_prefix)) return error.InvalidErrorLine;
-        self.setOwned(std.mem.trim(u8, line[err_prefix.len..], " \t\r\n"));
+        self.setOwned(std.mem.trim(u8, line[err_prefix.len..], " \t\r\n\x0b\x0c"));
     }
 
     fn setOwned(self: *ErrorLine, t: []const u8) void {
@@ -291,10 +294,11 @@ fn isASCIISpace(c: u8) bool {
 }
 
 // ---------------------------------------------------------------------------
-// Tests — vectors from go-git encoder_test.go / scanner_test.go
+// Tests — full port of go-git encoder_test.go / scanner_test.go / error_test.go
 // ---------------------------------------------------------------------------
 
-test "flush encodes 0000" {
+// --- encoder_test.go: TestFlush ---
+test "encoder_test.TestFlush" {
     var storage: [8]u8 = undefined;
     var w: Writer = .fixed(&storage);
     var e = Encoder.init(&w);
@@ -302,7 +306,8 @@ test "flush encodes 0000" {
     try testing.expectEqualSlices(u8, &FlushPkt, w.buffered());
 }
 
-test "encode single and multi payloads" {
+// --- encoder_test.go: TestEncode ---
+test "encoder_test.TestEncode" {
     {
         var storage: [32]u8 = undefined;
         var w: Writer = .fixed(&storage);
@@ -331,49 +336,50 @@ test "encode single and multi payloads" {
         try e.encode(&.{ "hello\n", Flush, "world!\n", "foo", Flush });
         try testing.expectEqualSlices(u8, "000ahello\n0000000bworld!\n0007foo0000", w.buffered());
     }
+    // MaxPayloadSize single payload → "fff0" + payload
+    {
+        const payload = try testing.allocator.alloc(u8, MaxPayloadSize);
+        defer testing.allocator.free(payload);
+        @memset(payload, 'a');
+
+        const out = try testing.allocator.alloc(u8, MaxPayloadSize + len_size);
+        defer testing.allocator.free(out);
+        var w: Writer = .fixed(out);
+        var e = Encoder.init(&w);
+        try e.encode(&.{payload});
+
+        const got = w.buffered();
+        try testing.expectEqual(@as(usize, MaxPayloadSize + len_size), got.len);
+        try testing.expectEqualSlices(u8, "fff0", got[0..4]);
+        try testing.expectEqualSlices(u8, payload, got[4..]);
+    }
+    // Two max payloads
+    {
+        const a = try testing.allocator.alloc(u8, MaxPayloadSize);
+        defer testing.allocator.free(a);
+        const b = try testing.allocator.alloc(u8, MaxPayloadSize);
+        defer testing.allocator.free(b);
+        @memset(a, 'a');
+        @memset(b, 'b');
+
+        const out = try testing.allocator.alloc(u8, 2 * (MaxPayloadSize + len_size));
+        defer testing.allocator.free(out);
+        var w: Writer = .fixed(out);
+        var e = Encoder.init(&w);
+        try e.encode(&.{ a, b });
+
+        const got = w.buffered();
+        try testing.expectEqual(@as(usize, 2 * (MaxPayloadSize + len_size)), got.len);
+        try testing.expectEqualSlices(u8, "fff0", got[0..4]);
+        try testing.expectEqualSlices(u8, a, got[4 .. 4 + MaxPayloadSize]);
+        const off = MaxPayloadSize + len_size;
+        try testing.expectEqualSlices(u8, "fff0", got[off .. off + 4]);
+        try testing.expectEqualSlices(u8, b, got[off + 4 ..]);
+    }
 }
 
-test "encode max payload size fff0" {
-    const payload = try testing.allocator.alloc(u8, MaxPayloadSize);
-    defer testing.allocator.free(payload);
-    @memset(payload, 'a');
-
-    const out = try testing.allocator.alloc(u8, MaxPayloadSize + len_size);
-    defer testing.allocator.free(out);
-    var w: Writer = .fixed(out);
-    var e = Encoder.init(&w);
-    try e.encode(&.{payload});
-
-    const got = w.buffered();
-    try testing.expectEqual(@as(usize, MaxPayloadSize + len_size), got.len);
-    try testing.expectEqualSlices(u8, "fff0", got[0..4]);
-    try testing.expectEqualSlices(u8, payload, got[4..]);
-}
-
-test "encode two max payloads" {
-    const a = try testing.allocator.alloc(u8, MaxPayloadSize);
-    defer testing.allocator.free(a);
-    const b = try testing.allocator.alloc(u8, MaxPayloadSize);
-    defer testing.allocator.free(b);
-    @memset(a, 'a');
-    @memset(b, 'b');
-
-    const out = try testing.allocator.alloc(u8, 2 * (MaxPayloadSize + len_size));
-    defer testing.allocator.free(out);
-    var w: Writer = .fixed(out);
-    var e = Encoder.init(&w);
-    try e.encode(&.{ a, b });
-
-    const got = w.buffered();
-    try testing.expectEqual(@as(usize, 2 * (MaxPayloadSize + len_size)), got.len);
-    try testing.expectEqualSlices(u8, "fff0", got[0..4]);
-    try testing.expectEqualSlices(u8, a, got[4 .. 4 + MaxPayloadSize]);
-    const off = MaxPayloadSize + len_size;
-    try testing.expectEqualSlices(u8, "fff0", got[off .. off + 4]);
-    try testing.expectEqualSlices(u8, b, got[off + 4 ..]);
-}
-
-test "encode ErrPayloadTooLong" {
+// --- encoder_test.go: TestEncodeErrPayloadTooLong ---
+test "encoder_test.TestEncodeErrPayloadTooLong" {
     const too = try testing.allocator.alloc(u8, MaxPayloadSize + 1);
     defer testing.allocator.free(too);
     @memset(too, 'a');
@@ -386,7 +392,8 @@ test "encode ErrPayloadTooLong" {
     try testing.expectError(error.PayloadTooLong, e.encode(&.{ "hello world!", too, "foo" }));
 }
 
-test "encodeString vectors" {
+// --- encoder_test.go: TestEncodeStrings ---
+test "encoder_test.TestEncodeStrings" {
     {
         var storage: [32]u8 = undefined;
         var w: Writer = .fixed(&storage);
@@ -408,9 +415,69 @@ test "encodeString vectors" {
         try e.encodeString(&.{ "hello\n", "world!\n", "foo" });
         try testing.expectEqualSlices(u8, "000ahello\n000bworld!\n0007foo", w.buffered());
     }
+    {
+        var storage: [64]u8 = undefined;
+        var w: Writer = .fixed(&storage);
+        var e = Encoder.init(&w);
+        try e.encodeString(&.{ "hello\n", FlushString, "world!\n", "foo", FlushString });
+        try testing.expectEqualSlices(u8, "000ahello\n0000000bworld!\n0007foo0000", w.buffered());
+    }
+    {
+        const payload = try testing.allocator.alloc(u8, MaxPayloadSize);
+        defer testing.allocator.free(payload);
+        @memset(payload, 'a');
+
+        const out = try testing.allocator.alloc(u8, MaxPayloadSize + len_size);
+        defer testing.allocator.free(out);
+        var w: Writer = .fixed(out);
+        var e = Encoder.init(&w);
+        try e.encodeString(&.{payload});
+
+        const got = w.buffered();
+        try testing.expectEqual(@as(usize, MaxPayloadSize + len_size), got.len);
+        try testing.expectEqualSlices(u8, "fff0", got[0..4]);
+        try testing.expectEqualSlices(u8, payload, got[4..]);
+    }
+    {
+        const a = try testing.allocator.alloc(u8, MaxPayloadSize);
+        defer testing.allocator.free(a);
+        const b = try testing.allocator.alloc(u8, MaxPayloadSize);
+        defer testing.allocator.free(b);
+        @memset(a, 'a');
+        @memset(b, 'b');
+
+        const out = try testing.allocator.alloc(u8, 2 * (MaxPayloadSize + len_size));
+        defer testing.allocator.free(out);
+        var w: Writer = .fixed(out);
+        var e = Encoder.init(&w);
+        try e.encodeString(&.{ a, b });
+
+        const got = w.buffered();
+        try testing.expectEqual(@as(usize, 2 * (MaxPayloadSize + len_size)), got.len);
+        try testing.expectEqualSlices(u8, "fff0", got[0..4]);
+        try testing.expectEqualSlices(u8, a, got[4 .. 4 + MaxPayloadSize]);
+        const off = MaxPayloadSize + len_size;
+        try testing.expectEqualSlices(u8, "fff0", got[off .. off + 4]);
+        try testing.expectEqualSlices(u8, b, got[off + 4 ..]);
+    }
 }
 
-test "encodef" {
+// --- encoder_test.go: TestEncodeStringErrPayloadTooLong ---
+test "encoder_test.TestEncodeStringErrPayloadTooLong" {
+    const too = try testing.allocator.alloc(u8, MaxPayloadSize + 1);
+    defer testing.allocator.free(too);
+    @memset(too, 'a');
+
+    var storage: [32]u8 = undefined;
+    var w: Writer = .fixed(&storage);
+    var e = Encoder.init(&w);
+    try testing.expectError(error.PayloadTooLong, e.encodeString(&.{too}));
+    try testing.expectError(error.PayloadTooLong, e.encodeString(&.{ "hello world!", too }));
+    try testing.expectError(error.PayloadTooLong, e.encodeString(&.{ "hello world!", too, "foo" }));
+}
+
+// --- encoder_test.go: TestEncodef ---
+test "encoder_test.TestEncodef" {
     var storage: [32]u8 = undefined;
     var w: Writer = .fixed(&storage);
     var e = Encoder.init(&w);
@@ -418,16 +485,17 @@ test "encodef" {
     try testing.expectEqualSlices(u8, "000c foo 42\n", w.buffered());
 }
 
-test "scanner invalid pkt-len" {
+// --- scanner_test.go: TestInvalid ---
+test "scanner_test.TestInvalid" {
     const cases = [_][]const u8{
-        "0001",     "0002",     "0003",     "0004",
+        "0001",         "0002",         "0003",         "0004",
         "0001asdfsadf", "0004foo",
-        "fff5",     "ffff",
-        "FFF5",     "FFFF",
+        "fff5",         "ffff",
+        "FFF5",         "FFFF",
         "gorka",
-        "0",        "003",
-        "   5a",    "5   a",    "5   \n",
-        "-001",     "-000",
+        "0",            "003",
+        "   5a",        "5   a",        "5   \n",
+        "-001",         "-000",
     };
     for (cases) |data| {
         var r: Reader = .fixed(data);
@@ -438,7 +506,8 @@ test "scanner invalid pkt-len" {
     }
 }
 
-test "scanner oversize pkt-lines accepted" {
+// --- scanner_test.go: TestDecodeOversizePktLines ---
+test "scanner_test.TestDecodeOversizePktLines" {
     // go-git accepts fff1..fff4 (payload up to OversizePayloadMax).
     const totals = [_]usize{ 0xfff1, 0xfff2, 0xfff3, 0xfff4 };
     for (totals) |total| {
@@ -458,10 +527,11 @@ test "scanner oversize pkt-lines accepted" {
     }
 }
 
-test "scanner valid pkt sizes mixed case" {
+// --- scanner_test.go: TestValidPktSizes ---
+test "scanner_test.TestValidPktSizes" {
     const totals = [_]usize{ 0x01fe, 0x00b5 };
     for (totals) |total| {
-        // lowercase
+        // lowercase length digits
         {
             const buf = try testing.allocator.alloc(u8, total);
             defer testing.allocator.free(buf);
@@ -495,14 +565,16 @@ test "scanner valid pkt sizes mixed case" {
     }
 }
 
-test "scanner empty reader" {
+// --- scanner_test.go: TestEmptyReader ---
+test "scanner_test.TestEmptyReader" {
     var r: Reader = .fixed(&.{});
     var sc = Scanner.init(&r);
     try testing.expect(!sc.scan());
     try testing.expect(sc.err() == null);
 }
 
-test "scanner flush round-trip" {
+// --- scanner_test.go: TestFlush ---
+test "scanner_test.TestFlush" {
     var storage: [8]u8 = undefined;
     var w: Writer = .fixed(&storage);
     var e = Encoder.init(&w);
@@ -515,34 +587,102 @@ test "scanner flush round-trip" {
     try testing.expect(sc.err() == null);
 }
 
-test "scanner pkt-line too short" {
+// --- scanner_test.go: TestPktLineTooShort ---
+test "scanner_test.TestPktLineTooShort" {
     var r: Reader = .fixed("010cfoobar");
     var sc = Scanner.init(&r);
     try testing.expect(!sc.scan());
     try testing.expect(sc.err() != null);
+    // go-git: unexpected EOF (io.ErrUnexpectedEOF); Zig maps short body to EndOfStream.
     try testing.expect(sc.err().? == error.EndOfStream);
 }
 
-test "scan and payload round-trip" {
-    const cases = [_][]const u8{
-        "a",
-        "a\n",
-        "aaaaaaaaaa",
-        "aaaaaaaaaa\n",
-    };
-    for (cases) |payload| {
-        var storage: [64]u8 = undefined;
+// --- scanner_test.go: TestScanAndPayload ---
+test "scanner_test.TestScanAndPayload" {
+    // Short / patterned cases (incl. NUL bytes)
+    {
+        const cases = [_][]const u8{
+            "a",
+            "a\n",
+            "aaaaaaaaaa", // 10; go-git also has 100 — covered below via alloc
+            "aaaaaaaaaa\n",
+        };
+        for (cases) |payload| {
+            var storage: [64]u8 = undefined;
+            var w: Writer = .fixed(&storage);
+            var e = Encoder.init(&w);
+            try e.encodeString(&.{payload});
+
+            var r: Reader = .fixed(w.buffered());
+            var sc = Scanner.init(&r);
+            try testing.expect(sc.scan());
+            try testing.expectEqualSlices(u8, payload, sc.bytes());
+        }
+    }
+
+    // strings.Repeat("a", 100) and with trailing newline
+    {
+        const payload = try testing.allocator.alloc(u8, 100);
+        defer testing.allocator.free(payload);
+        @memset(payload, 'a');
+
+        var storage: [128]u8 = undefined;
         var w: Writer = .fixed(&storage);
         var e = Encoder.init(&w);
         try e.encodeString(&.{payload});
+        var r: Reader = .fixed(w.buffered());
+        var sc = Scanner.init(&r);
+        try testing.expect(sc.scan());
+        try testing.expectEqualSlices(u8, payload, sc.bytes());
+    }
+    {
+        const payload = try testing.allocator.alloc(u8, 101);
+        defer testing.allocator.free(payload);
+        @memset(payload[0..100], 'a');
+        payload[100] = '\n';
 
+        var storage: [128]u8 = undefined;
+        var w: Writer = .fixed(&storage);
+        var e = Encoder.init(&w);
+        try e.encodeString(&.{payload});
         var r: Reader = .fixed(w.buffered());
         var sc = Scanner.init(&r);
         try testing.expect(sc.scan());
         try testing.expectEqualSlices(u8, payload, sc.bytes());
     }
 
-    // Max payload
+    // strings.Repeat("\x00", 100) and with trailing newline
+    {
+        const payload = try testing.allocator.alloc(u8, 100);
+        defer testing.allocator.free(payload);
+        @memset(payload, 0);
+
+        var storage: [128]u8 = undefined;
+        var w: Writer = .fixed(&storage);
+        var e = Encoder.init(&w);
+        try e.encode(&.{payload});
+        var r: Reader = .fixed(w.buffered());
+        var sc = Scanner.init(&r);
+        try testing.expect(sc.scan());
+        try testing.expectEqualSlices(u8, payload, sc.bytes());
+    }
+    {
+        const payload = try testing.allocator.alloc(u8, 101);
+        defer testing.allocator.free(payload);
+        @memset(payload[0..100], 0);
+        payload[100] = '\n';
+
+        var storage: [128]u8 = undefined;
+        var w: Writer = .fixed(&storage);
+        var e = Encoder.init(&w);
+        try e.encode(&.{payload});
+        var r: Reader = .fixed(w.buffered());
+        var sc = Scanner.init(&r);
+        try testing.expect(sc.scan());
+        try testing.expectEqualSlices(u8, payload, sc.bytes());
+    }
+
+    // MaxPayloadSize of 'a'
     {
         const payload = try testing.allocator.alloc(u8, MaxPayloadSize);
         defer testing.allocator.free(payload);
@@ -559,24 +699,60 @@ test "scan and payload round-trip" {
         try testing.expect(sc.scan());
         try testing.expectEqualSlices(u8, payload, sc.bytes());
     }
+
+    // MaxPayloadSize-1 of 'a' + '\n'
+    {
+        const payload = try testing.allocator.alloc(u8, MaxPayloadSize);
+        defer testing.allocator.free(payload);
+        @memset(payload[0 .. MaxPayloadSize - 1], 'a');
+        payload[MaxPayloadSize - 1] = '\n';
+
+        const out = try testing.allocator.alloc(u8, MaxPayloadSize + len_size);
+        defer testing.allocator.free(out);
+        var w: Writer = .fixed(out);
+        var e = Encoder.init(&w);
+        try e.encode(&.{payload});
+
+        var r: Reader = .fixed(w.buffered());
+        var sc = Scanner.init(&r);
+        try testing.expect(sc.scan());
+        try testing.expectEqualSlices(u8, payload, sc.bytes());
+    }
 }
 
-test "scanner skip lines" {
-    var storage: [64]u8 = undefined;
-    var w: Writer = .fixed(&storage);
-    var e = Encoder.init(&w);
-    try e.encodeString(&.{ "first", "second", "third" });
+// --- scanner_test.go: TestSkip ---
+test "scanner_test.TestSkip" {
+    // n=1 → expected "second"
+    {
+        var storage: [64]u8 = undefined;
+        var w: Writer = .fixed(&storage);
+        var e = Encoder.init(&w);
+        try e.encodeString(&.{ "first", "second", "third" });
 
-    var r: Reader = .fixed(w.buffered());
-    var sc = Scanner.init(&r);
-    try testing.expect(sc.scan()); // first
-    try testing.expect(sc.scan()); // second
-    try testing.expectEqualSlices(u8, "second", sc.bytes());
-    try testing.expect(sc.scan()); // third
-    try testing.expectEqualSlices(u8, "third", sc.bytes());
+        var r: Reader = .fixed(w.buffered());
+        var sc = Scanner.init(&r);
+        try testing.expect(sc.scan()); // skip first (n=1)
+        try testing.expect(sc.scan()); // second
+        try testing.expectEqualSlices(u8, "second", sc.bytes());
+    }
+    // n=2 → expected "third"
+    {
+        var storage: [64]u8 = undefined;
+        var w: Writer = .fixed(&storage);
+        var e = Encoder.init(&w);
+        try e.encodeString(&.{ "first", "second", "third" });
+
+        var r: Reader = .fixed(w.buffered());
+        var sc = Scanner.init(&r);
+        try testing.expect(sc.scan()); // first
+        try testing.expect(sc.scan()); // second (n=2 skips)
+        try testing.expect(sc.scan()); // third
+        try testing.expectEqualSlices(u8, "third", sc.bytes());
+    }
 }
 
-test "scanner EOF clears error" {
+// --- scanner_test.go: TestEOF ---
+test "scanner_test.TestEOF" {
     var storage: [64]u8 = undefined;
     var w: Writer = .fixed(&storage);
     var e = Encoder.init(&w);
@@ -588,16 +764,29 @@ test "scanner EOF clears error" {
     try testing.expect(sc.err() == null);
 }
 
-test "scanner sections with flush" {
+// --- scanner_test.go: TestInternalReadError ---
+test "scanner_test.TestInternalReadError" {
+    // go-git mockReader returns errors.New("foo"); Zig uses Reader.failing → ReadFailed.
+    var r: Reader = .failing;
+    var sc = Scanner.init(&r);
+    try testing.expect(!sc.scan());
+    try testing.expect(sc.err() != null);
+    try testing.expect(sc.err().? == error.ReadFailed);
+}
+
+// --- scanner_test.go: TestReadSomeSections ---
+test "scanner_test.TestReadSomeSections" {
+    const n_sections: usize = 2;
+    const n_lines: usize = 4;
+
     var storage: [256]u8 = undefined;
     var w: Writer = .fixed(&storage);
     var e = Encoder.init(&w);
 
-    // 2 sections × 4 lines + flush each
     var section: usize = 0;
-    while (section < 2) : (section += 1) {
+    while (section < n_sections) : (section += 1) {
         var line: usize = 0;
-        while (line < 4) : (line += 1) {
+        while (line < n_lines) : (line += 1) {
             var line_buf: [16]u8 = undefined;
             const s = try std.fmt.bufPrint(&line_buf, " {d}.{d}\n", .{ section, line });
             try e.encodeString(&.{s});
@@ -614,29 +803,56 @@ test "scanner sections with flush" {
         line_counter += 1;
     }
     try testing.expect(sc.err() == null);
-    try testing.expectEqual(@as(usize, 2), section_counter);
-    try testing.expectEqual(@as(usize, (1 + 4) * 2), line_counter);
+    try testing.expectEqual(n_sections, section_counter);
+    try testing.expectEqual((1 + n_lines) * n_sections, line_counter);
 }
 
-test "ErrorLine encode" {
-    {
-        var storage: [32]u8 = undefined;
-        var w: Writer = .fixed(&storage);
-        var el = ErrorLine{ .text = "something" };
-        try el.encode(&w);
-        try testing.expectEqualSlices(u8, "0012ERR something\n", w.buffered());
-    }
-    {
-        var storage: [32]u8 = undefined;
-        var w: Writer = .fixed(&storage);
-        var el = ErrorLine{};
-        try el.encode(&w);
-        // "ERR \n" = 5 payload + 4 header = 9 = 0009
-        try testing.expectEqualSlices(u8, "0009ERR \n", w.buffered());
-    }
+// --- error_test.go: TestEncodeEmptyErrorLine ---
+test "error_test.TestEncodeEmptyErrorLine" {
+    var storage: [32]u8 = undefined;
+    var w: Writer = .fixed(&storage);
+    var el = ErrorLine{};
+    try el.encode(&w);
+    // "ERR \n" = 5 payload + 4 header = 9 = 0009
+    try testing.expectEqualSlices(u8, "0009ERR \n", w.buffered());
 }
 
-test "ErrorLine decode via scanner ERR" {
+// --- error_test.go: TestEncodeErrorLine ---
+test "error_test.TestEncodeErrorLine" {
+    var storage: [32]u8 = undefined;
+    var w: Writer = .fixed(&storage);
+    var el = ErrorLine{ .text = "something" };
+    try el.encode(&w);
+    try testing.expectEqualSlices(u8, "0012ERR something\n", w.buffered());
+}
+
+// --- error_test.go: TestDecodeEmptyErrorLine ---
+test "error_test.TestDecodeEmptyErrorLine" {
+    var r: Reader = .fixed(&.{});
+    var el: ErrorLine = .{};
+    try el.decode(&r);
+    try testing.expectEqualSlices(u8, "", el.text);
+}
+
+// --- error_test.go: TestDecodeErrorLine ---
+test "error_test.TestDecodeErrorLine" {
+    // go-git: Scan returns false with *ErrorLine as err; Decode returns that error.
+    var r: Reader = .fixed("000eERR foobar");
+    var el: ErrorLine = .{};
+    try testing.expectError(error.ErrorLine, el.decode(&r));
+    try testing.expectEqualSlices(u8, "foobar", el.text);
+}
+
+// --- error_test.go: TestDecodeErrorLineLn ---
+test "error_test.TestDecodeErrorLineLn" {
+    var r: Reader = .fixed("000fERR foobar\n");
+    var el: ErrorLine = .{};
+    try testing.expectError(error.ErrorLine, el.decode(&r));
+    try testing.expectEqualSlices(u8, "foobar", el.text);
+}
+
+// --- Extra: scanner surfaces ERR via scan (same path go-git Scan uses) ---
+test "scanner ERR payload surfaces ErrorLine" {
     var r: Reader = .fixed("000eERR foobar");
     var sc = Scanner.init(&r);
     try testing.expect(!sc.scan());
@@ -644,19 +860,50 @@ test "ErrorLine decode via scanner ERR" {
     try testing.expectEqualSlices(u8, "foobar", sc.errorLineText());
 }
 
-test "ErrorLine decode with newline" {
-    var r: Reader = .fixed("000fERR foobar\n");
+// --- Extra: Decode non-error line → InvalidErrorLine ---
+test "error_test.Decode non-ERR is InvalidErrorLine" {
+    var storage: [32]u8 = undefined;
+    var w: Writer = .fixed(&storage);
+    var e = Encoder.init(&w);
+    try e.encodeString(&.{"hello\n"});
+
+    var r: Reader = .fixed(w.buffered());
     var el: ErrorLine = .{};
-    const result = el.decode(&r);
-    try testing.expectError(error.ErrorLine, result);
-    try testing.expectEqualSlices(u8, "foobar", el.text);
+    try testing.expectError(error.InvalidErrorLine, el.decode(&r));
 }
 
-
-test "constants" {
+// --- Constants parity ---
+test "constants match go-git" {
     try testing.expectEqual(@as(usize, 65516), MaxPayloadSize);
     try testing.expectEqual(@as(usize, 65520), OversizePayloadMax);
     try testing.expectEqualSlices(u8, "0000", &FlushPkt);
     try testing.expectEqual(@as(usize, 0), Flush.len);
     try testing.expectEqual(@as(usize, 0), FlushString.len);
+}
+
+// --- encodeLine single-call path (public API used by Encode) ---
+test "Encoder.encodeLine flush and payload" {
+    {
+        var storage: [8]u8 = undefined;
+        var w: Writer = .fixed(&storage);
+        var e = Encoder.init(&w);
+        try e.encodeLine(Flush);
+        try testing.expectEqualSlices(u8, &FlushPkt, w.buffered());
+    }
+    {
+        var storage: [32]u8 = undefined;
+        var w: Writer = .fixed(&storage);
+        var e = Encoder.init(&w);
+        try e.encodeLine("hello\n");
+        try testing.expectEqualSlices(u8, "000ahello\n", w.buffered());
+    }
+    {
+        var storage: [8]u8 = undefined;
+        var w: Writer = .fixed(&storage);
+        var e = Encoder.init(&w);
+        const over = try testing.allocator.alloc(u8, MaxPayloadSize + 1);
+        defer testing.allocator.free(over);
+        @memset(over, 'x');
+        try testing.expectError(error.PayloadTooLong, e.encodeLine(over));
+    }
 }

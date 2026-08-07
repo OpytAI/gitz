@@ -165,10 +165,11 @@ pub const Subsection = struct {
 };
 
 // ---------------------------------------------------------------------------
-// Tests (go-git section_test.go core cases)
+// Tests (go-git section_test.go — full suite except GoString)
 // ---------------------------------------------------------------------------
 
 test "Section.isName case insensitive" {
+    // go-git TestSection_IsName
     const gpa = std.testing.allocator;
     const sect = try Section.create(gpa, "name1");
     defer sect.destroy();
@@ -177,19 +178,48 @@ test "Section.isName case insensitive" {
 }
 
 test "Section.subsection creates and finds" {
+    // go-git TestSection_Subsection
     const gpa = std.testing.allocator;
     const sect = try Section.create(gpa, "s");
     defer sect.destroy();
     const sub1 = try sect.subsection("name1");
     _ = try sub1.addOption("key1", "value1");
     try std.testing.expect(sect.subsection("name1") catch unreachable == sub1);
+    try std.testing.expectEqualStrings("value1", sub1.option("key1"));
+
     const sub2 = try sect.subsection("name2");
     try std.testing.expect(sub2.isName("name2"));
+    try std.testing.expectEqual(@as(usize, 0), sub2.options.items.len);
+}
+
+test "Section.subsection returns last match" {
+    // go-git scans subsections end-to-start; last equal name wins.
+    const gpa = std.testing.allocator;
+    const sect = try Section.create(gpa, "s");
+    defer sect.destroy();
+    const first = try Subsection.create(gpa, "dup");
+    try sect.subsections.append(gpa, first);
+    _ = try first.addOption("k", "first");
+    const second = try Subsection.create(gpa, "dup");
+    try sect.subsections.append(gpa, second);
+    _ = try second.addOption("k", "second");
+    const found = try sect.subsection("dup");
+    try std.testing.expect(found == second);
+    try std.testing.expectEqualStrings("second", found.option("k"));
+}
+
+test "Section.hasSubsection" {
+    // go-git TestSection_HasSubsection
+    const gpa = std.testing.allocator;
+    const sect = try Section.create(gpa, "s");
+    defer sect.destroy();
+    _ = try sect.subsection("name1");
     try std.testing.expect(sect.hasSubsection("name1"));
-    try std.testing.expect(!sect.hasSubsection("name3"));
+    try std.testing.expect(!sect.hasSubsection("name2"));
 }
 
 test "Section.removeSubsection" {
+    // go-git TestSection_RemoveSubsection
     const gpa = std.testing.allocator;
     const sect = try Section.create(gpa, "s");
     defer sect.destroy();
@@ -200,35 +230,95 @@ test "Section.removeSubsection" {
     try std.testing.expect(sect.hasSubsection("name2"));
 }
 
-test "Section option helpers" {
+test "Section.option and optionAll and hasOption" {
+    // go-git TestSection_Option / OptionAll / HasOption
     const gpa = std.testing.allocator;
     const sect = try Section.create(gpa, "s");
     defer sect.destroy();
     _ = try sect.addOption("key1", "value1");
     _ = try sect.addOption("key2", "value2");
     _ = try sect.addOption("key1", "value3");
+
     try std.testing.expectEqualStrings("", sect.option("otherkey"));
     try std.testing.expectEqualStrings("value2", sect.option("key2"));
     try std.testing.expectEqualStrings("value3", sect.option("key1"));
-    try std.testing.expect(sect.hasOption("key1"));
+
+    {
+        const all = try sect.optionAll(gpa, "otherkey");
+        defer gpa.free(all);
+        try std.testing.expectEqual(@as(usize, 0), all.len);
+    }
+    {
+        const all = try sect.optionAll(gpa, "key2");
+        defer gpa.free(all);
+        try std.testing.expectEqual(@as(usize, 1), all.len);
+        try std.testing.expectEqualStrings("value2", all[0]);
+    }
+    {
+        const all = try sect.optionAll(gpa, "key1");
+        defer gpa.free(all);
+        try std.testing.expectEqual(@as(usize, 2), all.len);
+        try std.testing.expectEqualStrings("value1", all[0]);
+        try std.testing.expectEqualStrings("value3", all[1]);
+    }
+
     try std.testing.expect(!sect.hasOption("otherkey"));
+    try std.testing.expect(sect.hasOption("key2"));
+    try std.testing.expect(sect.hasOption("key1"));
+}
 
-    const all = try sect.optionAll(gpa, "key1");
-    defer gpa.free(all);
-    try std.testing.expectEqual(@as(usize, 2), all.len);
-    try std.testing.expectEqualStrings("value1", all[0]);
-    try std.testing.expectEqualStrings("value3", all[1]);
+test "Section.addOption" {
+    // go-git TestSection_AddOption
+    const gpa = std.testing.allocator;
+    const sect = try Section.create(gpa, "s");
+    defer sect.destroy();
+    _ = try sect.addOption("key1", "value1");
+    _ = try sect.addOption("key2", "value2");
+    try std.testing.expectEqual(@as(usize, 2), sect.options.items.len);
+    try std.testing.expectEqualStrings("key1", sect.options.items[0].key);
+    try std.testing.expectEqualStrings("value1", sect.options.items[0].value);
+    try std.testing.expectEqualStrings("key2", sect.options.items[1].key);
+    try std.testing.expectEqualStrings("value2", sect.options.items[1].value);
 
+    _ = try sect.addOption("key1", "value3");
+    try std.testing.expectEqual(@as(usize, 3), sect.options.items.len);
+    try std.testing.expectEqualStrings("value3", sect.options.items[2].value);
+}
+
+test "Section.setOption replaces key" {
+    // go-git TestSection_SetOption
+    const gpa = std.testing.allocator;
+    const sect = try Section.create(gpa, "s");
+    defer sect.destroy();
+    _ = try sect.addOption("key1", "value1");
+    _ = try sect.addOption("key2", "value2");
     _ = try sect.setOption("key1", "value4");
-    try std.testing.expectEqualStrings("value4", sect.option("key1"));
-    try std.testing.expectEqualStrings("value2", sect.option("key2"));
+    try std.testing.expectEqual(@as(usize, 2), sect.options.items.len);
+    try std.testing.expectEqualStrings("key2", sect.options.items[0].key);
+    try std.testing.expectEqualStrings("value2", sect.options.items[0].value);
+    try std.testing.expectEqualStrings("key1", sect.options.items[1].key);
+    try std.testing.expectEqualStrings("value4", sect.options.items[1].value);
+}
+
+test "Section.removeOption" {
+    // go-git TestSection_RemoveOption
+    const gpa = std.testing.allocator;
+    const sect = try Section.create(gpa, "s");
+    defer sect.destroy();
+    _ = try sect.addOption("key1", "value1");
+    _ = try sect.addOption("key2", "value2");
+    _ = try sect.addOption("key1", "value3");
+    _ = sect.removeOption("otherkey");
+    try std.testing.expectEqual(@as(usize, 3), sect.options.items.len);
 
     _ = sect.removeOption("key1");
-    try std.testing.expect(!sect.hasOption("key1"));
-    try std.testing.expect(sect.hasOption("key2"));
+    try std.testing.expectEqual(@as(usize, 1), sect.options.items.len);
+    try std.testing.expectEqualStrings("key2", sect.options.items[0].key);
+    try std.testing.expectEqualStrings("value2", sect.options.items[0].value);
 }
 
 test "Subsection.isName case sensitive" {
+    // go-git TestSubsection_IsName
     const gpa = std.testing.allocator;
     const ss = try Subsection.create(gpa, "name1");
     defer ss.destroy();
@@ -236,7 +326,58 @@ test "Subsection.isName case sensitive" {
     try std.testing.expect(!ss.isName("Name1"));
 }
 
+test "Subsection.option and optionAll and hasOption" {
+    // go-git TestSubsection_Option / OptionAll / HasOption
+    const gpa = std.testing.allocator;
+    const ss = try Subsection.create(gpa, "n");
+    defer ss.destroy();
+    _ = try ss.addOption("key1", "value1");
+    _ = try ss.addOption("key2", "value2");
+    _ = try ss.addOption("key1", "value3");
+
+    try std.testing.expectEqualStrings("", ss.option("otherkey"));
+    try std.testing.expectEqualStrings("value2", ss.option("key2"));
+    try std.testing.expectEqualStrings("value3", ss.option("key1"));
+
+    {
+        const all = try ss.optionAll(gpa, "otherkey");
+        defer gpa.free(all);
+        try std.testing.expectEqual(@as(usize, 0), all.len);
+    }
+    {
+        const all = try ss.optionAll(gpa, "key2");
+        defer gpa.free(all);
+        try std.testing.expectEqual(@as(usize, 1), all.len);
+        try std.testing.expectEqualStrings("value2", all[0]);
+    }
+    {
+        const all = try ss.optionAll(gpa, "key1");
+        defer gpa.free(all);
+        try std.testing.expectEqual(@as(usize, 2), all.len);
+        try std.testing.expectEqualStrings("value1", all[0]);
+        try std.testing.expectEqualStrings("value3", all[1]);
+    }
+
+    try std.testing.expect(!ss.hasOption("otherkey"));
+    try std.testing.expect(ss.hasOption("key2"));
+    try std.testing.expect(ss.hasOption("key1"));
+}
+
+test "Subsection.addOption" {
+    // go-git TestSubsection_AddOption
+    const gpa = std.testing.allocator;
+    const ss = try Subsection.create(gpa, "n");
+    defer ss.destroy();
+    _ = try ss.addOption("key1", "value1");
+    _ = try ss.addOption("key2", "value2");
+    try std.testing.expectEqual(@as(usize, 2), ss.options.items.len);
+    _ = try ss.addOption("key1", "value3");
+    try std.testing.expectEqual(@as(usize, 3), ss.options.items.len);
+    try std.testing.expectEqualStrings("value3", ss.options.items[2].value);
+}
+
 test "Subsection.setOption multi value" {
+    // go-git TestSubsection_SetOption
     const gpa = std.testing.allocator;
     const ss = try Subsection.create(gpa, "n");
     defer ss.destroy();
@@ -245,8 +386,27 @@ test "Subsection.setOption multi value" {
     _ = try ss.addOption("key1", "value3");
     const vals = [_][]const u8{ "value1", "value4" };
     _ = try ss.setOption("key1", &vals);
+    try std.testing.expectEqual(@as(usize, 3), ss.options.items.len);
     try std.testing.expectEqualStrings("value1", ss.options.items[0].value);
     try std.testing.expectEqualStrings("value2", ss.options.items[1].value);
     try std.testing.expectEqualStrings("value4", ss.options.items[2].value);
+    try std.testing.expectEqualStrings("key1", ss.options.items[0].key);
+    try std.testing.expectEqualStrings("key2", ss.options.items[1].key);
+    try std.testing.expectEqualStrings("key1", ss.options.items[2].key);
+}
+
+test "Subsection.removeOption" {
+    // go-git TestSubsection_RemoveOption
+    const gpa = std.testing.allocator;
+    const ss = try Subsection.create(gpa, "n");
+    defer ss.destroy();
+    _ = try ss.addOption("key1", "value1");
+    _ = try ss.addOption("key2", "value2");
+    _ = try ss.addOption("key1", "value3");
+    _ = ss.removeOption("otherkey");
     try std.testing.expectEqual(@as(usize, 3), ss.options.items.len);
+    _ = ss.removeOption("key1");
+    try std.testing.expectEqual(@as(usize, 1), ss.options.items.len);
+    try std.testing.expectEqualStrings("key2", ss.options.items[0].key);
+    try std.testing.expectEqualStrings("value2", ss.options.items[0].value);
 }

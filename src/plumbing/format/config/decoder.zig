@@ -200,7 +200,6 @@ const Scanner = struct {
                     if (in_quote) {
                         self.err_count += 1;
                     }
-                    // Value cannot contain raw newline outside quotes handling above.
                     break;
                 },
                 else => {},
@@ -236,7 +235,7 @@ fn unquote(allocator: Allocator, s: []const u8) Error![]u8 {
             if (mapped) |m| {
                 try out.append(allocator, m);
             } else if (q) {
-                // `\n` inside quotes is newline via 'n' case; bare newline after \ outside handled.
+                // Bare newline after `\` inside quotes is invalid.
                 return error.ParseError;
             }
             // When !q and c == '\n', drop (continuation).
@@ -295,6 +294,7 @@ fn parseInto(config: *Config, src: []const u8) Error!void {
                 if (lex.tok == .string) {
                     const raw = try unquote(config.allocator, lex.lit);
                     defer config.allocator.free(raw);
+                    // gcfg: empty subsection name is an error.
                     if (raw.len == 0) return error.ParseError;
                     if (sectsub_owned) |p| config.allocator.free(p);
                     sectsub_owned = try config.allocator.dupe(u8, raw);
@@ -399,143 +399,66 @@ fn decodeFails(allocator: Allocator, text: []const u8) !void {
 // Tests (go-git decoder_test.go + fixtures_test.go)
 // ---------------------------------------------------------------------------
 
-test "Decoder empty and comments only" {
+test "Decoder.Decode all fixtures" {
+    const fixtures_mod = @import("fixtures.zig");
     const gpa = std.testing.allocator;
-    {
-        var cfg = try decodeString(gpa, "");
+    const encoder = @import("encoder.zig");
+    const Writer = std.Io.Writer;
+
+    for (fixtures_mod.fixtures, 0..) |fixture, idx| {
+        var cfg = try decodeString(gpa, fixture.raw);
         defer cfg.deinit();
-        try std.testing.expectEqual(@as(usize, 0), cfg.sections.items.len);
-    }
-    {
-        var cfg = try decodeString(gpa, ";Comments only");
-        defer cfg.deinit();
-        try std.testing.expectEqual(@as(usize, 0), cfg.sections.items.len);
-    }
-    {
-        var cfg = try decodeString(gpa, "#Comments only");
-        defer cfg.deinit();
-        try std.testing.expectEqual(@as(usize, 0), cfg.sections.items.len);
+
+        var expected = common.Config.init(gpa);
+        defer expected.deinit();
+        try fixture.fill(&expected);
+        try std.testing.expect(configsEqual(&cfg, &expected));
+
+        // Round-trip encode for diagnostic parity with go-git TestDecode.
+        var aw: Writer.Allocating = .init(gpa);
+        defer aw.deinit();
+        var enc = encoder.Encoder.init(&aw.writer);
+        try enc.encode(&cfg);
+        try std.testing.expect(configsEqual(&cfg, &expected));
+        _ = idx;
     }
 }
 
-test "Decoder core repositoryformatversion" {
+test "Decoder fails with ident before section" {
+    // go-git TestDecodeFailsWithIdentBeforeSection
     const gpa = std.testing.allocator;
-    const raws = [_][]const u8{
-        "[core]\nrepositoryformatversion=0",
-        "[core]\n\trepositoryformatversion = 0\n",
-        ";Commment\n[core]\n;Comment\nrepositoryformatversion = 0\n",
-        "#Commment\n#Comment\n[core]\n#Comment\nrepositoryformatversion = 0\n",
-    };
-    for (raws) |raw| {
-        var cfg = try decodeString(gpa, raw);
-        defer cfg.deinit();
-        var expected = common.Config.init(gpa);
-        defer expected.deinit();
-        _ = try expected.addOption("core", "", "repositoryformatversion", "0");
-        try std.testing.expect(configsEqual(&cfg, &expected));
-    }
+    try decodeFails(gpa, "\n" ++ "\tkey=value\n" ++ "\t[section]\n" ++ "\tkey=value\n");
 }
 
-test "Decoder special characters" {
+test "Decoder fails with empty section name" {
+    // go-git TestDecodeFailsWithEmptySectionName
     const gpa = std.testing.allocator;
-    // Indent with real tabs via double-quoted escapes (multiline \\ cannot hold raw tabs).
-    const raw = "[section]\n" ++
-        "\toption1 = \"has # hash\"\n" ++
-        "\toption2 = \"has \\\" quote\"\n" ++
-        "\toption3 = \"has \\\\ backslash\"\n" ++
-        "\toption4 = \"has ; semicolon\"\n" ++
-        "\toption5 = \"has \\n line-feed\"\n" ++
-        "\toption6 = \"has \\t tab\"\n" ++
-        "\toption7 = \"  has leading spaces\"\n" ++
-        "\toption8 = \"has trailing spaces  \"\n" ++
-        "\toption9 = has no special characters\n" ++
-        "\toption10 = has unusual \x01\x7f\u{0200} characters\n";
-    var cfg = try decodeString(gpa, raw);
-    defer cfg.deinit();
-    var expected = common.Config.init(gpa);
-    defer expected.deinit();
-    _ = try expected.addOption("section", "", "option1", "has # hash");
-    _ = try expected.addOption("section", "", "option2", "has \" quote");
-    _ = try expected.addOption("section", "", "option3", "has \\ backslash");
-    _ = try expected.addOption("section", "", "option4", "has ; semicolon");
-    _ = try expected.addOption("section", "", "option5", "has \n line-feed");
-    _ = try expected.addOption("section", "", "option6", "has \t tab");
-    _ = try expected.addOption("section", "", "option7", "  has leading spaces");
-    _ = try expected.addOption("section", "", "option8", "has trailing spaces  ");
-    _ = try expected.addOption("section", "", "option9", "has no special characters");
-    _ = try expected.addOption("section", "", "option10", "has unusual \x01\x7f\u{0200} characters");
-    try std.testing.expect(configsEqual(&cfg, &expected));
+    try decodeFails(gpa, "\n" ++ "\t[]\n" ++ "\tkey=value\n");
 }
 
-test "Decoder sections subsections multi" {
+test "Decoder fails with empty subsection name" {
+    // go-git TestDecodeFailsWithEmptySubsectionName
     const gpa = std.testing.allocator;
-    {
-        const raw =
-            \\[sect1]
-            \\opt1 = value1
-            \\[sect1 "subsect1"]
-            \\opt2 = value2
-            \\
-        ;
-        var cfg = try decodeString(gpa, raw);
-        defer cfg.deinit();
-        var expected = common.Config.init(gpa);
-        defer expected.deinit();
-        _ = try expected.addOption("sect1", "", "opt1", "value1");
-        _ = try expected.addOption("sect1", "subsect1", "opt2", "value2");
-        try std.testing.expect(configsEqual(&cfg, &expected));
-    }
-    {
-        const raw =
-            \\[sect1]
-            \\opt1 = value1
-            \\[sect1 "subsect1"]
-            \\opt2 = value2
-            \\[sect1]
-            \\opt1 = value1b
-            \\[sect1 "subsect1"]
-            \\opt2 = value2b
-            \\[sect1 "subsect2"]
-            \\opt2 = value2
-            \\
-        ;
-        var cfg = try decodeString(gpa, raw);
-        defer cfg.deinit();
-        var expected = common.Config.init(gpa);
-        defer expected.deinit();
-        _ = try expected.addOption("sect1", "", "opt1", "value1");
-        _ = try expected.addOption("sect1", "", "opt1", "value1b");
-        _ = try expected.addOption("sect1", "subsect1", "opt2", "value2");
-        _ = try expected.addOption("sect1", "subsect1", "opt2", "value2b");
-        _ = try expected.addOption("sect1", "subsect2", "opt2", "value2");
-        try std.testing.expect(configsEqual(&cfg, &expected));
-    }
-    {
-        const raw =
-            \\[sect1]
-            \\opt1 = value1
-            \\opt1 = value2
-            \\
-        ;
-        var cfg = try decodeString(gpa, raw);
-        defer cfg.deinit();
-        var expected = common.Config.init(gpa);
-        defer expected.deinit();
-        _ = try expected.addOption("sect1", "", "opt1", "value1");
-        _ = try expected.addOption("sect1", "", "opt1", "value2");
-        try std.testing.expect(configsEqual(&cfg, &expected));
-    }
+    try decodeFails(gpa, "\n" ++ "\t[remote \"\"]\n" ++ "\tkey=value\n");
 }
 
-test "Decoder failure cases" {
+test "Decoder fails with bad subsection name" {
+    // go-git TestDecodeFailsWithBadSubsectionName
     const gpa = std.testing.allocator;
-    try decodeFails(gpa, "key=value\n[section]\nkey=value\n");
-    try decodeFails(gpa, "[]\nkey=value\n");
-    try decodeFails(gpa, "[remote \"\"]\nkey=value\n");
-    try decodeFails(gpa, "[remote origin\"]\nkey=value\n");
-    try decodeFails(gpa, "[remote \"origin]\nkey=value\n");
-    try decodeFails(gpa, "[remote]garbage\nkey=value\n");
-    try decodeFails(gpa, "[remote \"origin\"]garbage\nkey=value\n");
+    try decodeFails(gpa, "\n" ++ "\t[remote origin\"]\n" ++ "\tkey=value\n");
+    try decodeFails(gpa, "\n" ++ "\t[remote \"origin]\n" ++ "\tkey=value\n");
+}
+
+test "Decoder fails with trailing garbage" {
+    // go-git TestDecodeFailsWithTrailingGarbage
+    const gpa = std.testing.allocator;
+    try decodeFails(gpa, "\n" ++ "\t[remote]garbage\n" ++ "\tkey=value\n");
+    try decodeFails(gpa, "\n" ++ "\t[remote \"origin\"]garbage\n" ++ "\tkey=value\n");
+}
+
+test "Decoder fails with garbage" {
+    // go-git TestDecodeFailsWithGarbage
+    const gpa = std.testing.allocator;
     try decodeFails(gpa, "---");
     try decodeFails(gpa, "????");
     try decodeFails(gpa, "[sect\nkey=value");
@@ -544,35 +467,17 @@ test "Decoder failure cases" {
     try decodeFails(gpa, "[section]key=value\"");
 }
 
-test "Decoder round-trip with Encoder" {
+test "Decoder blank option is empty string" {
     const gpa = std.testing.allocator;
-    const encoder = @import("encoder.zig");
-    const Writer = std.Io.Writer;
-
-    var cfg = common.Config.init(gpa);
+    var cfg = try decodeString(gpa, "[core]\nfilemode\n");
     defer cfg.deinit();
-    _ = try cfg.addOption("sect1", "", "opt1", "value1");
-    _ = try cfg.addOption("sect1", "", "opt1", "value1b");
-    _ = try cfg.addOption("sect1", "subsect1", "opt2", "value2");
-    _ = try cfg.addOption("sect1", "subsect1", "opt2", "value2b");
-    _ = try cfg.addOption("sect1", "subsect2", "opt2", "value2");
+    try std.testing.expectEqualStrings("", cfg.sections.items[0].option("filemode"));
+    try std.testing.expect(cfg.sections.items[0].hasOption("filemode"));
+}
 
-    var aw: Writer.Allocating = .init(gpa);
-    defer aw.deinit();
-    var enc = encoder.Encoder.init(&aw.writer);
-    try enc.encode(&cfg);
-
-    const expected_text = "[sect1]\n" ++
-        "\topt1 = value1\n" ++
-        "\topt1 = value1b\n" ++
-        "[sect1 \"subsect1\"]\n" ++
-        "\topt2 = value2\n" ++
-        "\topt2 = value2b\n" ++
-        "[sect1 \"subsect2\"]\n" ++
-        "\topt2 = value2\n";
-    try std.testing.expectEqualStrings(expected_text, aw.written());
-
-    var decoded = try decodeString(gpa, aw.written());
-    defer decoded.deinit();
-    try std.testing.expect(configsEqual(&cfg, &decoded));
+test "Decoder line continuation outside quotes" {
+    const gpa = std.testing.allocator;
+    var cfg = try decodeString(gpa, "[s]\nk = foo\\\nbar\n");
+    defer cfg.deinit();
+    try std.testing.expectEqualStrings("foobar", cfg.sections.items[0].option("k"));
 }

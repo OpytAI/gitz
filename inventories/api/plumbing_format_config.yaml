@@ -1,26 +1,75 @@
 # API inventory: plumbing/format/config (phase 2)
+# Go New() maps to Zig Config.init. Decoder/Encoder use .init (not dual New*).
 package: plumbing/format/config
 phase: 2
 require:
   types:
     - Config
     - Section
+    - Subsection
+    - Option
+    - Options
+    - Include
     - Decoder
     - Encoder
   functions:
     - New
   constants:
     - NoSubsection
+    - Version0
+    - Version1
+    - DefaultRepositoryFormatVersion
+    - SHA1
+    - SHA256
+    - DefaultObjectFormat
+    - RepositoryFormatVersion
+    - ObjectFormat
   semantic:
-    - config.Config
-    - config.Section
-    - config.Decoder
-    - config.Encoder
-    - config.NoSubsection
+    - Config
+    - Config.init
+    - Config.deinit
+    - Config.section
+    - Config.hasSection
+    - Config.removeSection
+    - Config.removeSubsection
+    - Config.addOption
+    - Config.setOption
+    - Section
+    - Subsection
+    - Option
+    - Options
+    - Include
+    - Decoder
+    - Decoder.init
+    - Decoder.decode
+    - Encoder
+    - Encoder.init
+    - Encoder.encode
+    - NoSubsection
+    - Version0
+    - Version1
+    - DefaultRepositoryFormatVersion
+    - SHA1
+    - SHA256
+    - DefaultObjectFormat
+    - RepositoryFormatVersion
+    - ObjectFormat
 zig_map:
-  Config: config.Config
-  Section: config.Section
-  Decoder: config.Decoder
-  Encoder: config.Encoder
+  Config: Config
+  Section: Section
+  Subsection: Subsection
+  Option: Option
+  Options: Options
+  Include: Include
+  Decoder: Decoder
+  Encoder: Encoder
   New: Config.init
-  NoSubsection: config.NoSubsection
+  NoSubsection: NoSubsection
+  Version0: Version0
+  Version1: Version1
+  DefaultRepositoryFormatVersion: DefaultRepositoryFormatVersion
+  SHA1: SHA1
+  SHA256: SHA256
+  DefaultObjectFormat: DefaultObjectFormat
+  RepositoryFormatVersion: RepositoryFormatVersion
+  ObjectFormat: ObjectFormat
