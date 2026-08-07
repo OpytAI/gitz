@@ -1,3 +1,5 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
 # Exclude local bytecode so local python runs cannot pollute Bazel inputs.
 _GOLDEN_GLOBS = glob(
     ["**/*"],
@@ -30,4 +32,65 @@ filegroup(
 exports_files([
     "README.md",
     "refresh_oracle_stub.sh",
+    "gen_vectors.py",
 ])
+
+# Suites recomputed from library APIs against committed expected dumps.
+_GOLDEN_SUITES = [
+    "diff_do_equal",
+    "pathutil_ntfs_dotgit",
+    "pathutil_tree_reject",
+    "gitignore_simple",
+    "gitattributes_simple",
+    "revision_parse",
+    "unified_diff_one_line",
+    "merkletrie_empty",
+    "merkletrie_insert",
+    "merkletrie_modify_delete",
+]
+
+# Bake expected.txt bodies into a Zig module so recompute_test is hermetic.
+genrule(
+    name = "vectors_zig",
+    srcs = ["//data:goldens/" + s + "/expected.txt" for s in _GOLDEN_SUITES],
+    outs = ["vectors.zig"],
+    cmd = """
+set -euo pipefail
+PAIRS=""
+""" + "\n".join([
+        'PAIRS="$$PAIRS {s}=$(location //data:goldens/{s}/expected.txt)"'.format(s=s)
+        for s in _GOLDEN_SUITES
+    ]) + """
+python3 $(location gen_vectors.py) --out "$@" $$PAIRS
+""",
+    tools = ["gen_vectors.py"],
+)
+
+zig_library(
+    name = "vectors",
+    import_name = "golden_vectors",
+    main = ":vectors_zig",
+    visibility = ["//visibility:private"],
+)
+
+# Recompute expected golden dumps from library APIs (executable Class A).
+zig_test(
+    name = "recompute_test",
+    size = "small",
+    main = "recompute.zig",
+    srcs = ["recompute.zig"],
+    deps = [
+        ":vectors",
+        "//src/utils/diff",
+        "//src/internal/pathutil",
+        "//src/internal/revision",
+        "//src/plumbing/format/diff",
+        "//src/plumbing/format/gitignore",
+        "//src/plumbing/format/gitattributes",
+        "//src/utils/merkletrie",
+        "//src/utils/merkletrie/noder",
+        "//src/utils/merkletrie/internal/fsnoder",
+        "//src/plumbing",
+        "//src/plumbing/filemode",
+    ],
+)

@@ -11,6 +11,7 @@ const filemode = @import("filemode");
 const utils_diff = @import("diff");
 const format_diff = @import("format_diff");
 const change_mod = @import("change.zig");
+const error_mod = @import("error.zig");
 
 const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
@@ -22,8 +23,12 @@ const Writer = std.Io.Writer;
 /// go-git / format_diff `DefaultContextLines`.
 pub const default_context_lines: usize = format_diff.DefaultContextLines;
 
-/// Open: file content loads go through the storer; writers may return WriteFailed.
-pub const PatchError = anyerror;
+/// Closed patch error set. Storer/writer backends outside this set map to
+/// `error.PatchBackend` at public entry points.
+pub const PatchError = error_mod.Error || Allocator.Error || plumbing.Error || error{
+    /// Writer failed mid-encode (Io write path).
+    WriteFailed,
+};
 
 pub const Operation = enum {
     equal,
@@ -110,15 +115,15 @@ pub const Patch = struct {
 
     /// go-git `(*Patch).Encode` — unified diff via format_diff.UnifiedEncoder.
     pub fn encode(self: *const Patch, w: *Writer) PatchError!void {
-        try encodeViaUnifiedEncoder(self, w);
+        encodeViaUnifiedEncoder(self, w) catch |err| return mapPatchErr(err);
     }
 
     /// go-git `(*Patch).String`. Caller frees with `allocator`.
     pub fn string(self: *const Patch) PatchError![]u8 {
         var aw: Writer.Allocating = .init(self.allocator);
         errdefer aw.deinit();
-        try encodeViaUnifiedEncoder(self, &aw.writer);
-        return try aw.toOwnedSlice();
+        encodeViaUnifiedEncoder(self, &aw.writer) catch |err| return mapPatchErr(err);
+        return aw.toOwnedSlice() catch |err| return mapPatchErr(err);
     }
 
     /// Line-level insertion/deletion counts per file.
@@ -206,23 +211,36 @@ fn scaleLinear(it: usize, width: usize, max: usize) usize {
     return 1 + (it * (width - 1) / max);
 }
 
+fn mapPatchErr(err: anyerror) PatchError {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.ObjectNotFound => error.ObjectNotFound,
+        error.UnsupportedObject => error.UnsupportedObject,
+        error.MalformedChange => error.MalformedChange,
+        error.FileNotFound => error.FileNotFound,
+        error.WriteFailed => error.WriteFailed,
+        error.PatchBackend => error.PatchBackend,
+        else => error.PatchBackend,
+    };
+}
+
 /// go-git `getPatch` / `Changes.Patch` over a list of change pointers.
 pub fn getPatch(allocator: Allocator, message: []const u8, changes: []const *const Change) PatchError!Patch {
-    return buildPatch(allocator, message, changes);
+    return buildPatch(allocator, message, changes) catch |err| mapPatchErr(err);
 }
 
 /// go-git `Changes.Patch` — build a `Patch` from a `Changes` list.
 pub fn getPatchFromChanges(allocator: Allocator, message: []const u8, changes: *const Changes) PatchError!Patch {
     // Reuse getPatch without allocating a pointer table: items is []*Change.
-    if (changes.items.len == 0) return buildPatch(allocator, message, &.{});
+    if (changes.items.len == 0) return buildPatch(allocator, message, &.{}) catch |err| mapPatchErr(err);
     // `[]*Change` is not coercible to `[]const *const Change`; build views.
-    const views = try allocator.alloc(*const Change, changes.items.len);
+    const views = allocator.alloc(*const Change, changes.items.len) catch |err| return mapPatchErr(err);
     defer allocator.free(views);
     for (changes.items, 0..) |c, i| views[i] = c;
-    return buildPatch(allocator, message, views);
+    return buildPatch(allocator, message, views) catch |err| mapPatchErr(err);
 }
 
-fn buildPatch(allocator: Allocator, message: []const u8, changes: []const *const Change) PatchError!Patch {
+fn buildPatch(allocator: Allocator, message: []const u8, changes: []const *const Change) anyerror!Patch {
     var fps: std.ArrayList(FilePatch) = .empty;
     errdefer {
         for (fps.items) |*fp| fp.deinit(allocator);
@@ -250,7 +268,7 @@ pub fn changePatch(allocator: Allocator, c: *const Change) PatchError!Patch {
     return getPatch(allocator, "", &[_]*const Change{c});
 }
 
-fn filePatch(allocator: Allocator, c: *const Change) PatchError!FilePatch {
+fn filePatch(allocator: Allocator, c: *const Change) anyerror!FilePatch {
     const sides = try c.files();
     var from_side = try FileSide.fromEntry(allocator, c.from);
     errdefer from_side.deinit(allocator);
@@ -370,7 +388,7 @@ fn lineDiffChunks(allocator: Allocator, src_text: []const u8, dst_text: []const 
 ///
 /// Builds temporary format_diff views that borrow object paths/chunk content
 /// (no deep copy of text). Allocator only owns the view tables for Encode.
-fn encodeViaUnifiedEncoder(patch: *const Patch, w: *Writer) PatchError!void {
+fn encodeViaUnifiedEncoder(patch: *const Patch, w: *Writer) anyerror!void {
     const allocator = patch.allocator;
 
     const fd_fps = try allocator.alloc(format_diff.FilePatch, patch.file_patches.len);

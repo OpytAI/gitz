@@ -58,13 +58,16 @@ leaks fail the test.
 
 ## Goldens (Class A)
 
-Static fixtures under `data/goldens/<name>/` with `meta.yaml`. Wire bytes should
-also be locked by unit encode tests when practical; `meta.yaml` may carry a
-`note:` pointing at the encoder test name.
+Static fixtures under `data/goldens/<name>/` with `meta.yaml`.
 
-Class A convention: `type: file_equals` with committed `actual.txt` **identical**
-to `expected.txt`. The runner only checks equality; it does not re-compute
-vectors at test time. Unit tests re-derive the same tables where practical.
+Class A files: `type: file_equals` with committed `actual.txt` / `expected.txt`
+(inventory + byte equality via `//check:goldens_smoke`).
+
+**Executable recomputation:** `//tools/golden:recompute_test` loads each suite’s
+`expected.txt` from runfiles and rebuilds the non-comment payload from library
+APIs (`utils/diff`, pathutil, revision, gitignore, gitattributes, format/diff,
+merkletrie). A regression fails the recompute test even if someone edits
+`actual.txt` and `expected.txt` in lockstep.
 
 ---
 

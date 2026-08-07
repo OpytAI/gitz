@@ -2,13 +2,18 @@
 
 ## Runner (CI / acceptance)
 
-`run_goldens.py` is the Class A golden runner. Bazel invokes it via `//check:goldens_smoke`.
+`run_goldens.py` is the Class A file-equality runner. Bazel invokes it via
+`//check:goldens_smoke` (compares committed `actual.txt` vs `expected.txt`).
+
+**Recompute (executable Class A):** `//tools/golden:recompute_test` rebuilds
+diff/status golden payloads from library APIs and compares them to
+`data/goldens/**/expected.txt`. This is wired into `//check:phase_9_packages`.
 
 Default tests **must not** depend on host `go` or network.
 
 ```bash
 # Prefer Bazel:
-bazel test //check:goldens_smoke
+bazel test //check:goldens_smoke //tools/golden:recompute_test
 
 # Local debug only (not acceptance):
 python3 tools/golden/run_goldens.py --goldens-dir data/goldens

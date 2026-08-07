@@ -259,6 +259,15 @@ fn findCount(idx: *const SimilarityIndex, key: u32) u64 {
     return 0;
 }
 
+test "SimilarityIndex grow returns IndexFull when hash_bits is 30" {
+    const gpa = std.testing.allocator;
+    var idx = try SimilarityIndex.fromContent(gpa, "x\n", false);
+    defer idx.deinit();
+    // Jump to the terminal size without allocating 2^29 intermediate tables.
+    idx.hash_bits = 30;
+    try std.testing.expectError(error.IndexFull, idx.grow());
+}
+
 test "SimilarityIndex identical files score max" {
     const gpa = std.testing.allocator;
     const plumbing = @import("plumbing");

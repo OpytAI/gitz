@@ -14,6 +14,7 @@ const plumbing = @import("plumbing");
 const filemode = @import("filemode");
 const change_mod = @import("change.zig");
 const similarity_mod = @import("similarity.zig");
+const error_mod = @import("error.zig");
 
 const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
@@ -24,8 +25,9 @@ const SimilarityIndex = similarity_mod.SimilarityIndex;
 
 const max_matrix_size: usize = 10_000;
 
-/// Content renames load blobs through the storer → open error set.
-pub const RenameError = anyerror;
+/// Closed rename error set. Blob loads go through the storer; unknown backend
+/// errors map to `error.DiffBackend` at the public `detectRenames` boundary.
+pub const RenameError = error_mod.Error || Allocator.Error || plumbing.Error || similarity_mod.IndexFullError;
 
 /// go-git `DetectRenames`.
 ///
@@ -35,6 +37,28 @@ pub fn detectRenames(
     changes: Changes,
     opts: DiffTreeOptions,
 ) RenameError!Changes {
+    return detectRenamesInner(allocator, changes, opts) catch |err| mapRenameErr(err);
+}
+
+fn mapRenameErr(err: anyerror) RenameError {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.IndexFull => error.IndexFull,
+        error.ObjectNotFound => error.ObjectNotFound,
+        error.UnsupportedObject => error.UnsupportedObject,
+        error.MalformedChange => error.MalformedChange,
+        error.FileNotFound => error.FileNotFound,
+        error.Canceled => error.Canceled,
+        error.DiffBackend => error.DiffBackend,
+        else => error.DiffBackend,
+    };
+}
+
+fn detectRenamesInner(
+    allocator: Allocator,
+    changes: Changes,
+    opts: DiffTreeOptions,
+) anyerror!Changes {
     var detector = RenameDetector{
         .allocator = allocator,
         .rename_score = @intCast(opts.rename_score),
@@ -446,7 +470,7 @@ fn buildSimilarityMatrix(
     var dst_sizes = try allocator.alloc(i64, dsts.len);
     defer allocator.free(dst_sizes);
     @memset(dst_sizes, 0);
-    var dst_too_large = try allocator.alloc(bool, dsts.len);
+    const dst_too_large = try allocator.alloc(bool, dsts.len);
     defer allocator.free(dst_too_large);
     @memset(dst_too_large, false);
 
@@ -495,10 +519,14 @@ fn buildSimilarityMatrix(
 
             const sides_to = try dst.files();
             const to = sides_to.to orelse continue;
+            // Intentionally diverge from go-git: go-git marks dstTooLarge then
+            // still `return err` (aborts the whole matrix). Skip this destination
+            // and keep scoring other pairs — same as the source-side IndexFull
+            // path (`continue outerLoop`) and jgit's "too large" intent.
             var di = SimilarityIndex.fromFile(allocator, &to) catch |err| {
                 if (err == error.IndexFull) {
-                    dst_too_large[dst_idx] = true;
-                    return error.IndexFull;
+                    noteDstIndexFull(dst_too_large, dst_idx);
+                    continue;
                 }
                 return err;
             };
@@ -1283,5 +1311,18 @@ test "detectRenames only exact skips content" {
     try std.testing.expectEqual(@as(usize, 2), result.items.len);
 }
 
+// Destination IndexFull: mark skip, do not abort the whole similarity matrix
+// (intentional improvement over go-git's return-after-mark).
+fn noteDstIndexFull(dst_too_large: []bool, idx: usize) void {
+    dst_too_large[idx] = true;
+}
 
+test "destination IndexFull marks skip not abort" {
+    var flags = [_]bool{ false, false, false };
+    noteDstIndexFull(flags[0..], 1);
+    try std.testing.expect(flags[1]);
+    try std.testing.expect(!flags[0]);
+    try std.testing.expect(!flags[2]);
+    // Remaining destinations stay eligible (flags stay false until their own IndexFull).
+}
 

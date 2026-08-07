@@ -19,6 +19,9 @@ const TreeEntry = tree_mod.TreeEntry;
 const File = file_mod.File;
 const Error = error_mod.Error;
 
+/// Closed error set for `Change.files` (blob loads via storer).
+pub const FilesError = Error || Allocator.Error || plumbing.Error;
+
 /// go-git merkletrie.Action values used by `Change.action`.
 pub const Action = enum {
     insert,
@@ -102,8 +105,8 @@ pub const Change = struct {
 
     /// go-git `(*Change).Files` — from/to files for patch.
     /// Returns null sides when the entry is not a file (dir / empty).
-    /// Error set is open because blob loads flow through the storer.
-    pub fn files(self: *const Change) anyerror!struct { from: ?File, to: ?File } {
+    /// Closed error set: storer/object errors callers can match.
+    pub fn files(self: *const Change) FilesError!struct { from: ?File, to: ?File } {
         const act = try self.action();
         var from_f: ?File = null;
         var to_f: ?File = null;
@@ -159,10 +162,23 @@ pub const Change = struct {
     }
 };
 
-fn loadFile(tr: *Tree, entry: *const ChangeEntry) anyerror!File {
-    var f = try tr.treeEntryFile(&entry.tree_entry);
+fn loadFile(tr: *Tree, entry: *const ChangeEntry) FilesError!File {
+    var f = tr.treeEntryFile(&entry.tree_entry) catch |err| return mapFilesErr(err);
     f.name = entry.name;
     return f;
+}
+
+fn mapFilesErr(err: anyerror) FilesError {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.ObjectNotFound => error.ObjectNotFound,
+        error.UnsupportedObject => error.UnsupportedObject,
+        error.FileNotFound => error.FileNotFound,
+        error.MalformedChange => error.MalformedChange,
+        // validTreePath rejects (security) surface as FileNotFound to callers.
+        error.InvalidPath => error.FileNotFound,
+        else => error.ObjectNotFound,
+    };
 }
 
 /// go-git `Changes` — heap `*Change` list owned by the caller.

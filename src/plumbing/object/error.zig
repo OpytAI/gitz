@@ -34,6 +34,11 @@ pub const Error = error{
     MultipleSignatures,
     /// Signature verification failed (bad key / bad signature).
     InvalidSignature,
+    /// Diff / walk backend failed with an error outside the closed object set
+    /// (e.g. noder I/O). Callers can match this without taking `anyerror`.
+    DiffBackend,
+    /// Patch encode/write failed outside the closed object set.
+    PatchBackend,
 };
 
 test "Error set matches go-git object Err* names" {
@@ -51,4 +56,6 @@ test "Error set matches go-git object Err* names" {
     try std.testing.expect(Error.Canceled == error.Canceled);
     try std.testing.expect(Error.MultipleSignatures == error.MultipleSignatures);
     try std.testing.expect(Error.InvalidSignature == error.InvalidSignature);
+    try std.testing.expect(Error.DiffBackend == error.DiffBackend);
+    try std.testing.expect(Error.PatchBackend == error.PatchBackend);
 }

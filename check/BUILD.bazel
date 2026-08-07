@@ -288,6 +288,8 @@ test_suite(
         "//src/utils/merkletrie:merkletrie_test",
         "//src/utils/merkletrie/index:index_test",
         "//src/utils/merkletrie/filesystem:filesystem_test",
+        # Executable Class A: recompute data/goldens expected dumps from APIs.
+        "//tools/golden:recompute_test",
     ],
 )
 

@@ -3,6 +3,7 @@
 //! Path: NewTreeRootNode → merkletrie.DiffTreeContext → newChanges → optional DetectRenames.
 
 const std = @import("std");
+const plumbing = @import("plumbing");
 const noder = @import("noder");
 const merkletrie = @import("merkletrie");
 const tree_mod = @import("tree.zig");
@@ -20,9 +21,10 @@ const Error = error_mod.Error;
 
 pub const DiffTreeOptions = change_mod.DiffTreeOptions;
 
-/// DiffTree error set. Open because nested tree loads flow through the storer,
-/// and content-based rename detection reads blob bodies.
-pub const DiffError = anyerror;
+/// Closed DiffTree error set (no bare `anyerror` at the public boundary).
+/// Noder/storer backends may surface other errors; those are mapped to
+/// `Error.DiffBackend` so callers can switch exhaustively.
+pub const DiffError = Error || Allocator.Error || plumbing.Error || change_adaptor_mod.Error || rename_mod.RenameError;
 
 /// go-git `DiffTree` — no rename detection.
 pub fn diffTree(allocator: Allocator, a: ?*Tree, b: ?*Tree) DiffError!Changes {
@@ -48,10 +50,7 @@ pub fn diffTreeWithOptions(
         from.asNoder(),
         to.asNoder(),
         hashEqual,
-    ) catch |err| {
-        if (err == merkletrie.DiffError.Canceled) return Error.Canceled;
-        return err;
-    };
+    ) catch |err| return mapDiffBackend(err);
 
     // Adapt while TreeNoders still live in the session arena. newChanges
     // deinit's mt_changes (Path node slices only). Loaded subtrees stay in
@@ -69,6 +68,26 @@ pub fn diffTreeWithOptions(
     return changes;
 }
 
+/// Map noder/merkletrie open errors into the closed `DiffError` set.
+fn mapDiffBackend(err: anyerror) DiffError {
+    return switch (err) {
+        error.OutOfMemory => error.OutOfMemory,
+        error.Canceled => error.Canceled,
+        error.ObjectNotFound => error.ObjectNotFound,
+        error.UnsupportedObject => error.UnsupportedObject,
+        error.MalformedTree => error.MalformedTree,
+        error.FileNotFound => error.FileNotFound,
+        error.DirectoryNotFound => error.DirectoryNotFound,
+        error.EntryNotFound => error.EntryNotFound,
+        error.CannotTransformNonTreeNoders => error.CannotTransformNonTreeNoders,
+        error.IndexFull => error.IndexFull,
+        error.EmptyFileName => error.DiffBackend,
+        error.BadDoubleIterStatus => error.DiffBackend,
+        error.BothDirsEmptyDifferentHash => error.DiffBackend,
+        else => error.DiffBackend,
+    };
+}
+
 fn hashEqual(a: noder.Noder, b: noder.Noder) bool {
     return std.mem.eql(u8, a.hash(), b.hash());
 }
@@ -81,7 +100,6 @@ const memory = @import("memory");
 const Storage = memory.Storage;
 const storer = @import("storer");
 const filemode = @import("filemode");
-const plumbing = @import("plumbing");
 
 fn putBlob(store: *Storage, content: []const u8) !plumbing.Hash {
     const blob = try store.newEncodedObject();
