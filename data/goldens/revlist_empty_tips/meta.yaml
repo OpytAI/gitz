@@ -1,0 +1,4 @@
+name: revlist_empty_tips
+type: file_equals
+actual: actual.txt
+expected: expected.txt

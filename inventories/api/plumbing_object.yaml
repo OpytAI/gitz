@@ -24,7 +24,20 @@ require:
     - decodeTag
     - newCommitPreorderIter
     - newCommitPostorderIter
+    - newCommitIterBsf
+    - newCommitIterCTime
+    - newFilterCommitIter
+    - newCommitPathIterFromIter
+    - newCommitFileIterFromIter
+    - newCommitLimitIterFromIter
+    - newCommitAllIter
+    - mergeBase
+    - isAncestor
+    - independents
     - diffTree
+    - detectRenames
+    - getPatch
+    - newTagIter
   semantic:
     - Blob
     - Tree
@@ -34,6 +47,8 @@ require:
     - getObject
     - decodeObject
     - CommitIter
+    - DiffTree
+    - MergeBase
 zig_map:
   Blob: Blob
   Tree: Tree
@@ -54,6 +69,16 @@ zig_map:
   DecodeTag: decodeTag
   NewCommitPreorderIter: newCommitPreorderIter
   NewCommitPostorderIter: newCommitPostorderIter
+  NewCommitIterBSF: newCommitIterBsf
+  NewCommitIterCTime: newCommitIterCTime
+  NewFilterCommitIter: newFilterCommitIter
+  NewCommitPathIterFromIter: newCommitPathIterFromIter
+  NewCommitFileIterFromIter: newCommitFileIterFromIter
+  NewCommitLimitIterFromIter: newCommitLimitIterFromIter
+  NewCommitAllIter: newCommitAllIter
+  MergeBase: mergeBase
+  IsAncestor: isAncestor
+  Independents: independents
   DiffTree: diffTree
   Change: Change
   Changes: Changes
@@ -61,3 +86,5 @@ zig_map:
   DetectRenames: detectRenames
   Patch: Patch
   GetPatch: getPatch
+  NewTagIter: newTagIter
+  TagIter: TagIter

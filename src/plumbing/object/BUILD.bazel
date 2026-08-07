@@ -11,6 +11,7 @@ _SRCS = [
     "tag.zig",
     "object.zig",
     "commit_walker.zig",
+    "merge_base.zig",
     "change.zig",
     "difftree.zig",
     "rename.zig",

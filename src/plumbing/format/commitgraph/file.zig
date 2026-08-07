@@ -1,8 +1,9 @@
 //! Commit-graph file index — port of go-git
 //! `plumbing/format/commitgraph/v2/file.go` (v5.19.2).
 //!
-//! Opens a serialized commit-graph (single file, no chain parent) and serves
-//! Index lookups against the held buffer.
+//! Opens a serialized commit-graph and serves Index lookups against the held
+//! buffer. Optional parent support enables commit-graph chains
+//! (`OpenFileIndexWithParent`).
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -18,7 +19,8 @@ const Error = commitgraph.Error;
 
 /// Random-access commit-graph over an in-memory buffer (go-git `fileIndex`).
 ///
-/// Parent chain graphs are not supported in this port (parent always null).
+/// When `parent` is set, this index is layered on top of an older graph in a
+/// chain: local hashes occupy indices `[minimum_number_of_hashes, ...)`.
 pub const FileIndex = struct {
     allocator: Allocator,
     /// Full file bytes (owned).
@@ -26,23 +28,41 @@ pub const FileIndex = struct {
     fanout: [commitgraph.len_fanout]u32 = .{0} ** commitgraph.len_fanout,
     offsets: [ChunkType.len_chunks]i64 = .{0} ** ChunkType.len_chunks,
     has_generation_v2: bool = false,
+    /// Owned parent graph in a chain (go-git `fileIndex.parent`), or null.
+    parent: ?*FileIndex = null,
+    /// Hash count in parent (go-git `minimumNumberOfHashes`).
+    minimum_number_of_hashes: u32 = 0,
     /// Cached last CommitData for pointer-stable `getCommitDataByIndex`.
     cache: ?CommitData = null,
 
     /// Open from a complete commit-graph byte slice (copies into owned buffer).
     /// go-git `OpenFileIndex` without parent.
     pub fn open(allocator: Allocator, raw: []const u8) Error!FileIndex {
+        return openWithParent(allocator, raw, null);
+    }
+
+    /// go-git `OpenFileIndexWithParent`.
+    ///
+    /// Takes ownership of `parent` when non-null; `parent` must be heap-
+    /// allocated with `allocator.create(FileIndex)`. On success, `deinit`
+    /// closes the parent chain. On failure, `parent` is not freed (caller keeps it).
+    pub fn openWithParent(allocator: Allocator, raw: []const u8, parent: ?*FileIndex) Error!FileIndex {
         const data = allocator.dupe(u8, raw) catch return Error.MalformedCommitGraphFile;
         errdefer allocator.free(data);
 
         var fi: FileIndex = .{
             .allocator = allocator,
             .data = data,
+            .parent = parent,
         };
         try fi.verifyFileHeader();
         try fi.readChunkHeaders();
         try fi.readFanout();
         fi.has_generation_v2 = fi.offsets[@intFromEnum(ChunkType.generation_data)] > 0;
+        if (parent) |p| {
+            fi.has_generation_v2 = fi.has_generation_v2 and p.hasGenerationV2();
+            fi.minimum_number_of_hashes = p.maximumNumberOfHashes();
+        }
         return fi;
     }
 
@@ -59,9 +79,44 @@ pub const FileIndex = struct {
         return open(allocator, aw.written());
     }
 
+    /// Coalesce a chain of graph file bodies (oldest first) without billy FS.
+    /// Pure-byte alternative to go-git `OpenChainIndex`.
+    ///
+    /// Empty `graphs` returns `error.MalformedCommitGraphFile` (unlike go-git
+    /// which can return a nil Index for an empty chain).
+    pub fn openChainIndexFromBytes(allocator: Allocator, graphs: []const []const u8) Error!FileIndex {
+        if (graphs.len == 0) return Error.MalformedCommitGraphFile;
+
+        var current: ?FileIndex = null;
+        errdefer if (current) |*c| c.deinit();
+
+        for (graphs) |raw| {
+            var parent_ptr: ?*FileIndex = null;
+            if (current) |prev| {
+                const boxed = allocator.create(FileIndex) catch return Error.MalformedCommitGraphFile;
+                boxed.* = prev;
+                parent_ptr = boxed;
+                current = null;
+            }
+            // On open failure after boxing parent, free the boxed parent.
+            current = openWithParent(allocator, raw, parent_ptr) catch |e| {
+                if (parent_ptr) |p| {
+                    p.deinit();
+                    allocator.destroy(p);
+                }
+                return e;
+            };
+        }
+        return current.?;
+    }
+
     pub fn deinit(self: *FileIndex) void {
         self.clearCache();
         self.allocator.free(self.data);
+        if (self.parent) |p| {
+            p.deinit();
+            self.allocator.destroy(p);
+        }
         self.* = undefined;
     }
 
@@ -148,33 +203,53 @@ pub const FileIndex = struct {
             if (cmp == .lt) {
                 high = mid;
             } else if (cmp == .eq) {
-                return mid;
+                return mid + self.minimum_number_of_hashes;
             } else {
                 low = mid + 1;
             }
+        }
+
+        if (self.parent) |p| {
+            return p.getIndexByHash(h);
         }
         return Error.ObjectNotFound;
     }
 
     /// go-git `GetHashByIndex`.
     pub fn getHashByIndex(self: *const FileIndex, idx: u32) Error!Hash {
-        if (idx >= self.fanout[0xff]) return Error.MalformedCommitGraphFile;
+        if (idx < self.minimum_number_of_hashes) {
+            if (self.parent) |p| {
+                return p.getHashByIndex(idx);
+            }
+            return Error.MalformedCommitGraphFile;
+        }
+        const local = idx - self.minimum_number_of_hashes;
+        if (local >= self.fanout[0xff]) return Error.MalformedCommitGraphFile;
         const oid_off: usize = @intCast(self.offsets[@intFromEnum(ChunkType.oid_lookup)]);
-        return self.readHashAt(oid_off + @as(usize, idx) * commitgraph.hash_size);
+        return self.readHashAt(oid_off + @as(usize, local) * commitgraph.hash_size);
     }
 
     /// go-git `GetCommitDataByIndex`.
     ///
     /// Returns a pointer into an internal cache (valid until the next call or
-    /// `deinit`). Matches the Index surface used by `Encoder`.
+    /// `deinit`). When the index falls in the parent range, delegates to the
+    /// parent (parent cache may also change). Matches the Index surface used
+    /// by `Encoder`.
     pub fn getCommitDataByIndex(self: *FileIndex, idx: u32) Error!*CommitData {
-        self.clearCache();
+        if (idx < self.minimum_number_of_hashes) {
+            if (self.parent) |p| {
+                return p.getCommitDataByIndex(idx);
+            }
+            return Error.ObjectNotFound;
+        }
+        const local = idx - self.minimum_number_of_hashes;
+        if (local >= self.fanout[0xff]) return Error.ObjectNotFound;
 
-        if (idx >= self.fanout[0xff]) return Error.ObjectNotFound;
+        self.clearCache();
 
         const cdat_off: usize = @intCast(self.offsets[@intFromEnum(ChunkType.commit_data)]);
         const entry_size = commitgraph.hash_size + commitgraph.sz_commit_data;
-        const offset = cdat_off + @as(usize, idx) * entry_size;
+        const offset = cdat_off + @as(usize, local) * entry_size;
         if (offset + entry_size > self.data.len) return Error.MalformedCommitGraphFile;
 
         const tree_hash = try self.readHashAt(offset);
@@ -198,7 +273,7 @@ pub const FileIndex = struct {
             edge_off += commitgraph.sz_uint32 * @as(usize, parent2 & commitgraph.parent_octopus_mask);
             while (true) {
                 if (edge_off + 4 > self.data.len) return Error.MalformedCommitGraphFile;
-                const parent = std.mem.readInt(u32, self.data[edge_off ..][0..4], .big);
+                const parent = std.mem.readInt(u32, self.data[edge_off..][0..4], .big);
                 edge_off += 4;
                 list.append(self.allocator, parent & commitgraph.parent_octopus_mask) catch
                     return Error.MalformedCommitGraphFile;
@@ -227,12 +302,12 @@ pub const FileIndex = struct {
         if (self.has_generation_v2) {
             generation_v2 = gen_and_time & 0x3_ffffffff;
             const gda_off: usize = @intCast(self.offsets[@intFromEnum(ChunkType.generation_data)]);
-            const g_off = gda_off + @as(usize, idx) * commitgraph.sz_uint32;
+            const g_off = gda_off + @as(usize, local) * commitgraph.sz_uint32;
             if (g_off + 4 > self.data.len) {
                 freeParents(self.allocator, parent_indexes, parent_hashes, owns_parents);
                 return Error.MalformedCommitGraphFile;
             }
-            const gen_v2_data = std.mem.readInt(u32, self.data[g_off ..][0..4], .big);
+            const gen_v2_data = std.mem.readInt(u32, self.data[g_off..][0..4], .big);
             if (gen_v2_data & 0x80000000 != 0) {
                 const gdo_off: usize = @intCast(self.offsets[@intFromEnum(ChunkType.generation_data_overflow)]);
                 const o_off = gdo_off + @as(usize, gen_v2_data & 0x7fffffff) * commitgraph.sz_uint64;
@@ -240,7 +315,7 @@ pub const FileIndex = struct {
                     freeParents(self.allocator, parent_indexes, parent_hashes, owns_parents);
                     return Error.MalformedCommitGraphFile;
                 }
-                generation_v2 += std.mem.readInt(u64, self.data[o_off ..][0..8], .big);
+                generation_v2 += std.mem.readInt(u64, self.data[o_off..][0..8], .big);
             } else {
                 generation_v2 += gen_v2_data;
             }
@@ -270,21 +345,37 @@ pub const FileIndex = struct {
         errdefer self.allocator.free(parent_hashes);
         const oid_off: usize = @intCast(self.offsets[@intFromEnum(ChunkType.oid_lookup)]);
         for (indexes, 0..) |pi, i| {
-            if (pi >= self.fanout[0xff]) return Error.MalformedCommitGraphFile;
-            parent_hashes[i] = try self.readHashAt(oid_off + @as(usize, pi) * commitgraph.hash_size);
+            if (pi < self.minimum_number_of_hashes) {
+                if (self.parent) |p| {
+                    parent_hashes[i] = try p.getHashByIndex(pi);
+                    continue;
+                }
+                return Error.MalformedCommitGraphFile;
+            }
+            const local = pi - self.minimum_number_of_hashes;
+            if (local >= self.fanout[0xff]) return Error.MalformedCommitGraphFile;
+            parent_hashes[i] = try self.readHashAt(oid_off + @as(usize, local) * commitgraph.hash_size);
         }
         return parent_hashes;
     }
 
-    /// go-git `Hashes` — OID lookup order (sorted).
+    /// go-git `Hashes` — parent hashes then local OID lookup order.
     pub fn hashes(self: *const FileIndex, allocator: Allocator) (Error || Allocator.Error)![]Hash {
-        const n = self.fanout[0xff];
+        const n = self.maximumNumberOfHashes();
         var out = try allocator.alloc(Hash, n);
         errdefer allocator.free(out);
-        const oid_off: usize = @intCast(self.offsets[@intFromEnum(ChunkType.oid_lookup)]);
+
         var i: u32 = 0;
-        while (i < n) : (i += 1) {
-            out[i] = try self.readHashAt(oid_off + @as(usize, i) * commitgraph.hash_size);
+        while (i < self.minimum_number_of_hashes) : (i += 1) {
+            out[i] = try self.parent.?.getHashByIndex(i);
+        }
+
+        const oid_off: usize = @intCast(self.offsets[@intFromEnum(ChunkType.oid_lookup)]);
+        const local_n = self.fanout[0xff];
+        var j: u32 = 0;
+        while (j < local_n) : (j += 1) {
+            out[self.minimum_number_of_hashes + j] =
+                try self.readHashAt(oid_off + @as(usize, j) * commitgraph.hash_size);
         }
         return out;
     }
@@ -296,7 +387,7 @@ pub const FileIndex = struct {
 
     /// go-git `MaximumNumberOfHashes`.
     pub fn maximumNumberOfHashes(self: *const FileIndex) u32 {
-        return self.fanout[0xff];
+        return self.minimum_number_of_hashes + self.fanout[0xff];
     }
 };
 
@@ -305,5 +396,13 @@ test "FileIndex rejects bad signature" {
     try std.testing.expectError(
         Error.MalformedCommitGraphFile,
         FileIndex.open(gpa, "not a commit graph file!!!!"),
+    );
+}
+
+test "openChainIndexFromBytes empty rejected" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectError(
+        Error.MalformedCommitGraphFile,
+        FileIndex.openChainIndexFromBytes(gpa, &.{}),
     );
 }

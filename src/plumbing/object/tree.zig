@@ -605,6 +605,8 @@ pub const FileIter = struct {
     /// Holds last path so `File.name` stays valid until the next `next`.
     name_buf: std.ArrayListUnmanaged(u8) = .empty,
     allocator: Allocator,
+    /// When set (e.g. `Commit.files`), free the root tree on `close`.
+    owned_root: ?*Tree = null,
 
     pub fn init(t: *Tree) Allocator.Error!FileIter {
         return .{
@@ -617,6 +619,7 @@ pub const FileIter = struct {
     pub fn close(self: *FileIter) void {
         self.walker.close();
         self.name_buf.deinit(self.allocator);
+        if (self.owned_root) |t| freeTree(self.allocator, t);
         self.* = undefined;
     }
 

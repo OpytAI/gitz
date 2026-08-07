@@ -193,6 +193,8 @@ pub const GraphCommitNode = struct {
     index: u32,
     commit_data: *commitgraph.CommitData,
     gci: *GraphCommitNodeIndex,
+    /// Cached author time after first full-commit load (author-order walks).
+    author_when: ?i64 = null,
 
     pub fn asNode(self: *GraphCommitNode) CommitNode {
         return .{
@@ -207,6 +209,18 @@ pub const GraphCommitNode = struct {
 
     pub fn commitTimeSec(self: *const GraphCommitNode) i64 {
         return whenUnixSeconds(self.commit_data.when);
+    }
+
+    /// Author time — loads full commit once and caches (graph has committer only).
+    pub fn authorTimeSec(self: *GraphCommitNode) i64 {
+        if (self.author_when) |t| return t;
+        const c = self.commitObj() catch return whenUnixSeconds(self.commit_data.when);
+        const t = c.author.when;
+        // Graph loads a fresh *Commit — free after reading author time.
+        c.deinit();
+        self.allocator.destroy(c);
+        self.author_when = t;
+        return t;
     }
 
     pub fn numParents(self: *const GraphCommitNode) usize {
@@ -272,6 +286,7 @@ pub const GraphCommitNode = struct {
 const graph_node_vtable = CommitNode.VTable{
     .id = graphNodeId,
     .commit_time_sec = graphNodeCommitTimeSec,
+    .author_time_sec = graphNodeAuthorTimeSec,
     .num_parents = graphNodeNumParents,
     .parent_node = graphNodeParentNode,
     .parent_hashes = graphNodeParentHashes,
@@ -290,6 +305,11 @@ fn graphNodeId(ptr: *anyopaque) Hash {
 fn graphNodeCommitTimeSec(ptr: *anyopaque) i64 {
     const self: *GraphCommitNode = @ptrCast(@alignCast(ptr));
     return self.commitTimeSec();
+}
+
+fn graphNodeAuthorTimeSec(ptr: *anyopaque) i64 {
+    const self: *GraphCommitNode = @ptrCast(@alignCast(ptr));
+    return self.authorTimeSec();
 }
 
 fn graphNodeNumParents(ptr: *anyopaque) usize {

@@ -3,6 +3,8 @@
 //!
 //! - `newCommitNodeIterCTime` — committer-time heap walk (`git log`-like)
 //! - `newCommitNodeIterDateOrder` — topo + generation/date (`git log --date-order`)
+//! - `newCommitNodeIterAuthorDateOrder` — topo + author time (`git log --author-order`)
+//! - `newCommitNodeIterTopoOrder` — topo order (`git log --topo-order`)
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -103,6 +105,7 @@ const SharedNode = struct {
 const shared_vtable = CommitNode.VTable{
     .id = sharedId,
     .commit_time_sec = sharedCommitTimeSec,
+    .author_time_sec = sharedAuthorTimeSec,
     .num_parents = sharedNumParents,
     .parent_node = sharedParentNode,
     .parent_hashes = sharedParentHashes,
@@ -118,6 +121,9 @@ fn sharedId(ptr: *anyopaque) Hash {
 }
 fn sharedCommitTimeSec(ptr: *anyopaque) i64 {
     return (@as(*SharedNode, @ptrCast(@alignCast(ptr)))).node.commitTimeSec();
+}
+fn sharedAuthorTimeSec(ptr: *anyopaque) i64 {
+    return (@as(*SharedNode, @ptrCast(@alignCast(ptr)))).node.authorTimeSec();
 }
 fn sharedNumParents(ptr: *anyopaque) usize {
     return (@as(*SharedNode, @ptrCast(@alignCast(ptr)))).node.numParents();
@@ -282,6 +288,69 @@ fn dateSize(ptr: *anyopaque) usize {
 }
 fn dateDestroy(ptr: *anyopaque) void {
     (@as(*DateHeap, @ptrCast(@alignCast(ptr)))).destroy();
+}
+
+// --- Author-date heap (author time via CommitNode.authorTimeSec) ---
+
+/// Compare by author time (newer first). Backends cache / free loads as needed.
+fn authorDateHeapLess(_: void, a: CommitNode, b: CommitNode) std.math.Order {
+    const left = a.authorTimeSec();
+    const right = b.authorTimeSec();
+    // go-git: right.Author.When.Before(left) → left higher priority.
+    if (right < left) return .lt;
+    if (left < right) return .gt;
+    return .eq;
+}
+
+const AuthorDateHeap = struct {
+    allocator: Allocator,
+    pq: std.PriorityQueue(CommitNode, void, authorDateHeapLess),
+
+    fn create(allocator: Allocator) Allocator.Error!*AuthorDateHeap {
+        const self = try allocator.create(AuthorDateHeap);
+        self.* = .{
+            .allocator = allocator,
+            .pq = std.PriorityQueue(CommitNode, void, authorDateHeapLess).initContext({}),
+        };
+        return self;
+    }
+
+    fn destroy(self: *AuthorDateHeap) void {
+        while (self.pq.pop()) |n| n.deinit();
+        self.pq.deinit(self.allocator);
+        self.allocator.destroy(self);
+    }
+
+    fn asStackable(self: *AuthorDateHeap) Stackable {
+        return .{
+            .ptr = self,
+            .push_fn = authorDatePush,
+            .pop_fn = authorDatePop,
+            .peek_fn = authorDatePeek,
+            .size_fn = authorDateSize,
+            .deinit_fn = authorDateDestroy,
+        };
+    }
+};
+
+fn authorDatePush(ptr: *anyopaque, c: CommitNode) Allocator.Error!void {
+    const self: *AuthorDateHeap = @ptrCast(@alignCast(ptr));
+    try self.pq.push(self.allocator, c);
+}
+fn authorDatePop(ptr: *anyopaque) ?CommitNode {
+    const self: *AuthorDateHeap = @ptrCast(@alignCast(ptr));
+    return self.pq.pop();
+}
+fn authorDatePeek(ptr: *anyopaque) ?CommitNode {
+    const self: *AuthorDateHeap = @ptrCast(@alignCast(ptr));
+    return self.pq.peek();
+}
+fn authorDateSize(ptr: *anyopaque) usize {
+    const self: *AuthorDateHeap = @ptrCast(@alignCast(ptr));
+    return self.pq.count();
+}
+fn authorDateDestroy(ptr: *anyopaque) void {
+    (@as(*AuthorDateHeap, @ptrCast(@alignCast(ptr)))).destroy();
 }
 
 // ---------------------------------------------------------------------------
@@ -603,6 +672,46 @@ pub fn newCommitNodeIterTopoOrder(
     const visit = try Lifo.create(allocator);
     errdefer visit.destroy();
 
+    const shared_a = try SharedNode.wrap(allocator, start, 2);
+    const shared_ptr: *SharedNode = @ptrCast(@alignCast(shared_a.ptr));
+    const shared_b = shared_ptr.asNode();
+
+    try explore.asStackable().push(shared_a);
+    try visit.asStackable().push(shared_b);
+
+    const iter = try allocator.create(CommitNodeIterTopological);
+    iter.* = .{
+        .allocator = allocator,
+        .explore_stack = explore.asStackable(),
+        .visit_stack = visit.asStackable(),
+        .in_counts = .empty,
+        .ignore = ignore_map,
+    };
+    return iter.asIter();
+}
+
+/// go-git `NewCommitNodeIterAuthorDateOrder` (`git log --author-order`).
+///
+/// Explore uses generation/date heap; visit uses author-time heap.
+/// Author times require loading full commit objects (slower than other orders).
+///
+/// Takes ownership of `start`. Free the iterator with `CommitNodeIter.close`.
+/// Successful `next` transfers node ownership to the caller.
+pub fn newCommitNodeIterAuthorDateOrder(
+    allocator: Allocator,
+    start: CommitNode,
+    seen_external: ?std.AutoHashMapUnmanaged(Hash, bool),
+    ignore: []const Hash,
+) Allocator.Error!CommitNodeIter {
+    var ignore_map = try composeIgnores(allocator, ignore, seen_external);
+    errdefer ignore_map.deinit(allocator);
+
+    const explore = try DateHeap.create(allocator);
+    errdefer explore.destroy();
+    const visit = try AuthorDateHeap.create(allocator);
+    errdefer visit.destroy();
+
+    // go-git pushes the same CommitNode onto both heaps (shared pointer).
     const shared_a = try SharedNode.wrap(allocator, start, 2);
     const shared_ptr: *SharedNode = @ptrCast(@alignCast(shared_a.ptr));
     const shared_b = shared_ptr.asNode();

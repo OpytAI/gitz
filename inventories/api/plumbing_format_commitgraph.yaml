@@ -7,16 +7,19 @@ require:
     - MemoryIndex
     - FileIndex
     - Encoder
-  functions: []
+  functions:
+    - openChainFile
   semantic:
     - CommitData
     - MemoryIndex
     - FileIndex
     - Encoder
     - ChunkType
+    - OpenChainFile
 zig_map:
   CommitData: CommitData
   MemoryIndex: MemoryIndex
   FileIndex: FileIndex
   Encoder: Encoder
   ChunkType: ChunkType
+  OpenChainFile: openChainFile

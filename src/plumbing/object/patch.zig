@@ -12,6 +12,7 @@ const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
 const Change = change_mod.Change;
 const ChangeEntry = change_mod.ChangeEntry;
+const Changes = change_mod.Changes;
 
 pub const default_context_lines: usize = 3;
 
@@ -36,18 +37,24 @@ pub const Chunk = struct {
 pub const FileSide = struct {
     hash: Hash = plumbing.ZeroHash,
     mode: filemode.FileMode = filemode.Empty,
+    /// Owned path when non-empty (duplicated from the source change entry).
     path: []const u8 = "",
 
     pub fn empty(self: FileSide) bool {
         return !filemode.isFile(self.mode);
     }
 
-    fn fromEntry(ce: ChangeEntry) FileSide {
+    fn deinit(self: *FileSide, allocator: Allocator) void {
+        if (self.path.len > 0) allocator.free(self.path);
+        self.* = .{};
+    }
+
+    fn fromEntry(allocator: Allocator, ce: ChangeEntry) Allocator.Error!FileSide {
         if (!filemode.isFile(ce.tree_entry.mode)) return .{};
         return .{
             .hash = ce.tree_entry.hash,
             .mode = ce.tree_entry.mode,
-            .path = ce.name,
+            .path = if (ce.name.len > 0) try allocator.dupe(u8, ce.name) else "",
         };
     }
 };
@@ -66,6 +73,8 @@ pub const FilePatch = struct {
     pub fn deinit(self: *FilePatch, allocator: Allocator) void {
         for (self.chunks) |ch| ch.deinit(allocator);
         if (self.chunks.len > 0) allocator.free(self.chunks);
+        self.from.deinit(allocator);
+        self.to.deinit(allocator);
         self.* = .{};
     }
 };
@@ -128,7 +137,7 @@ pub const FileStats = struct {
     }
 };
 
-/// go-git `getPatch` / `Changes.Patch`.
+/// go-git `getPatch` / `Changes.Patch` over a list of change pointers.
 pub fn getPatch(allocator: Allocator, message: []const u8, changes: []const *const Change) PatchError!Patch {
     var fps: std.ArrayList(FilePatch) = .empty;
     errdefer {
@@ -147,6 +156,25 @@ pub fn getPatch(allocator: Allocator, message: []const u8, changes: []const *con
     };
 }
 
+/// go-git `Changes.Patch` — build a `Patch` from a `Changes` list.
+pub fn getPatchFromChanges(allocator: Allocator, message: []const u8, changes: *const Changes) PatchError!Patch {
+    var fps: std.ArrayList(FilePatch) = .empty;
+    errdefer {
+        for (fps.items) |*fp| fp.deinit(allocator);
+        fps.deinit(allocator);
+    }
+
+    for (changes.items) |c| {
+        try fps.append(allocator, try filePatch(allocator, c));
+    }
+
+    return .{
+        .message = if (message.len > 0) try allocator.dupe(u8, message) else "",
+        .file_patches = try fps.toOwnedSlice(allocator),
+        .allocator = allocator,
+    };
+}
+
 /// go-git `(*Change).Patch`.
 pub fn changePatch(allocator: Allocator, c: *const Change) PatchError!Patch {
     return getPatch(allocator, "", &[_]*const Change{c});
@@ -154,8 +182,10 @@ pub fn changePatch(allocator: Allocator, c: *const Change) PatchError!Patch {
 
 fn filePatch(allocator: Allocator, c: *const Change) PatchError!FilePatch {
     const sides = try c.files();
-    const from_side = FileSide.fromEntry(c.from);
-    const to_side = FileSide.fromEntry(c.to);
+    var from_side = try FileSide.fromEntry(allocator, c.from);
+    errdefer from_side.deinit(allocator);
+    var to_side = try FileSide.fromEntry(allocator, c.to);
+    errdefer to_side.deinit(allocator);
 
     var from_owned: ?[]u8 = null;
     var to_owned: ?[]u8 = null;

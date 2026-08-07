@@ -102,6 +102,12 @@ pub const Signature = struct {
         return std.fmt.bufPrint(buf, "{s} <{s}>", .{ self.name, self.email });
     }
 
+    /// Format `When` with go-git `DateFormat` in the recorded timezone.
+    /// Writes into `buf` (needs ≥32 bytes). Returns the formatted slice.
+    pub fn formatWhen(self: *const Signature, buf: []u8) ![]const u8 {
+        return formatDateTime(self.when, self.tz_offset_minutes, buf);
+    }
+
     /// Structural equality (go-git field compare).
     pub fn eql(a: Signature, b: Signature) bool {
         return std.mem.eql(u8, a.name, b.name) and
@@ -153,6 +159,45 @@ fn formatTzOffset(offset_minutes: i16, buf: *[5]u8) []const u8 {
     buf[3] = '0' + @as(u8, @intCast((mins / 10) % 10));
     buf[4] = '0' + @as(u8, @intCast(mins % 10));
     return buf[0..5];
+}
+
+const weekday_names = [_][]const u8{ "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+const month_names = [_][]const u8{ "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+
+/// go-git `time.Time.Format(DateFormat)` for unix `when` + offset minutes.
+/// Layout: `Mon Jan 02 15:04:05 2006 -0700`.
+///
+/// Buffer must hold at least 32 bytes.
+pub fn formatDateTime(when: i64, tz_offset_minutes: i16, buf: []u8) error{NoSpaceLeft}![]const u8 {
+    const offset_secs: i64 = @as(i64, tz_offset_minutes) * 60;
+    const local = when + offset_secs;
+    var tz_buf: [5]u8 = undefined;
+    const tz = formatTzOffset(tz_offset_minutes, &tz_buf);
+
+    if (local < 0) {
+        return std.fmt.bufPrint(buf, "Thu Jan 01 00:00:00 1970 {s}", .{tz});
+    }
+
+    const es = std.time.epoch.EpochSeconds{ .secs = @intCast(local) };
+    const day_secs = es.getDaySeconds();
+    const epoch_day = es.getEpochDay();
+    const year_day = epoch_day.calculateYearDay();
+    const month_day = year_day.calculateMonthDay();
+
+    // 1970-01-01 was Thursday; Go `time.Weekday` Sunday=0.
+    const weekday: usize = @intCast(@mod(@as(i64, @intCast(epoch_day.day)) + 4, 7));
+    const month_idx: usize = @intFromEnum(month_day.month) - 1;
+
+    return std.fmt.bufPrint(buf, "{s} {s} {d:0>2} {d:0>2}:{d:0>2}:{d:0>2} {d} {s}", .{
+        weekday_names[weekday],
+        month_names[month_idx],
+        month_day.day_index + 1,
+        day_secs.getHoursIntoDay(),
+        day_secs.getMinutesIntoHour(),
+        day_secs.getSecondsIntoMinute(),
+        year_day.year,
+        tz,
+    });
 }
 
 // ---------------------------------------------------------------------------

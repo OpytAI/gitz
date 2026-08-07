@@ -11,6 +11,9 @@
 //! | `Index` | `MemoryIndex` / `FileIndex` methods |
 //! | `MemoryIndex` | `MemoryIndex` |
 //! | `OpenFileIndex` | `FileIndex.open` / `FileIndex.openReader` |
+//! | `OpenFileIndexWithParent` | `FileIndex.openWithParent` |
+//! | `OpenChainFile` | `openChainFile` |
+//! | chain index (no billy) | `FileIndex.openChainIndexFromBytes` |
 //! | `Encoder` / `NewEncoder` | `Encoder` / `Encoder.init` |
 //! | `ChunkType` | `ChunkType` |
 
@@ -20,6 +23,7 @@ const chunk_mod = @import("chunk.zig");
 const memory_mod = @import("memory.zig");
 const file_mod = @import("file.zig");
 const encoder_mod = @import("encoder.zig");
+const chain_mod = @import("chain.zig");
 
 // --- Errors ---
 pub const Error = error_mod.Error;
@@ -49,6 +53,9 @@ pub const sz_chunk_sig = chunk_mod.sz_chunk_sig;
 pub const MemoryIndex = memory_mod.MemoryIndex;
 pub const FileIndex = file_mod.FileIndex;
 
+// --- Chain file ---
+pub const openChainFile = chain_mod.openChainFile;
+
 // --- Encoder ---
 pub const Encoder = encoder_mod.Encoder;
 
@@ -59,4 +66,5 @@ test {
     _ = @import("memory.zig");
     _ = @import("file.zig");
     _ = @import("encoder.zig");
+    _ = @import("chain.zig");
 }

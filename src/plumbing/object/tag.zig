@@ -286,6 +286,75 @@ pub fn decodeTagOnly(allocator: Allocator, o: *MemoryObject) (Error || Allocator
 }
 
 // ---------------------------------------------------------------------------
+// TagIter (go-git NewTagIter)
+// ---------------------------------------------------------------------------
+
+/// Iterator over tag objects from an encoded-object iterator (go-git `TagIter`).
+///
+/// Non-tag objects are skipped (matches go-git comment / BlobIter pattern).
+pub const TagIter = struct {
+    allocator: Allocator,
+    storage: ObjectGetter,
+    encoded_iter: storer.EncodedObjectIter,
+
+    /// go-git `NewTagIter`.
+    pub fn init(allocator: Allocator, s: ObjectGetter, iter: storer.EncodedObjectIter) TagIter {
+        return .{
+            .allocator = allocator,
+            .storage = s,
+            .encoded_iter = iter,
+        };
+    }
+
+    /// Next tag or `error.EndOfStream`. Caller owns the returned `Tag` (`deinit`).
+    pub fn next(self: *TagIter) anyerror!Tag {
+        while (true) {
+            const obj = try self.encoded_iter.next();
+            if (obj.object_type != .tag) continue;
+            var t = Tag.init(self.allocator);
+            errdefer t.deinit();
+            t.storage = self.storage;
+            try t.decode(obj);
+            return t;
+        }
+    }
+
+    /// Call `cb(*const Tag)` for each tag; `error.Stop` ends successfully.
+    /// Closes the underlying iterator (go-git `ForEach`).
+    pub fn forEach(self: *TagIter, cb: anytype) !void {
+        defer self.close();
+        while (true) {
+            var t = self.next() catch |err| {
+                if (err == error.EndOfStream) return;
+                return err;
+            };
+            defer t.deinit();
+            @call(.auto, cb, .{&t}) catch |err| {
+                const e: anyerror = err;
+                if (e == error.Stop) return;
+                return e;
+            };
+        }
+    }
+
+    /// go-git `Close`.
+    pub fn close(self: *TagIter) void {
+        self.encoded_iter.close();
+    }
+};
+
+/// Free-function alias for `TagIter.init` (go-git `NewTagIter`).
+///
+/// `s` is `ObjectGetter` or a pointer to a type with `encodedObject`.
+pub fn newTagIter(allocator: Allocator, s: anytype, iter: storer.EncodedObjectIter) TagIter {
+    const getter: ObjectGetter = if (@TypeOf(s) == ObjectGetter)
+        s
+    else
+        ObjectGetter.from(@TypeOf(s.*), s);
+    return TagIter.init(allocator, getter, iter);
+}
+
+// ---------------------------------------------------------------------------
 // Signature field helpers
 // ---------------------------------------------------------------------------
 
@@ -734,6 +803,41 @@ test "Tag encode/decode signed round-trip" {
     try std.testing.expectEqualStrings(tag.pgp_signature, again.pgp_signature);
     try std.testing.expectEqualStrings(tag.name, again.name);
     try std.testing.expectEqualStrings(raw, encoded.readerBytes());
+}
+
+test "TagIter skips non-tags and decodes tags" {
+    const gpa = std.testing.allocator;
+
+    var blob_obj = MemoryObject.init(gpa);
+    defer blob_obj.deinit();
+    blob_obj.setType(.blob);
+    _ = try blob_obj.write("not a tag");
+
+    const tag_raw =
+        \\object c029517f6300c2da0f4b651b8642506cd6aaf45e
+        \\type commit
+        \\tag v1
+        \\
+        \\msg
+        \\
+    ;
+    var tag_obj = MemoryObject.init(gpa);
+    defer tag_obj.deinit();
+    tag_obj.setType(.tag);
+    _ = try tag_obj.write(tag_raw);
+
+    var series = [_]*MemoryObject{ &blob_obj, &tag_obj };
+    var slice_iter = storer.EncodedObjectSliceIter.init(&series);
+    const memory = @import("memory");
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    var iter = newTagIter(gpa, &store, slice_iter.asIter());
+
+    var tag = try iter.next();
+    defer tag.deinit();
+    try std.testing.expectEqualStrings("v1", tag.name);
+    try std.testing.expectEqualStrings("msg\n", tag.message);
+    try std.testing.expectError(error.EndOfStream, iter.next());
 }
 
 test "Tag decode clears existing state" {

@@ -24,9 +24,20 @@ fn freeOwned(allocator: Allocator, s: []const u8) void {
 const signature_mod = @import("signature.zig");
 const error_mod = @import("error.zig");
 const openpgp_mod = @import("openpgp.zig");
+const tree_mod = @import("tree.zig");
+const file_mod = @import("file.zig");
+const difftree_mod = @import("difftree.zig");
+const patch_mod = @import("patch.zig");
+const change_mod = @import("change.zig");
 
 /// Re-export package Signature (go-git `object.Signature`).
 pub const Signature = signature_mod.Signature;
+
+const Tree = tree_mod.Tree;
+const File = file_mod.File;
+const FileIter = tree_mod.FileIter;
+const Patch = patch_mod.Patch;
+const FileStats = patch_mod.FileStats;
 
 // ---------------------------------------------------------------------------
 // Constants / types
@@ -168,14 +179,113 @@ pub const Commit = struct {
         return CommitParentIter.init(self);
     }
 
-    /// go-git `Commit.Tree` — load root tree via a tree module.
-    ///
-    /// `TreeMod` must export `getTree(allocator, ObjectGetter, Hash) !*Tree`.
-    /// Pass `@import("tree.zig")` (or the package root) once that module exists.
-    /// Comptime-parameterised so this file compiles without `tree.zig` present.
-    pub fn tree(self: *const Commit, comptime TreeMod: type) anyerror!*TreeMod.Tree {
+    /// go-git `Commit.Tree` — load root tree. Caller `freeTree` + destroy ownership
+    /// via `tree_mod.freeTree(allocator, t)`.
+    pub fn tree(self: *const Commit) anyerror!*Tree {
         const s = self.storer orelse return error.ObjectNotFound;
-        return TreeMod.getTree(self.allocator, s, self.tree_hash);
+        return tree_mod.getTree(self.allocator, s, self.tree_hash);
+    }
+
+    /// go-git `Commit.File` — file at `path` in this commit's tree.
+    pub fn file(self: *const Commit, path: []const u8) anyerror!File {
+        const t = try self.tree();
+        defer tree_mod.freeTree(self.allocator, t);
+        return t.file(path);
+    }
+
+    /// go-git `Commit.Files` — recursive file iterator. Owns the root tree;
+    /// call `close` (or `forEach`) to free it.
+    pub fn files(self: *const Commit) anyerror!FileIter {
+        const t = try self.tree();
+        errdefer tree_mod.freeTree(self.allocator, t);
+        var iter = try t.files();
+        iter.owned_root = t;
+        return iter;
+    }
+
+    /// go-git `Commit.Patch` — diff this commit's tree against `to` (or empty
+    /// when `to` is null). Uses default rename detection like go-git 5.1+.
+    pub fn patch(self: *const Commit, allocator: Allocator, to: ?*const Commit) anyerror!Patch {
+        const from_tree = try self.tree();
+        defer tree_mod.freeTree(self.allocator, from_tree);
+
+        var to_tree: ?*Tree = null;
+        defer if (to_tree) |tt| tree_mod.freeTree(self.allocator, tt);
+        if (to) |other| {
+            to_tree = try other.tree();
+        }
+
+        var changes = try difftree_mod.diffTreeWithOptions(
+            allocator,
+            from_tree,
+            to_tree,
+            change_mod.DiffTreeOptions.default,
+        );
+        defer changes.deinit();
+
+        return patch_mod.getPatchFromChanges(allocator, "", &changes);
+    }
+
+    /// go-git `Commit.Stats` / `StatsContext` — line stats vs first parent, or
+    /// vs empty tree when there are no parents.
+    ///
+    /// Direction matches go-git: `parentTree.Patch(commitTree)` so additions
+    /// in this commit appear as inserts.
+    pub fn stats(self: *const Commit, allocator: Allocator) anyerror!FileStats {
+        const from_tree = try self.tree();
+        defer tree_mod.freeTree(self.allocator, from_tree);
+
+        var empty_tree = Tree.init(self.allocator, null);
+        defer empty_tree.deinit();
+
+        var parent_tree: ?*Tree = null;
+        defer if (parent_tree) |pt| tree_mod.freeTree(self.allocator, pt);
+
+        const to_tree: *Tree = blk: {
+            if (self.numParents() == 0) break :blk &empty_tree;
+            const first = try self.parent(0);
+            defer {
+                first.deinit();
+                self.allocator.destroy(first);
+            }
+            parent_tree = try first.tree();
+            break :blk parent_tree.?;
+        };
+
+        // go-git: toTree.PatchContext(ctx, fromTree) with fromTree=commit, toTree=parent.
+        var changes = try difftree_mod.diffTreeWithOptions(
+            allocator,
+            to_tree,
+            from_tree,
+            change_mod.DiffTreeOptions.default,
+        );
+        defer changes.deinit();
+
+        var p = try patch_mod.getPatchFromChanges(allocator, "", &changes);
+        defer p.deinit();
+        return p.stats();
+    }
+
+    /// go-git `Commit.String` — pretty-print like `git log` one-line summary block.
+    /// Caller frees the returned slice with `allocator`.
+    pub fn format(self: *const Commit, allocator: Allocator) (Allocator.Error || Writer.Error || error{NoSpaceLeft})![]u8 {
+        var hex: [HexSize]u8 = undefined;
+        var date_buf: [40]u8 = undefined;
+        const date = try self.author.formatWhen(&date_buf);
+
+        var aw: Writer.Allocating = .init(allocator);
+        errdefer aw.deinit();
+        const w = &aw.writer;
+
+        try w.print("commit {s}\nAuthor: {s} <{s}>\nDate:   {s}\n\n", .{
+            self.hash.string(&hex),
+            self.author.name,
+            self.author.email,
+            date,
+        });
+        try writeIndentedMessage(w, self.message);
+        try w.writeAll("\n");
+        return try aw.toOwnedSlice();
     }
 
     /// go-git `Commit.Decode`.
@@ -303,6 +413,20 @@ fn writeContinued(w: *Writer, text: []const u8) Writer.Error!void {
         if (!first) try w.writeAll("\n ");
         first = false;
         try w.writeAll(line);
+    }
+}
+
+/// go-git `indent` for `Commit.String` — 4 spaces before each non-empty line.
+fn writeIndentedMessage(w: *Writer, message: []const u8) Writer.Error!void {
+    var first = true;
+    var it = std.mem.splitScalar(u8, message, '\n');
+    while (it.next()) |line| {
+        if (!first) try w.writeAll("\n");
+        first = false;
+        if (line.len != 0) {
+            try w.writeAll("    ");
+            try w.writeAll(line);
+        }
     }
 }
 
@@ -1030,6 +1154,162 @@ test "commit construct and encode with multi-parent" {
     try std.testing.expectEqualStrings("Foo", decoded.author.name);
     try std.testing.expectEqualStrings("Bar", decoded.committer.name);
     try std.testing.expectEqualStrings("Message\n", decoded.message);
+}
+
+test "commit.file via memory store with tree" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+    const filemode = @import("filemode");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+
+    const blob_obj = try store.newEncodedObject();
+    blob_obj.setType(.blob);
+    try blob_obj.setContent("hello-content");
+    const blob_h = try store.setEncodedObject(blob_obj);
+
+    var tree = tree_mod.Tree.init(gpa, ObjectGetter.from(@TypeOf(store), &store));
+    defer tree.deinit();
+    try tree.appendEntry("hello.txt", filemode.Regular, blob_h);
+    tree.sortEntries();
+    const tree_obj = try store.newEncodedObject();
+    try tree.encode(tree_obj);
+    const tree_h = try store.setEncodedObject(tree_obj);
+
+    var hex: [HexSize]u8 = undefined;
+    var body: Writer.Allocating = .init(gpa);
+    defer body.deinit();
+    try body.writer.print(
+        \\tree {s}
+        \\author John Doe <john.doe@example.com> 1755280730 -0700
+        \\committer John Doe <john.doe@example.com> 1755280730 -0700
+        \\
+        \\with file
+    , .{tree_h.string(&hex)});
+
+    var commit_obj = try store.newEncodedObject();
+    commit_obj.setType(.commit);
+    try commit_obj.setContent(body.written());
+    const commit_h = try store.setEncodedObject(commit_obj);
+
+    const c = try getCommit(gpa, &store, commit_h);
+    defer {
+        c.deinit();
+        gpa.destroy(c);
+    }
+
+    const f = try c.file("hello.txt");
+    try std.testing.expectEqualStrings("hello.txt", f.name);
+    try std.testing.expectEqualStrings("hello-content", f.blob.readerBytes());
+    try std.testing.expectError(error.FileNotFound, c.file("missing.txt"));
+}
+
+test "commit.patch insert between empty and file tree" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+    const filemode = @import("filemode");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const getter = ObjectGetter.from(@TypeOf(store), &store);
+
+    // Empty tree commit.
+    var empty_tree = tree_mod.Tree.init(gpa, getter);
+    defer empty_tree.deinit();
+    empty_tree.sortEntries();
+    const empty_tree_obj = try store.newEncodedObject();
+    try empty_tree.encode(empty_tree_obj);
+    const empty_tree_h = try store.setEncodedObject(empty_tree_obj);
+
+    var empty_hex: [HexSize]u8 = undefined;
+    var empty_body: Writer.Allocating = .init(gpa);
+    defer empty_body.deinit();
+    try empty_body.writer.print(
+        \\tree {s}
+        \\author A <a@e> 1000 +0000
+        \\committer A <a@e> 1000 +0000
+        \\
+        \\empty
+    , .{empty_tree_h.string(&empty_hex)});
+    var empty_commit_obj = try store.newEncodedObject();
+    empty_commit_obj.setType(.commit);
+    try empty_commit_obj.setContent(empty_body.written());
+    const empty_commit_h = try store.setEncodedObject(empty_commit_obj);
+
+    // Commit with one file.
+    const blob_obj = try store.newEncodedObject();
+    blob_obj.setType(.blob);
+    try blob_obj.setContent("line1\n");
+    const blob_h = try store.setEncodedObject(blob_obj);
+
+    var file_tree = tree_mod.Tree.init(gpa, getter);
+    defer file_tree.deinit();
+    try file_tree.appendEntry("new.txt", filemode.Regular, blob_h);
+    file_tree.sortEntries();
+    const file_tree_obj = try store.newEncodedObject();
+    try file_tree.encode(file_tree_obj);
+    const file_tree_h = try store.setEncodedObject(file_tree_obj);
+
+    var file_hex: [HexSize]u8 = undefined;
+    var file_body: Writer.Allocating = .init(gpa);
+    defer file_body.deinit();
+    try file_body.writer.print(
+        \\tree {s}
+        \\author A <a@e> 2000 +0000
+        \\committer A <a@e> 2000 +0000
+        \\
+        \\add file
+    , .{file_tree_h.string(&file_hex)});
+    var file_commit_obj = try store.newEncodedObject();
+    file_commit_obj.setType(.commit);
+    try file_commit_obj.setContent(file_body.written());
+    const file_commit_h = try store.setEncodedObject(file_commit_obj);
+
+    const empty_c = try getCommit(gpa, &store, empty_commit_h);
+    defer {
+        empty_c.deinit();
+        gpa.destroy(empty_c);
+    }
+    const file_c = try getCommit(gpa, &store, file_commit_h);
+    defer {
+        file_c.deinit();
+        gpa.destroy(file_c);
+    }
+
+    // Diff empty → file tree: insert.
+    var p = try empty_c.patch(gpa, file_c);
+    defer p.deinit();
+    try std.testing.expectEqual(@as(usize, 1), p.file_patches.len);
+    try std.testing.expect(p.file_patches[0].from.empty());
+    try std.testing.expect(!p.file_patches[0].to.empty());
+    try std.testing.expectEqualStrings("new.txt", p.file_patches[0].to.path);
+
+    const s = try p.string();
+    defer gpa.free(s);
+    try std.testing.expect(std.mem.indexOf(u8, s, "new file mode") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "+line1") != null);
+}
+
+test "commit.format contains author and indented message" {
+    const gpa = std.testing.allocator;
+    var commit = Commit.init(gpa);
+    defer commit.deinit();
+    commit.hash = plumbing.newHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    commit.author = .{
+        .name = try gpa.dupe(u8, "John Doe"),
+        .email = try gpa.dupe(u8, "john.doe@example.com"),
+        .when = 1755280730,
+        .tz_offset_minutes = -7 * 60,
+        .owned = true,
+    };
+    commit.message = try gpa.dupe(u8, "initial commit");
+
+    const text = try commit.format(gpa);
+    defer gpa.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "Author: John Doe <john.doe@example.com>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "    initial commit") != null);
 }
 
 // go-git SuiteCommit.TestVerify fixture (Ed25519 key + detached sig).

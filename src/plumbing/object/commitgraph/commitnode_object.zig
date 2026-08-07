@@ -175,6 +175,7 @@ pub const ObjectCommitNode = struct {
 const object_node_vtable = CommitNode.VTable{
     .id = objectNodeId,
     .commit_time_sec = objectNodeCommitTimeSec,
+    .author_time_sec = objectNodeAuthorTimeSec,
     .num_parents = objectNodeNumParents,
     .parent_node = objectNodeParentNode,
     .parent_hashes = objectNodeParentHashes,
@@ -193,6 +194,11 @@ fn objectNodeId(ptr: *anyopaque) Hash {
 fn objectNodeCommitTimeSec(ptr: *anyopaque) i64 {
     const self: *ObjectCommitNode = @ptrCast(@alignCast(ptr));
     return self.commitTimeSec();
+}
+
+fn objectNodeAuthorTimeSec(ptr: *anyopaque) i64 {
+    const self: *ObjectCommitNode = @ptrCast(@alignCast(ptr));
+    return self.commit.author.when;
 }
 
 fn objectNodeNumParents(ptr: *anyopaque) usize {

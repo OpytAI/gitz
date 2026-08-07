@@ -26,6 +26,8 @@ pub const CommitNode = struct {
     pub const VTable = struct {
         id: *const fn (ptr: *anyopaque) Hash,
         commit_time_sec: *const fn (ptr: *anyopaque) i64,
+        /// Author time (unix sec). May load a full commit on graph backends.
+        author_time_sec: *const fn (ptr: *anyopaque) i64,
         num_parents: *const fn (ptr: *anyopaque) usize,
         parent_node: *const fn (ptr: *anyopaque, i: usize) anyerror!CommitNode,
         parent_hashes: *const fn (ptr: *anyopaque) []const Hash,
@@ -44,6 +46,11 @@ pub const CommitNode = struct {
     /// Committer time as Unix seconds (go-git `CommitNode.CommitTime`).
     pub fn commitTimeSec(self: CommitNode) i64 {
         return self.vtable.commit_time_sec(self.ptr);
+    }
+
+    /// Author time as Unix seconds (for `--author-order` walks).
+    pub fn authorTimeSec(self: CommitNode) i64 {
+        return self.vtable.author_time_sec(self.ptr);
     }
 
     /// go-git `CommitNode.NumParents`.

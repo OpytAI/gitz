@@ -14,6 +14,7 @@
 //! | `NewCommitNodeIterCTime` | `newCommitNodeIterCTime` |
 //! | `NewCommitNodeIterDateOrder` | `newCommitNodeIterDateOrder` |
 //! | `NewCommitNodeIterTopoOrder` | `newCommitNodeIterTopoOrder` |
+//! | `NewCommitNodeIterAuthorDateOrder` | `newCommitNodeIterAuthorDateOrder` |
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -48,6 +49,7 @@ pub const CommitNodeIterTopological = walker_mod.CommitNodeIterTopological;
 pub const newCommitNodeIterCTime = walker_mod.newCommitNodeIterCTime;
 pub const newCommitNodeIterDateOrder = walker_mod.newCommitNodeIterDateOrder;
 pub const newCommitNodeIterTopoOrder = walker_mod.newCommitNodeIterTopoOrder;
+pub const newCommitNodeIterAuthorDateOrder = walker_mod.newCommitNodeIterAuthorDateOrder;
 pub const generationAndDateOrderCompare = walker_mod.generationAndDateOrderCompare;
 
 test {
@@ -280,6 +282,44 @@ test "CommitNodeIterDateOrder linear history" {
 
     const start = try index.get(h2);
     const iter = try newCommitNodeIterDateOrder(gpa, start, null, &.{});
+    defer iter.close();
+
+    var walked: std.ArrayList(Hash) = .empty;
+    defer walked.deinit(gpa);
+    while (true) {
+        const n = iter.next() catch |err| {
+            if (err == error.EndOfStream) break;
+            return err;
+        };
+        try walked.append(gpa, n.id());
+        n.deinit();
+    }
+    try std.testing.expectEqual(@as(usize, 3), walked.items.len);
+    try std.testing.expect(walked.items[0].eql(h2));
+    try std.testing.expect(walked.items[1].eql(h1));
+    try std.testing.expect(walked.items[2].eql(h0));
+}
+
+test "CommitNodeIterAuthorDateOrder linear history" {
+    const gpa = std.testing.allocator;
+
+    const s = try memory.newStorage(gpa);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+
+    const tree_h = try storeEmptyTree(s);
+    // Author and committer times match in storeCommit helper.
+    const h0 = try storeCommit(gpa, s, tree_h, &.{}, 1000, "root\n");
+    const h1 = try storeCommit(gpa, s, tree_h, &.{h0}, 2000, "mid\n");
+    const h2 = try storeCommit(gpa, s, tree_h, &.{h1}, 3000, "tip\n");
+
+    const index = try newObjectCommitNodeIndex(gpa, Storage, s);
+    defer index.deinit();
+
+    const start = try index.get(h2);
+    const iter = try newCommitNodeIterAuthorDateOrder(gpa, start, null, &.{});
     defer iter.close();
 
     var walked: std.ArrayList(Hash) = .empty;

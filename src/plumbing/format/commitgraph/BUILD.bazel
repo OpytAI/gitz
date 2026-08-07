@@ -8,6 +8,7 @@ _SRCS = [
     "file.zig",
     "encoder.zig",
     "chunk.zig",
+    "chain.zig",
 ]
 
 zig_library(

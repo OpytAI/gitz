@@ -9,6 +9,10 @@ require:
   functions:
     - newObjectCommitNodeIndex
     - newGraphCommitNodeIndex
+    - newCommitNodeIterCTime
+    - newCommitNodeIterDateOrder
+    - newCommitNodeIterTopoOrder
+    - newCommitNodeIterAuthorDateOrder
   semantic:
     - CommitNode
     - CommitNodeIndex
@@ -20,3 +24,7 @@ zig_map:
   CommitNodeIter: CommitNodeIter
   NewObjectCommitNodeIndex: newObjectCommitNodeIndex
   NewGraphCommitNodeIndex: newGraphCommitNodeIndex
+  NewCommitNodeIterCTime: newCommitNodeIterCTime
+  NewCommitNodeIterDateOrder: newCommitNodeIterDateOrder
+  NewCommitNodeIterTopoOrder: newCommitNodeIterTopoOrder
+  NewCommitNodeIterAuthorDateOrder: newCommitNodeIterAuthorDateOrder
