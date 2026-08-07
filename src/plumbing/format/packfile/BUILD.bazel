@@ -1,18 +1,28 @@
 load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
 
 # go-git plumbing/format/packfile — pack read path (encoder deferred phase 5).
+# Fixture embeds (*.pack / *.idx as .zig) are package-local for unit tests;
+# human-owned binaries live under data/fixtures/packfile/.
+_SRCS = [
+    "error.zig",
+    "common.zig",
+    "scanner.zig",
+    "patch_delta.zig",
+    "parser.zig",
+    "packfile.zig",
+    "basic_pack.zig",
+    "ref_delta_pack.zig",
+    "ref_delta_idx.zig",
+    "delta_before_base_pack.zig",
+    "thinpack_pack.zig",
+    "codecommit_pack.zig",
+    "thin_pack_tests.zig",
+]
+
 zig_library(
     name = "packfile",
     main = "root.zig",
-    srcs = [
-        "error.zig",
-        "common.zig",
-        "scanner.zig",
-        "patch_delta.zig",
-        "parser.zig",
-        "packfile.zig",
-        "basic_pack.zig",
-    ],
+    srcs = _SRCS,
     visibility = ["//visibility:public"],
     deps = [
         "//src/plumbing",
@@ -25,17 +35,10 @@ zig_library(
 
 zig_test(
     name = "packfile_test",
-    size = "small",
+    # Deep delta-chain tests build ~4k objects; allow medium timeout.
+    size = "medium",
     main = "root.zig",
-    srcs = [
-        "error.zig",
-        "common.zig",
-        "scanner.zig",
-        "patch_delta.zig",
-        "parser.zig",
-        "packfile.zig",
-        "basic_pack.zig",
-    ],
+    srcs = _SRCS,
     deps = [
         "//src/plumbing",
         "//src/plumbing/format/idxfile",

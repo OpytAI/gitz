@@ -6,6 +6,9 @@
 //! Construction is in-memory only for this phase: pass the full pack image
 //! bytes. The internal scanner is always `Scanner.initSeekable` so CRC and
 //! pack SHA-1 follow the accurate mem hashing path (no streaming-tee drift).
+//!
+//! Also: `getAll` / `getByType` iterators and `getSizeByOffset` (inflated size
+//! without always materializing non-delta objects).
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -26,16 +29,17 @@ const Scanner = scanner_mod.Scanner;
 const ObjectHeader = scanner_mod.ObjectHeader;
 const Error = pack_error.Error;
 const MemoryIndex = idxfile.MemoryIndex;
+const OffsetEntryIterator = idxfile.OffsetEntryIterator;
 
 const HashKey = [Size]u8;
 
 /// Explicit error set for Get (avoids inferred-error dependency cycles).
-const GetError = Error || Allocator.Error || std.Io.Reader.Error || std.Io.Writer.Error || error{IntegerOverflow};
+const GetError = Error || idxfile.Error || Allocator.Error || std.Io.Reader.Error || std.Io.Writer.Error || error{ IntegerOverflow, InvalidType };
 
 /// Random-access reader over a pack image + idx (go-git `Packfile`).
 ///
-/// Objects from `get` / `getByOffset` are owned by this Packfile's cache and
-/// freed in `close`. Do not `deinit` returned pointers.
+/// Objects from `get` / `getByOffset` / iterators are owned by this Packfile's
+/// cache and freed in `close`. Do not `deinit` returned pointers.
 ///
 /// Call `init` on a stable `*Packfile` address (the scanner references the
 /// pack image slice stored on the same struct).
@@ -47,6 +51,8 @@ pub const Packfile = struct {
     scanner: Scanner,
     /// Resolved objects keyed by hash (go-git `deltaBaseCache`).
     cache: std.AutoHashMapUnmanaged(HashKey, *MemoryObject) = .empty,
+    /// Resolved type at pack offset (go-git `offsetToType`).
+    offset_to_type: std.AutoHashMapUnmanaged(i64, ObjectType) = .empty,
 
     /// go-git `NewPackfile` / `NewPackfileWithCache` with `fs == nil`.
     ///
@@ -72,6 +78,7 @@ pub const Packfile = struct {
             self.allocator.destroy(e.value_ptr.*);
         }
         self.cache.deinit(self.allocator);
+        self.offset_to_type.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -85,6 +92,37 @@ pub const Packfile = struct {
     pub fn getByOffset(self: *Packfile, o: i64) GetError!*MemoryObject {
         const h = self.index.findHash(o) catch return error.ObjectNotFound;
         return self.objectAtOffset(o, h);
+    }
+
+    /// go-git `GetSizeByOffset` — inflated object size at pack offset.
+    /// Non-delta: header length. Delta: target size from the delta header (LEB128)
+    /// after inflate; does not fully materialize the resolved object.
+    pub fn getSizeByOffset(self: *Packfile, o: i64) GetError!i64 {
+        const h = self.objectHeaderAtOffset(o) catch |err| switch (err) {
+            error.EndOfStream, error.SeekNotSupported => return error.ObjectNotFound,
+            else => |e| return e,
+        };
+        return self.getObjectSize(&h);
+    }
+
+    /// go-git `GetAll` — iterator over every object in offset order.
+    pub fn getAll(self: *Packfile) GetError!ObjectIterator {
+        return self.getByType(.any);
+    }
+
+    /// go-git `GetByType` — objects of `typ` (`.any` = all). Invalid types error.
+    pub fn getByType(self: *Packfile, typ: ObjectType) GetError!ObjectIterator {
+        switch (typ) {
+            .any, .blob, .tree, .commit, .tag => {
+                const entries = try self.index.entriesByOffset();
+                return .{
+                    .p = self,
+                    .typ = typ,
+                    .iter = entries,
+                };
+            },
+            else => return error.InvalidType,
+        }
     }
 
     /// go-git `ID` — pack checksum (last 20 bytes of the pack image).
@@ -111,6 +149,45 @@ pub const Packfile = struct {
         return self.scanner.seekObjectHeader(offset);
     }
 
+    fn getObjectSize(self: *Packfile, h: *const ObjectHeader) GetError!i64 {
+        switch (h.object_type) {
+            .commit, .tree, .blob, .tag => return h.length,
+            .ref_delta, .ofs_delta => {
+                var aw: std.Io.Writer.Allocating = .init(self.allocator);
+                defer aw.deinit();
+                _ = try self.scanner.nextObject(&aw.writer);
+                return getDeltaObjectSize(aw.written());
+            },
+            else => return error.InvalidObject,
+        }
+    }
+
+    /// Resolve the non-delta type of the object described by `h` (go-git `getObjectType`).
+    fn getObjectType(self: *Packfile, h: ObjectHeader) GetError!ObjectType {
+        var header = h;
+        const typ: ObjectType = switch (header.object_type) {
+            .commit, .tree, .blob, .tag => return header.object_type,
+            .ref_delta, .ofs_delta => blk: {
+                const base_offset: i64 = if (header.object_type == .ref_delta)
+                    (self.index.findOffset(header.reference) catch return error.ObjectNotFound)
+                else
+                    header.offset_reference;
+
+                if (self.offset_to_type.get(base_offset)) |base_typ| {
+                    break :blk base_typ;
+                } else {
+                    // go-git reassigns `h` to the base header before recurse.
+                    header = try self.objectHeaderAtOffset(base_offset);
+                    break :blk try self.getObjectType(header);
+                }
+            },
+            else => return error.InvalidObject,
+        };
+        // go-git: `p.offsetToType[h.Offset] = typ` (after reassignment, may be base).
+        try self.offset_to_type.put(self.allocator, header.offset, typ);
+        return typ;
+    }
+
     fn getNextMemoryObject(self: *Packfile, h: *const ObjectHeader) GetError!*MemoryObject {
         const obj = try self.allocator.create(MemoryObject);
         errdefer {
@@ -128,7 +205,9 @@ pub const Packfile = struct {
             else => return error.InvalidObject,
         }
 
-        self.cachePut(obj);
+        try self.cachePut(obj);
+        // Type map for GetByType filters (resolved final type).
+        self.offset_to_type.put(self.allocator, h.offset, obj.object_type) catch {};
         return obj;
     }
 
@@ -177,14 +256,79 @@ pub const Packfile = struct {
         return self.cache.get(h.bytes);
     }
 
-    fn cachePut(self: *Packfile, obj: *MemoryObject) void {
+    /// Insert `obj` into the cache. Propagates OOM so callers never return
+    /// an untracked heap object after a failed insert.
+    fn cachePut(self: *Packfile, obj: *MemoryObject) GetError!void {
         const h = obj.hash();
         if (h.isZero()) return;
-        const gop = self.cache.getOrPut(self.allocator, h.bytes) catch return;
+        const gop = try self.cache.getOrPut(self.allocator, h.bytes);
         if (gop.found_existing) return;
         gop.value_ptr.* = obj;
     }
 };
+
+/// go-git `objectIter` — walks index entries by offset, optionally type-filtered.
+///
+/// Not thread-safe; use on the same thread as the parent `Packfile`.
+/// Returned objects are owned by the Packfile cache — do not free them.
+pub const ObjectIterator = struct {
+    p: *Packfile,
+    typ: ObjectType,
+    iter: OffsetEntryIterator,
+
+    /// Next matching object, or `null` at end (go-git returns `io.EOF`).
+    pub fn next(self: *ObjectIterator) GetError!?*MemoryObject {
+        while (true) {
+            const e = self.iter.next() orelse return null;
+            const offset: i64 = @intCast(e.offset);
+
+            if (self.typ != .any) {
+                if (self.p.offset_to_type.get(offset)) |cached_typ| {
+                    if (cached_typ != self.typ) continue;
+                } else if (self.p.cacheGet(e.hash)) |obj| {
+                    if (obj.object_type != self.typ) {
+                        try self.p.offset_to_type.put(self.p.allocator, offset, obj.object_type);
+                        continue;
+                    }
+                    return obj;
+                } else {
+                    const h = try self.p.objectHeaderAtOffset(offset);
+                    if (h.object_type == .ref_delta or h.object_type == .ofs_delta) {
+                        const resolved = try self.p.getObjectType(h);
+                        if (resolved != self.typ) {
+                            try self.p.offset_to_type.put(self.p.allocator, offset, resolved);
+                            continue;
+                        }
+                        // getObjectType seeks; cannot use getNextMemoryObject safely.
+                        return try self.p.objectAtOffset(offset, e.hash);
+                    } else {
+                        if (h.object_type != self.typ) {
+                            try self.p.offset_to_type.put(self.p.allocator, offset, h.object_type);
+                            continue;
+                        }
+                        return try self.p.getNextMemoryObject(&h);
+                    }
+                }
+            }
+
+            return try self.p.objectAtOffset(offset, e.hash);
+        }
+    }
+
+    /// go-git `Close` — free the sorted entry list from `entriesByOffset`.
+    pub fn deinit(self: *ObjectIterator) void {
+        self.iter.deinit();
+        self.* = undefined;
+    }
+};
+
+/// Target size from a pack delta payload (skip src LEB128, read target LEB128).
+/// go-git `getDeltaObjectSize`.
+fn getDeltaObjectSize(delta: []const u8) GetError!i64 {
+    const after_src = try patch_delta.decodeLEB128(delta);
+    const target = try patch_delta.decodeLEB128(after_src.rest);
+    return @intCast(target.num);
+}
 
 // ---------------------------------------------------------------------------
 // Tests — go-git packfile_test.go (basic pack vectors)
@@ -240,7 +384,7 @@ fn finishTestIndex(w: *idxfile.Writer) !*MemoryIndex {
 
 fn openBasicPackfile(allocator: Allocator, index: *MemoryIndex) Packfile {
     var pf: Packfile = undefined;
-    pf.init(allocator, index, @import("basic_pack.zig").data);
+    pf.init(allocator, index, @import("basic_pack.zig").data());
     return pf;
 }
 
@@ -330,4 +474,154 @@ test "Packfile.get cache returns same MemoryObject pointer" {
     const a = try pf.get(probe);
     const b = try pf.get(probe);
     try std.testing.expect(a == b);
+}
+
+// go-git packfile_test.go TestGetAll — 31 objects, every hash in expected_entries.
+test "Packfile.getAll count 31 and hashes match expected_entries" {
+    const allocator = std.testing.allocator;
+    var w = idxfile.Writer.init(allocator);
+    defer w.deinit();
+    const index = try finishTestIndex(&w);
+
+    var pf = openBasicPackfile(allocator, index);
+    defer pf.close();
+
+    var iter = try pf.getAll();
+    defer iter.deinit();
+
+    var count: usize = 0;
+    while (try iter.next()) |obj| {
+        count += 1;
+        const h = obj.hash();
+        var found = false;
+        for (expected_entries) |e| {
+            if (h.eql(plumbing.newHash(e.hex))) {
+                found = true;
+                break;
+            }
+        }
+        try std.testing.expect(found);
+    }
+    try std.testing.expectEqual(@as(usize, 31), count);
+    try std.testing.expectEqual(expected_entries.len, count);
+}
+
+// go-git TestDecodeByType — basic OFS pack: 9 commits (8 base + 1 OFS-delta).
+// Header inventory: commits at 12,286,449,615,838,1063,1230,1392 + delta@186→12.
+const basic_commit_count: usize = 9;
+
+test "Packfile.getByType commit count matches go-git basic pack" {
+    const allocator = std.testing.allocator;
+    var w = idxfile.Writer.init(allocator);
+    defer w.deinit();
+    const index = try finishTestIndex(&w);
+
+    var pf = openBasicPackfile(allocator, index);
+    defer pf.close();
+
+    var iter = try pf.getByType(.commit);
+    defer iter.deinit();
+
+    var count: usize = 0;
+    while (try iter.next()) |obj| {
+        try std.testing.expect(obj.object_type == .commit);
+        count += 1;
+    }
+    try std.testing.expectEqual(basic_commit_count, count);
+}
+
+test "Packfile.getByType each base type returns only that type" {
+    const allocator = std.testing.allocator;
+    var w = idxfile.Writer.init(allocator);
+    defer w.deinit();
+    const index = try finishTestIndex(&w);
+
+    var pf = openBasicPackfile(allocator, index);
+    defer pf.close();
+
+    const types = [_]ObjectType{ .commit, .tree, .blob, .tag };
+    for (types) |t| {
+        var iter = try pf.getByType(t);
+        while (try iter.next()) |obj| {
+            try std.testing.expect(obj.object_type == t);
+        }
+        iter.deinit();
+    }
+}
+
+test "Packfile.getByType rejects invalid types" {
+    const allocator = std.testing.allocator;
+    var w = idxfile.Writer.init(allocator);
+    defer w.deinit();
+    const index = try finishTestIndex(&w);
+
+    var pf = openBasicPackfile(allocator, index);
+    defer pf.close();
+
+    try std.testing.expectError(error.InvalidType, pf.getByType(.ofs_delta));
+    try std.testing.expectError(error.InvalidType, pf.getByType(.ref_delta));
+    try std.testing.expectError(error.InvalidType, pf.getByType(.invalid));
+}
+
+// go-git-ish size probe: offset 615 is non-delta commit length 333.
+test "Packfile.getSizeByOffset 615 equals 333" {
+    const allocator = std.testing.allocator;
+    var w = idxfile.Writer.init(allocator);
+    defer w.deinit();
+    const index = try finishTestIndex(&w);
+
+    var pf = openBasicPackfile(allocator, index);
+    defer pf.close();
+
+    const size = try pf.getSizeByOffset(basic_probe_offset);
+    try std.testing.expectEqual(@as(i64, 333), size);
+}
+
+// go-git TestSize on ref-delta pack: binary.jpg and fixture Head sizes.
+test "Packfile.getSizeByOffset ref-delta pack blob and commit" {
+    const allocator = std.testing.allocator;
+    var idx = try decodeRefDeltaIndex(allocator);
+    defer idx.deinit();
+
+    var pf: Packfile = undefined;
+    pf.init(allocator, &idx, @import("ref_delta_pack.zig").data());
+    defer pf.close();
+
+    // binary.jpg (non-delta blob).
+    const blob_off = try idx.findOffset(plumbing.newHash("d5c0f4ab811897cadf03aec358ae60d21f91c50d"));
+    try std.testing.expectEqual(@as(i64, 76110), try pf.getSizeByOffset(blob_off));
+
+    // Fixture HEAD (6ecf0ef2…) is REF-delta encoded; inflated size 245.
+    const head_off = try idx.findOffset(plumbing.newHash("6ecf0ef2c2dffb796033e5a02219af86ec6584e5"));
+    try std.testing.expectEqual(@as(i64, 245), try pf.getSizeByOffset(head_off));
+}
+
+// go-git TestDecodeByTypeRefDelta — commits only, count > 0.
+test "Packfile.getByType commit on ref-delta pack" {
+    const allocator = std.testing.allocator;
+    var idx = try decodeRefDeltaIndex(allocator);
+    defer idx.deinit();
+
+    var pf: Packfile = undefined;
+    pf.init(allocator, &idx, @import("ref_delta_pack.zig").data());
+    defer pf.close();
+
+    var iter = try pf.getByType(.commit);
+    defer iter.deinit();
+
+    var count: usize = 0;
+    while (try iter.next()) |obj| {
+        try std.testing.expect(obj.object_type == .commit);
+        count += 1;
+    }
+    try std.testing.expect(count > 0);
+}
+
+fn decodeRefDeltaIndex(allocator: Allocator) !MemoryIndex {
+    var idx = MemoryIndex.init(allocator);
+    errdefer idx.deinit();
+    var r = std.Io.Reader.fixed(@import("ref_delta_idx.zig").data);
+    var d = idxfile.Decoder.init(&r);
+    try d.decode(&idx);
+    return idx;
 }

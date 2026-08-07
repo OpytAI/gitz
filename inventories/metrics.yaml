@@ -23,8 +23,8 @@ api:
 
 goldens:
   # Number of Class A golden case dirs (data/goldens/**/meta.yaml).
-  # Phase 1–2: 11 suites; phase 3 pack-read adds ≥2 (scanner / PatchDelta).
-  min_count: 14
+  # Phase 1–2: 11 suites; phase 3 pack-read adds scanner / PatchDelta / ref-delta.
+  min_count: 15
 
 allowlists:
   # Entries with remove_by_phase <= current_phase must not remain.

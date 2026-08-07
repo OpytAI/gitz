@@ -84,6 +84,113 @@ pub fn applyDelta(
     try target.setContent(out.items);
 }
 
+/// Apply `delta` to `base` and return a new buffer (go-git `ReaderFromDelta`
+/// for a full in-memory delta: same command stream rules as the streaming
+/// path, result fully buffered).
+///
+/// Prefer this over `patchDelta` when callers need ReaderFromDelta semantics
+/// (no min-size empty-src short-circuit; trailing-byte EOF check via reader).
+/// For typical full-buffer deltas both produce the same target bytes.
+///
+/// Caller owns the result and must free with `allocator`.
+pub fn readerFromDelta(allocator: Allocator, base: []const u8, delta: []const u8) (Error || Allocator.Error)![]u8 {
+    var r: std.Io.Reader = .fixed(delta);
+    return applyDeltaFromReader(allocator, base, &r);
+}
+
+/// Stream-apply a git pack delta from `delta_r` onto `base`
+/// (go-git `ReaderFromDelta` core, writing into an allocated buffer instead of
+/// an `io.Pipe`).
+///
+/// Reads LEB128 headers and opcodes via byte-reader helpers matching
+/// `decodeLEB128ByteReader` / `decodeOffsetByteReader` / `decodeSizeByteReader`.
+///
+/// Errors: `error.InvalidDelta` if the stream is corrupt or ends early;
+/// `error.DeltaCmd` if a command is neither copy-from-src nor copy-from-delta;
+/// `error.LengthOverflow` if a LEB128 size does not fit in `usize`.
+///
+/// Caller owns the result and must free with `allocator`.
+pub fn applyDeltaFromReader(
+    allocator: Allocator,
+    base: []const u8,
+    delta_r: *std.Io.Reader,
+) (Error || Allocator.Error)![]u8 {
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(allocator);
+
+    try patchDeltaFromReaderInto(allocator, &out, base, delta_r);
+    return try out.toOwnedSlice(allocator);
+}
+
+/// Core streaming apply loop (go-git `ReaderFromDelta` body, non-pipe form).
+fn patchDeltaFromReaderInto(
+    allocator: Allocator,
+    dst: *std.ArrayList(u8),
+    base: []const u8,
+    delta_r: *std.Io.Reader,
+) (Error || Allocator.Error)!void {
+    const src_sz = decodeLEB128ByteReader(delta_r) catch |e| switch (e) {
+        error.EndOfStream, error.ReadFailed => return error.InvalidDelta,
+        error.LengthOverflow => return error.LengthOverflow,
+    };
+    if (src_sz != base.len) {
+        return error.InvalidDelta;
+    }
+
+    const target_sz = decodeLEB128ByteReader(delta_r) catch |e| switch (e) {
+        error.EndOfStream, error.ReadFailed => return error.InvalidDelta,
+        error.LengthOverflow => return error.LengthOverflow,
+    };
+    var remaining_target_sz = target_sz;
+
+    const grow_sz = @min(target_sz, max_patch_preemption_size);
+    try dst.ensureTotalCapacity(allocator, grow_sz);
+
+    while (remaining_target_sz > 0) {
+        const cmd = delta_r.takeByte() catch |e| switch (e) {
+            error.EndOfStream, error.ReadFailed => return error.InvalidDelta,
+        };
+
+        if (isCopyFromSrc(cmd)) {
+            const offset = decodeOffsetByteReader(cmd, delta_r) catch |e| switch (e) {
+                error.EndOfStream, error.ReadFailed => return error.InvalidDelta,
+            };
+            const sz = decodeSizeByteReader(cmd, delta_r) catch |e| switch (e) {
+                error.EndOfStream, error.ReadFailed => return error.InvalidDelta,
+            };
+
+            if (invalidSize(sz, remaining_target_sz) or
+                invalidOffsetSize(offset, sz, src_sz))
+            {
+                return error.InvalidDelta;
+            }
+            try dst.appendSlice(allocator, base[offset .. offset + sz]);
+            remaining_target_sz -= sz;
+        } else if (isCopyFromDelta(cmd)) {
+            const sz: usize = cmd; // cmd is the size itself
+            if (invalidSize(sz, remaining_target_sz)) {
+                return error.InvalidDelta;
+            }
+            const buf = try dst.addManyAsSlice(allocator, sz);
+            delta_r.readSliceAll(buf) catch |e| switch (e) {
+                error.EndOfStream, error.ReadFailed => return error.InvalidDelta,
+            };
+            remaining_target_sz -= sz;
+        } else {
+            return error.DeltaCmd;
+        }
+    }
+
+    // Mirror upstream: every byte of the delta payload must be consumed.
+    // A successful extra read means trailing junk; only EndOfStream is success.
+    if (delta_r.takeByte()) |_| {
+        return error.InvalidDelta;
+    } else |e| switch (e) {
+        error.EndOfStream => {},
+        error.ReadFailed => return error.InvalidDelta,
+    }
+}
+
 /// Core apply loop (go-git private `patchDelta`).
 fn patchDeltaInto(
     allocator: Allocator,
@@ -158,10 +265,10 @@ fn patchDeltaInto(
 }
 
 /// Decode an unsigned LEB128 at the start of `input`
-/// (go-git `decodeLEB128`).
+/// (go-git `decodeLEB128`). Shared by patch apply and Packfile size-of-delta.
 ///
 /// Returns the number and the remaining slice. Empty input yields `{0, input}`.
-fn decodeLEB128(input: []const u8) Error!struct { num: usize, rest: []const u8 } {
+pub fn decodeLEB128(input: []const u8) Error!struct { num: usize, rest: []const u8 } {
     if (input.len == 0) {
         return .{ .num = 0, .rest = input };
     }
@@ -187,6 +294,28 @@ fn decodeLEB128(input: []const u8) Error!struct { num: usize, rest: []const u8 }
     return .{ .num = num, .rest = input[sz..] };
 }
 
+/// Decode unsigned LEB128 from a byte stream (go-git `decodeLEB128ByteReader`).
+///
+/// Unlike the slice form, a mid-stream EOF is an error (not a truncated value).
+fn decodeLEB128ByteReader(r: *std.Io.Reader) (error{LengthOverflow} || std.Io.Reader.Error)!usize {
+    var num: usize = 0;
+    var sz: usize = 0;
+    while (true) {
+        if (sz * 7 > usize_bits - 7) {
+            return error.LengthOverflow;
+        }
+
+        const b = try r.takeByte();
+        num |= @as(usize, b & payload) << @intCast(sz * 7);
+        sz += 1;
+
+        if ((b & continuation) == 0) {
+            break;
+        }
+    }
+    return num;
+}
+
 fn isCopyFromSrc(cmd: u8) bool {
     return (cmd & continuation) != 0;
 }
@@ -210,6 +339,18 @@ fn decodeOffset(cmd: u8, delta_in: []const u8) Error!struct { num: usize, rest: 
     return .{ .num = offset, .rest = delta };
 }
 
+/// Decode copy offset from cmd flags + following bytes (go-git `decodeOffsetByteReader`).
+fn decodeOffsetByteReader(cmd: u8, r: *std.Io.Reader) std.Io.Reader.Error!usize {
+    var offset: usize = 0;
+    for (offsets) |o| {
+        if ((cmd & o.mask) != 0) {
+            const next = try r.takeByte();
+            offset |= @as(usize, next) << o.shift;
+        }
+    }
+    return offset;
+}
+
 fn decodeSize(cmd: u8, delta_in: []const u8) Error!struct { num: usize, rest: []const u8 } {
     var delta = delta_in;
     var sz: usize = 0;
@@ -226,6 +367,21 @@ fn decodeSize(cmd: u8, delta_in: []const u8) Error!struct { num: usize, rest: []
         sz = max_copy_size;
     }
     return .{ .num = sz, .rest = delta };
+}
+
+/// Decode copy size from cmd flags + following bytes (go-git `decodeSizeByteReader`).
+fn decodeSizeByteReader(cmd: u8, r: *std.Io.Reader) std.Io.Reader.Error!usize {
+    var sz: usize = 0;
+    for (sizes) |s| {
+        if ((cmd & s.mask) != 0) {
+            const next = try r.takeByte();
+            sz |= @as(usize, next) << s.shift;
+        }
+    }
+    if (sz == 0) {
+        sz = max_copy_size;
+    }
+    return sz;
 }
 
 /// Whether `sz` exceeds the remaining target size (go-git `invalidSize`).
@@ -347,6 +503,35 @@ test "decodeLEB128 overflow" {
 
     const result = decodeLEB128(&input);
     try std.testing.expectError(error.LengthOverflow, result);
+}
+
+test "decodeLEB128ByteReader overflow" {
+    // go-git TestDecodeLEB128ByteReaderOverflow: eleven continuation bytes.
+    var input: [11]u8 = undefined;
+    @memset(&input, 0x80);
+    var r: std.Io.Reader = .fixed(&input);
+    try std.testing.expectError(error.LengthOverflow, decodeLEB128ByteReader(&r));
+}
+
+test "decodeLEB128ByteReader vectors" {
+    const Case = struct {
+        input: []const u8,
+        want: usize,
+    };
+    const cases = [_]Case{
+        .{ .input = &[_]u8{ 0x01, 0xFF }, .want = 1 },
+        .{ .input = &[_]u8{ 0x7F, 0xFF }, .want = 127 },
+        .{ .input = &[_]u8{ 0x80, 0x01, 0xFF }, .want = 128 },
+        .{ .input = &[_]u8{ 0xFF, 0x01, 0xFF }, .want = 255 },
+        .{ .input = &[_]u8{ 0x80, 0x80, 0x01, 0xFF }, .want = 16384 },
+        .{ .input = &[_]u8{0x01}, .want = 1 },
+    };
+
+    for (cases) |tc| {
+        var r: std.Io.Reader = .fixed(tc.input);
+        const got = try decodeLEB128ByteReader(&r);
+        try std.testing.expectEqual(tc.want, got);
+    }
 }
 
 test "decodeLEB128 vectors" {
@@ -615,6 +800,199 @@ test "applyDelta invalid base size" {
     defer allocator.free(delta);
 
     try std.testing.expectError(error.InvalidDelta, applyDelta(allocator, &target, &base, delta));
+}
+
+test "readerFromDelta rejects oversized copies" {
+    // go-git TestReaderFromDeltaRejectsOversizedCopies.
+    const allocator = std.testing.allocator;
+    const src = try allocator.alloc(u8, 64);
+    defer allocator.free(src);
+    @memset(src, 'A');
+
+    const op1 = try encodeCopyOperation(allocator, 0, 63);
+    defer allocator.free(op1);
+    const op2 = try encodeCopyOperation(allocator, 0, 63);
+    defer allocator.free(op2);
+    const delta = try buildDelta(allocator, 64, 64, &[_][]const u8{ op1, op2 });
+    defer allocator.free(delta);
+
+    // Streaming path: error surfaces; partial output never exceeds targetSz.
+    {
+        var b: std.ArrayList(u8) = .empty;
+        defer b.deinit(allocator);
+        var r: std.Io.Reader = .fixed(delta);
+        const err = patchDeltaFromReaderInto(allocator, &b, src, &r);
+        try std.testing.expectError(error.InvalidDelta, err);
+        try std.testing.expect(b.items.len <= 64);
+    }
+
+    try std.testing.expectError(error.InvalidDelta, readerFromDelta(allocator, src, delta));
+}
+
+test "readerFromDelta rejects trailing bytes" {
+    const allocator = std.testing.allocator;
+    const src = try allocator.alloc(u8, 64);
+    defer allocator.free(src);
+    @memset(src, 'A');
+
+    const copy = try encodeCopyOperation(allocator, 0, 64);
+    defer allocator.free(copy);
+    const trailing = [_]u8{ 0x00, 0x01, 0x02 };
+    const delta = try buildDelta(allocator, 64, 64, &[_][]const u8{ copy, &trailing });
+    defer allocator.free(delta);
+
+    try std.testing.expectError(error.InvalidDelta, readerFromDelta(allocator, src, delta));
+}
+
+test "readerFromDelta accepts empty target" {
+    const allocator = std.testing.allocator;
+    const src = "hello";
+    const delta = try buildDelta(allocator, src.len, 0, &[_][]const u8{});
+    defer allocator.free(delta);
+
+    const out = try readerFromDelta(allocator, src, delta);
+    defer allocator.free(out);
+    try std.testing.expectEqual(@as(usize, 0), out.len);
+}
+
+test "readerFromDelta pure insert" {
+    // go-git DeltaSuite / fuzz vector via ReaderFromDelta path.
+    const allocator = std.testing.allocator;
+    const src = "some value";
+    const delta = "\n\x0c\x0csomenewvalue";
+    const out = try readerFromDelta(allocator, src, delta);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings("somenewvalue", out);
+}
+
+test "readerFromDelta copy from source" {
+    const allocator = std.testing.allocator;
+    const src = "ABCDEFGH";
+    const copy = try encodeCopyOperation(allocator, 2, 4);
+    defer allocator.free(copy);
+    const delta = try buildDelta(allocator, src.len, 4, &[_][]const u8{copy});
+    defer allocator.free(delta);
+
+    const out = try readerFromDelta(allocator, src, delta);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings("CDEF", out);
+}
+
+test "readerFromDelta copy then insert" {
+    // TestAddDeltaReader-style: mixed ops reconstruct target.
+    const allocator = std.testing.allocator;
+    const src = "hello";
+    const ins = try insertOp(allocator, " world");
+    defer allocator.free(ins);
+    const copy = try encodeCopyOperation(allocator, 0, 5);
+    defer allocator.free(copy);
+    const delta = try buildDelta(allocator, src.len, 11, &[_][]const u8{ copy, ins });
+    defer allocator.free(delta);
+
+    const out = try readerFromDelta(allocator, src, delta);
+    defer allocator.free(out);
+    try std.testing.expectEqualStrings("hello world", out);
+}
+
+test "applyDeltaFromReader same file identity via full copy" {
+    // go-git TestAddDeltaReader "same file" shape without DiffDelta.
+    const allocator = std.testing.allocator;
+    const src = try genBytes(allocator, &[_]GenPiece{
+        .{ .val = "1", .times = 3000 },
+    });
+    defer allocator.free(src);
+
+    const copy = try encodeCopyOperation(allocator, 0, src.len);
+    defer allocator.free(copy);
+    const delta = try buildDelta(allocator, src.len, src.len, &[_][]const u8{copy});
+    defer allocator.free(delta);
+
+    var r: std.Io.Reader = .fixed(delta);
+    const out = try applyDeltaFromReader(allocator, src, &r);
+    defer allocator.free(out);
+    try std.testing.expectEqualSlices(u8, src, out);
+}
+
+test "applyDeltaFromReader distinct file pure insert" {
+    // go-git TestAddDeltaReader "distinct file" shape: all inserts.
+    const allocator = std.testing.allocator;
+    const base = try genBytes(allocator, &[_]GenPiece{
+        .{ .val = "0", .times = 300 },
+    });
+    defer allocator.free(base);
+    const target = try genBytes(allocator, &[_]GenPiece{
+        .{ .val = "2", .times = 200 },
+    });
+    defer allocator.free(target);
+
+    var ops: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (ops.items) |op| allocator.free(op);
+        ops.deinit(allocator);
+    }
+    var off: usize = 0;
+    while (off < target.len) {
+        const n = @min(@as(usize, 127), target.len - off);
+        const op = try insertOp(allocator, target[off .. off + n]);
+        try ops.append(allocator, op);
+        off += n;
+    }
+    const delta = try buildDelta(allocator, base.len, target.len, ops.items);
+    defer allocator.free(delta);
+
+    var r: std.Io.Reader = .fixed(delta);
+    const out = try applyDeltaFromReader(allocator, base, &r);
+    defer allocator.free(out);
+    try std.testing.expectEqualSlices(u8, target, out);
+}
+
+test "applyDeltaFromReader incomplete delta" {
+    const allocator = std.testing.allocator;
+    const src = "ABCDEFGH";
+    const copy = try encodeCopyOperation(allocator, 0, 8);
+    defer allocator.free(copy);
+    const full = try buildDelta(allocator, src.len, 8, &[_][]const u8{copy});
+    defer allocator.free(full);
+    try std.testing.expect(full.len >= 2);
+    const truncated = full[0 .. full.len - 2];
+
+    var r: std.Io.Reader = .fixed(truncated);
+    try std.testing.expectError(error.InvalidDelta, applyDeltaFromReader(allocator, src, &r));
+}
+
+test "applyDeltaFromReader wrong delta command" {
+    const allocator = std.testing.allocator;
+    const src = "AB";
+    const delta = try buildDelta(allocator, src.len, 1, &[_][]const u8{&[_]u8{0x00}});
+    defer allocator.free(delta);
+
+    var r: std.Io.Reader = .fixed(delta);
+    try std.testing.expectError(error.DeltaCmd, applyDeltaFromReader(allocator, src, &r));
+}
+
+test "applyDeltaFromReader max copy size default" {
+    const allocator = std.testing.allocator;
+    const src = try allocator.alloc(u8, max_copy_size);
+    defer allocator.free(src);
+    @memset(src, 'Z');
+
+    const op = [_]u8{0x80};
+    const delta = try buildDelta(allocator, max_copy_size, max_copy_size, &[_][]const u8{&op});
+    defer allocator.free(delta);
+
+    var r: std.Io.Reader = .fixed(delta);
+    const out = try applyDeltaFromReader(allocator, src, &r);
+    defer allocator.free(out);
+    try std.testing.expectEqualSlices(u8, src, out);
+}
+
+test "applyDeltaFromReader LEB128 length overflow in header" {
+    // Streaming path surfaces LengthOverflow from decodeLEB128ByteReader.
+    const allocator = std.testing.allocator;
+    var input: [11]u8 = undefined;
+    @memset(&input, 0x80);
+    var r: std.Io.Reader = .fixed(&input);
+    try std.testing.expectError(error.LengthOverflow, applyDeltaFromReader(allocator, "x", &r));
 }
 
 test "deltaEncodeSizeInto known values" {

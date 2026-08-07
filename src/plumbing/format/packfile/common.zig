@@ -1,7 +1,7 @@
 //! Packfile constants (go-git `plumbing/format/packfile/common.go`).
 //!
-//! Wire-format masks stay package-private (scanner only). Root re-exports
-//! the few constants external callers need.
+//! Wire-format masks are `pub` for sibling modules in this package only.
+//! Package root re-exports only the few values external callers need.
 
 /// Pack signature bytes: `PACK`.
 pub const signature = [_]u8{ 'P', 'A', 'C', 'K' };

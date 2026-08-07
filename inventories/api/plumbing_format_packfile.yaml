@@ -1,7 +1,5 @@
-# API inventory: plumbing/format/packfile (phase 3 — read path)
-# Encoder, DiffDelta, deltaSelector, WritePackfile deferred to phase 5 (not required here).
-# Go NewScanner/NewParser/NewPackfile → Zig *.init; PatchDelta/ApplyDelta → patchDelta/applyDelta.
-# No dual snake_case exports.
+# API inventory: plumbing/format/packfile (phase 3 — full read path)
+# Encoder / DiffDelta / deltaSelector / WritePackfile deferred to phase 5.
 package: plumbing/format/packfile
 phase: 3
 require:
@@ -10,13 +8,16 @@ require:
     - ObjectHeader
     - Parser
     - Observer
+    - ObjectStore
     - Packfile
+    - ObjectIterator
   functions:
     - NewScanner
     - NewParser
     - NewPackfile
     - PatchDelta
     - ApplyDelta
+    - ReaderFromDelta
   constants:
     - VersionSupported
   semantic:
@@ -26,11 +27,15 @@ require:
     - Scanner.header
     - Scanner.nextObjectHeader
     - Scanner.nextObject
+    - Scanner.readObject
     - Scanner.seekObjectHeader
     - Scanner.checksum
+    - Scanner.reset
+    - Scanner.resetSeekable
     - ObjectHeader
     - Parser
     - Parser.init
+    - Parser.initWithStorage
     - Parser.parse
     - Observer
     - ObjectStore
@@ -38,20 +43,31 @@ require:
     - Packfile.init
     - Packfile.get
     - Packfile.getByOffset
+    - Packfile.getAll
+    - Packfile.getByType
+    - Packfile.getSizeByOffset
     - Packfile.id
     - Packfile.close
+    - ObjectIterator
     - patchDelta
     - applyDelta
+    - readerFromDelta
+    - applyDeltaFromReader
     - VersionSupported
+    - signature
+    - max_delta_chain_depth
 zig_map:
   Scanner: Scanner
   ObjectHeader: ObjectHeader
   Parser: Parser
   Observer: Observer
+  ObjectStore: ObjectStore
   Packfile: Packfile
+  ObjectIterator: ObjectIterator
   NewScanner: Scanner.init
   NewParser: Parser.init
   NewPackfile: Packfile.init
   PatchDelta: patchDelta
   ApplyDelta: applyDelta
+  ReaderFromDelta: readerFromDelta
   VersionSupported: VersionSupported

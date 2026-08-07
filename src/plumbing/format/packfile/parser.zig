@@ -37,15 +37,15 @@ const HashKey = [Size]u8;
 // Security prealloc hints (go-git parser.go growHint / objectsHint)
 // ---------------------------------------------------------------------------
 
-/// Non-negative size clamped for buffer grow hints.
-pub fn growHint(n: i64) usize {
+/// Non-negative size clamped for buffer grow hints (package-private).
+fn growHint(n: i64) usize {
     if (n <= 0) return 0;
     if (n > max_object_prealloc_bytes) return max_object_prealloc_bytes;
     return @intCast(n);
 }
 
-/// Non-negative count clamped for slice/map capacity from pack object count.
-pub fn objectsHint(n: u32) usize {
+/// Non-negative count clamped for slice/map capacity (package-private).
+fn objectsHint(n: u32) usize {
     if (n > max_objects_prealloc) return max_objects_prealloc;
     return n;
 }
@@ -376,6 +376,19 @@ pub const Parser = struct {
                     ota = try newBaseObject(self.allocator, oh.offset, oh.length, oh.object_type);
                 },
             }
+            // Free ota if inflate or later steps fail before it is stored in `oi`.
+            errdefer {
+                if (ota.parent) |p| {
+                    var ci: usize = 0;
+                    while (ci < p.children.items.len) {
+                        if (p.children.items[ci] == ota) {
+                            _ = p.children.orderedRemove(ci);
+                        } else ci += 1;
+                    }
+                }
+                ota.children.deinit(self.allocator);
+                self.allocator.destroy(ota);
+            }
 
             // Inflate object content into a buffer (also used for hashing / cache).
             var aw: std.Io.Writer.Allocating = .init(self.allocator);
@@ -385,7 +398,10 @@ pub const Parser = struct {
             const crc = obj_res[1];
             const content = aw.written();
 
-            // Store non-delta base objects when storage is present.
+            // go-git indexObjects: non-delta pack objects → SetEncodedObject when
+            // storage is set. REF/OFS deltas are not stored until resolveObject.
+            // External bases for thin REF-deltas are loaded later via storage.get
+            // in get() (placeholders are not written here).
             if (self.storage != null and !delta) {
                 _ = try self.storage.?.putContent(oh.object_type, content);
             }
@@ -496,21 +512,20 @@ pub const Parser = struct {
             }
         }
 
-        // Non-delta (or external ref) from storage.
+        // Non-delta (or external thin-pack ref) from storage.
+        // go-git: storage.EncodedObject error is returned as-is (ObjectNotFound
+        // when the external base is missing from a thin pack with storage).
+        // External placeholders always enter here when storage is set (Type is Any).
+        // Early return without BufferLRU — go-git does not cache storage loads.
+        // Caching at offset 0 would also collide across external placeholders.
         if (self.storage != null and !o.object_type.isDelta()) {
-            const e = self.storage.?.get(o.sha1) catch {
-                if (o.external_ref) return error.ReferenceDeltaNotFound;
-                return error.ObjectNotFound;
-            };
+            const e = try self.storage.?.get(o.sha1);
             o.object_type = e.object_type;
             try buf.appendSlice(self.allocator, e.readerBytes());
-            // Cache if has children
-            if (o.children.items.len > 0) {
-                try self.putCache(o.offset, buf.items);
-            }
             return;
         }
 
+        // Thin pack external base with no storage (or storage path skipped).
         if (o.external_ref) {
             return error.ReferenceDeltaNotFound;
         }
@@ -573,6 +588,8 @@ pub const Parser = struct {
             try buf.appendSlice(self.allocator, target);
         }
 
+        // go-git resolveObject: SetEncodedObject for resolved deltas when storage set.
+        // Thin-pack REF-deltas against external bases land here after get(parent).
         if (self.storage) |store| {
             _ = try store.putContent(o.object_type, target);
         }
@@ -620,20 +637,29 @@ pub const Parser = struct {
     }
 };
 
+/// Walk OFS/REF parents and reject chains deeper than `max_delta_chain_depth`.
+/// go-git: `fmt.Errorf("%w: delta chain depth exceeds %d", ErrMalformedPackFile, ...)`.
+/// Zig has no error wrapping; `MalformedPackFile` is the portable equivalent
+/// (tests assert this error for over-depth chains).
 fn checkDeltaChainDepth(o: *ObjectInfo) Error!void {
     var depth: usize = 0;
     var current: ?*ObjectInfo = o;
     while (current) |c| {
         if (!c.disk_type.isDelta()) break;
         depth += 1;
-        if (depth > max_delta_chain_depth) return error.MalformedPackFile;
+        if (depth > max_delta_chain_depth) {
+            // Concept: delta chain depth exceeded (go-git message includes
+            // "delta chain depth exceeds N").
+            return error.MalformedPackFile;
+        }
         current = c.parent;
     }
 }
 
 fn wrapEof(err: anyerror) anyerror {
     return switch (err) {
-        error.EndOfStream => error.MalformedPackFile,
+        // Truncated / mid-object failure while indexing (go-git "malformed PACK").
+        error.EndOfStream, error.ZLib => error.MalformedPackFile,
         else => err,
     };
 }
@@ -681,11 +707,10 @@ test "growHint and objectsHint caps" {
 }
 
 test "non-seekable without storage returns NotSeekableSource" {
-    const data = @import("basic_pack.zig").data;
+    const data = @import("basic_pack.zig").data();
     var r: std.Io.Reader = .fixed(data);
     var sc = Scanner.init(&r);
-    // Force non-seekable regardless of Scanner default for fixed sources.
-    sc.is_seekable = false;
+    try std.testing.expect(!sc.is_seekable);
 
     const err = Parser.init(std.testing.allocator, &sc, &.{});
     try std.testing.expectError(error.NotSeekableSource, err);
@@ -693,7 +718,7 @@ test "non-seekable without storage returns NotSeekableSource" {
 
 test "parse basic.pack seekable: checksum and 31 objects" {
     const allocator = std.testing.allocator;
-    const data = @import("basic_pack.zig").data;
+    const data = @import("basic_pack.zig").data();
     // Prefer initSeekable so pack SHA-1 / CRC match the mem hashing path
     // (streaming tee can diverge with flate lookahead).
     var sc = Scanner.initSeekable(data);
@@ -729,5 +754,367 @@ test "ObjectStore put and get" {
     try std.testing.expect(obj.object_type == .blob);
     try std.testing.expectEqualStrings(content, obj.readerBytes());
     try std.testing.expectError(error.ObjectNotFound, store.get(ZeroHash));
+}
+
+// ---------------------------------------------------------------------------
+// Adversarial / security tests (go-git parser_test.go + internal_test.go)
+// ---------------------------------------------------------------------------
+
+// go-git `TestChecksumMismatch`: mutate last pack trailer byte → parse fails.
+test "TestChecksumMismatch" {
+    const allocator = std.testing.allocator;
+    const src = @import("basic_pack.zig").data();
+    const mutated = try allocator.dupe(u8, src);
+    defer allocator.free(mutated);
+    // Corrupt the final checksum byte (go-git seeks -1 and writes 0).
+    mutated[mutated.len - 1] = 0;
+
+    var sc = Scanner.initSeekable(mutated);
+    var parser = try Parser.init(allocator, &sc, &.{});
+    defer parser.deinit();
+
+    // go-git: ErrorContains "checksum mismatch" (wrapped MalformedPackFile).
+    try std.testing.expectError(error.MalformedPackFile, parser.parse());
+}
+
+// go-git `TestMalformedPack`: LimitReader(basic, 200) → malformed PACK.
+test "TestMalformedPack truncated" {
+    const allocator = std.testing.allocator;
+    const src = @import("basic_pack.zig").data();
+    const truncated = src[0..@min(200, src.len)];
+
+    var sc = Scanner.initSeekable(truncated);
+    var parser = try Parser.init(allocator, &sc, &.{});
+    defer parser.deinit();
+
+    // go-git: ErrorContains "malformed PACK" (ZLib/EOF mid-object wrap to MalformedPackFile).
+    try std.testing.expectError(error.MalformedPackFile, parser.parse());
+}
+
+// go-git `TestParserRejectsOverflowingObjectHeader`.
+test "TestParserRejectsOverflowingObjectHeader" {
+    const allocator = std.testing.allocator;
+
+    // PACK + version 2 + count 1 + type=commit continuation size VLQ that
+    // overflows int64 shift guard, then a dummy SHA-1 trailer.
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(allocator);
+
+    try body.appendSlice(allocator, "PACK");
+    var be: [4]u8 = undefined;
+    std.mem.writeInt(u32, &be, 2, .big);
+    try body.appendSlice(allocator, &be);
+    std.mem.writeInt(u32, &be, 1, .big);
+    try body.appendSlice(allocator, &be);
+    try body.append(allocator, 0x90); // type=commit, continuation=1, low nibble=0
+    try body.appendNTimes(allocator, 0x80, 9);
+
+    var hasher = std.crypto.hash.Sha1.init(.{});
+    hasher.update(body.items);
+    var sum: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+    hasher.final(&sum);
+    try body.appendSlice(allocator, &sum);
+
+    var sc = Scanner.initSeekable(body.items);
+    var parser = try Parser.init(allocator, &sc, &.{});
+    defer parser.deinit();
+
+    // go-git wraps LengthOverflow as MalformedPackFile ("malformed PACK").
+    // Zig scanner may surface either; both reject the bad header.
+    _ = parser.parse() catch |err| {
+        try std.testing.expect(err == error.LengthOverflow or err == error.MalformedPackFile);
+        return;
+    };
+    try std.testing.expect(false); // must not succeed
+}
+
+// go-git `TestParserRejectsDeepDeltaChain`.
+test "TestParserRejectsDeepDeltaChain" {
+    const allocator = std.testing.allocator;
+    const pack = try buildLinearDeltaChainPack(allocator, max_delta_chain_depth + 1);
+    defer allocator.free(pack);
+
+    var sc = Scanner.initSeekable(pack);
+    var parser = try Parser.init(allocator, &sc, &.{});
+    defer parser.deinit();
+
+    // go-git: ErrorIs ErrMalformedPackFile, ErrorContains "delta chain depth".
+    try std.testing.expectError(error.MalformedPackFile, parser.parse());
+}
+
+// go-git `TestParserAcceptsMaxDepthDeltaChain`.
+test "TestParserAcceptsMaxDepthDeltaChain" {
+    const allocator = std.testing.allocator;
+    const pack = try buildLinearDeltaChainPack(allocator, max_delta_chain_depth);
+    defer allocator.free(pack);
+
+    var sc = Scanner.initSeekable(pack);
+    var parser = try Parser.init(allocator, &sc, &.{});
+    defer parser.deinit();
+
+    _ = try parser.parse();
+}
+
+// go-git `TestResolveExternalRefs` (delta-before-base fixture).
+test "TestResolveExternalRefs delta-before-base" {
+    const allocator = std.testing.allocator;
+    const pack = @import("delta_before_base_pack.zig").data();
+    var sc = Scanner.initSeekable(pack);
+    var parser = try Parser.init(allocator, &sc, &.{});
+    defer parser.deinit();
+    _ = try parser.parse();
+}
+
+// go-git `TestResolveExternalRefsInThinPack` (codecommit fixture).
+test "TestResolveExternalRefsInThinPack codecommit" {
+    const allocator = std.testing.allocator;
+    const pack = @import("codecommit_pack.zig").data();
+    var sc = Scanner.initSeekable(pack);
+    var parser = try Parser.init(allocator, &sc, &.{});
+    defer parser.deinit();
+    _ = try parser.parse();
+}
+
+// ---------------------------------------------------------------------------
+// Synthetic pack builders (go-git internal_test.go)
+// ---------------------------------------------------------------------------
+
+const flate = std.compress.flate;
+const binary_util = @import("binary");
+
+/// go-git `buildLinearDeltaChainPack`: one base blob + `delta_count` OFS deltas.
+fn buildLinearDeltaChainPack(allocator: Allocator, delta_count: usize) ![]u8 {
+    var objects: std.ArrayList(TestPackObject) = .empty;
+    defer {
+        for (objects.items) |*o| {
+            if (o.owned_content) allocator.free(o.content);
+        }
+        objects.deinit(allocator);
+    }
+
+    try objects.append(allocator, .{
+        .typ = .blob,
+        .content = &[_]u8{ 0, 0 },
+        .owned_content = false,
+    });
+
+    var i: usize = 0;
+    while (i < delta_count) : (i += 1) {
+        const content = [_]u8{ @truncate(i + 1), @truncate((i + 1) >> 8) };
+        const delta = try buildDeltaInsert(allocator, 2, 2, &content);
+        try objects.append(allocator, .{
+            .typ = .ofs_delta,
+            .content = delta,
+            .owned_content = true,
+            .offset_delta_distance = -1, // previous object
+        });
+    }
+
+    return try buildTestPack(allocator, objects.items);
+}
+
+const TestPackObject = struct {
+    typ: ObjectType,
+    declared_size: i64 = 0,
+    content: []const u8,
+    owned_content: bool = false,
+    reference: Hash = ZeroHash,
+    /// For OFS deltas; -1 means "immediately preceding object".
+    offset_delta_distance: i64 = 0,
+};
+
+/// go-git `buildTestPack`.
+fn buildTestPack(allocator: Allocator, objects: []const TestPackObject) ![]u8 {
+    var body: std.ArrayList(u8) = .empty;
+    errdefer body.deinit(allocator);
+
+    try body.appendSlice(allocator, "PACK");
+    var be: [4]u8 = undefined;
+    std.mem.writeInt(u32, &be, 2, .big);
+    try body.appendSlice(allocator, &be);
+    std.mem.writeInt(u32, &be, @intCast(objects.len), .big);
+    try body.appendSlice(allocator, &be);
+
+    var offsets: std.ArrayList(i64) = .empty;
+    defer offsets.deinit(allocator);
+
+    for (objects) |obj| {
+        try offsets.append(allocator, @intCast(body.items.len));
+
+        var declared = obj.declared_size;
+        if (declared == 0 and obj.content.len > 0) {
+            declared = @intCast(obj.content.len);
+        }
+        try writeTestObjectHeader(&body, allocator, obj.typ, declared);
+
+        switch (obj.typ) {
+            .ref_delta => {
+                try body.appendSlice(allocator, &obj.reference.bytes);
+            },
+            .ofs_delta => {
+                var distance = obj.offset_delta_distance;
+                if (distance == -1) {
+                    // Reference the immediately preceding object.
+                    const n = offsets.items.len;
+                    distance = offsets.items[n - 1] - offsets.items[n - 2];
+                }
+                var vlq_buf: [16]u8 = undefined;
+                var vw: std.Io.Writer = .fixed(&vlq_buf);
+                try binary_util.writeVariableWidthInt(&vw, distance);
+                try body.appendSlice(allocator, vw.buffered());
+            },
+            else => {},
+        }
+
+        const compressed = try zlibCompress(allocator, obj.content);
+        defer allocator.free(compressed);
+        try body.appendSlice(allocator, compressed);
+    }
+
+    var hasher = std.crypto.hash.Sha1.init(.{});
+    hasher.update(body.items);
+    var sum: [std.crypto.hash.Sha1.digest_length]u8 = undefined;
+    hasher.final(&sum);
+    try body.appendSlice(allocator, &sum);
+
+    return try body.toOwnedSlice(allocator);
+}
+
+/// go-git `writeTestObjectHeader`.
+fn writeTestObjectHeader(list: *std.ArrayList(u8), allocator: Allocator, typ: ObjectType, size: i64) !void {
+    var remaining: u64 = @intCast(size);
+    var first: u8 = (@as(u8, @intCast(@intFromEnum(typ))) << 4) | @as(u8, @truncate(remaining & 0x0f));
+    remaining >>= 4;
+    if (remaining > 0) first |= 0x80;
+    try list.append(allocator, first);
+    while (remaining > 0) {
+        var next: u8 = @truncate(remaining & 0x7f);
+        remaining >>= 7;
+        if (remaining > 0) next |= 0x80;
+        try list.append(allocator, next);
+    }
+}
+
+/// go-git `buildDelta` + `insertOp` for a single insert payload.
+fn buildDeltaInsert(allocator: Allocator, src_sz: usize, target_sz: usize, data: []const u8) ![]u8 {
+    var b: std.ArrayList(u8) = .empty;
+    errdefer b.deinit(allocator);
+    try deltaEncodeSizeAppend(&b, allocator, src_sz);
+    try deltaEncodeSizeAppend(&b, allocator, target_sz);
+    // insertOp: size byte (data.len must fit in 7 bits) + payload.
+    std.debug.assert(data.len < 0x80);
+    try b.append(allocator, @intCast(data.len));
+    try b.appendSlice(allocator, data);
+    return try b.toOwnedSlice(allocator);
+}
+
+/// go-git `deltaEncodeSize` (unsigned LEB128).
+fn deltaEncodeSizeAppend(list: *std.ArrayList(u8), allocator: Allocator, size: usize) !void {
+    var s = size;
+    var c: u8 = @truncate(s & 0x7f);
+    s >>= 7;
+    while (s != 0) {
+        try list.append(allocator, c | 0x80);
+        c = @truncate(s & 0x7f);
+        s >>= 7;
+    }
+    try list.append(allocator, c);
+}
+
+/// go-git `zlibCompress` via `std.compress.flate.Compress` (.zlib).
+fn zlibCompress(allocator: Allocator, content: []const u8) ![]u8 {
+    var out: std.Io.Writer.Allocating = try .initCapacity(allocator, 64);
+    defer out.deinit();
+    var window: [flate.max_window_len]u8 = undefined;
+    var comp = try flate.Compress.init(&out.writer, &window, .zlib, .default);
+    try comp.writer.writeAll(content);
+    try comp.finish();
+    return try allocator.dupe(u8, out.writer.buffered());
+}
+
+// ---------------------------------------------------------------------------
+// Thin pack / REF-delta + ObjectStore (initWithStorage path)
+//
+// Full fixture coverage for real thin packs lives in thin_pack_tests / fixture
+// workers. These unit tests use a 1-object synthetic pack that is only a
+// REF-delta against an external base hash (true thin pack).
+// ---------------------------------------------------------------------------
+
+/// One-object thin pack: single REF-delta against `base_hash` producing `target`.
+fn buildThinRefDeltaPack(allocator: Allocator, base_hash: Hash, base_len: usize, target: []const u8) ![]u8 {
+    const delta = try buildDeltaInsert(allocator, base_len, target.len, target);
+    defer allocator.free(delta);
+    return try buildTestPack(allocator, &[_]TestPackObject{.{
+        .typ = .ref_delta,
+        .content = delta,
+        .reference = base_hash,
+    }});
+}
+
+test "thin pack REF-delta: missing external base with storage → ObjectNotFound" {
+    // go-git parser_test.go thin pack without bases → plumbing.ErrObjectNotFound.
+    const allocator = std.testing.allocator;
+    const base_content = "base-blob";
+    const base_hash = plumbing.computeHash(.blob, base_content);
+    const target = "resolved!";
+
+    const pack = try buildThinRefDeltaPack(allocator, base_hash, base_content.len, target);
+    defer allocator.free(pack);
+
+    var store = ObjectStore.init(allocator);
+    defer store.deinit();
+    // Intentionally empty — base not present.
+
+    var sc = Scanner.initSeekable(pack);
+    var parser = try Parser.initWithStorage(allocator, &sc, &store, &.{});
+    defer parser.deinit();
+
+    try std.testing.expectError(error.ObjectNotFound, parser.parse());
+}
+
+test "thin pack REF-delta: no storage → ReferenceDeltaNotFound" {
+    const allocator = std.testing.allocator;
+    const base_content = "base-blob";
+    const base_hash = plumbing.computeHash(.blob, base_content);
+    const target = "resolved!";
+
+    const pack = try buildThinRefDeltaPack(allocator, base_hash, base_content.len, target);
+    defer allocator.free(pack);
+
+    var sc = Scanner.initSeekable(pack);
+    var parser = try Parser.init(allocator, &sc, &.{});
+    defer parser.deinit();
+
+    try std.testing.expectError(error.ReferenceDeltaNotFound, parser.parse());
+}
+
+test "thin pack REF-delta: external base in ObjectStore resolves and stores result" {
+    // Present external base → resolve REF-delta and put resolved object in store.
+    const allocator = std.testing.allocator;
+    const base_content = "base-blob";
+    const base_hash = plumbing.computeHash(.blob, base_content);
+    const target = "resolved!";
+    const target_hash = plumbing.computeHash(.blob, target);
+
+    const pack = try buildThinRefDeltaPack(allocator, base_hash, base_content.len, target);
+    defer allocator.free(pack);
+
+    var store = ObjectStore.init(allocator);
+    defer store.deinit();
+    _ = try store.putContent(.blob, base_content);
+
+    var sc = Scanner.initSeekable(pack);
+    var parser = try Parser.initWithStorage(allocator, &sc, &store, &.{});
+    defer parser.deinit();
+
+    _ = try parser.parse();
+
+    // Resolved object written to storage (go-git SetEncodedObject in resolveObject).
+    const resolved = try store.get(target_hash);
+    try std.testing.expect(resolved.object_type == .blob);
+    try std.testing.expectEqualStrings(target, resolved.readerBytes());
+    // Base remains available.
+    const base_obj = try store.get(base_hash);
+    try std.testing.expectEqualStrings(base_content, base_obj.readerBytes());
 }
 

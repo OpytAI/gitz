@@ -5306,5 +5306,12 @@ const raw = [_]u8{
     0x0e, 0x68, 0x46, 0xc0, 0x40, 0xdc, 0xf7, 0x3f, 0xc9, 0xdd,
 };
 
-/// Full basic.pack bytes (slice over `raw`).
-pub const data: []const u8 = &raw;
+const pack_bytes: []const u8 = &raw;
+
+/// Full basic.pack bytes (same accessor shape as other fixture modules).
+pub fn data() []const u8 {
+    return pack_bytes;
+}
+
+/// Slice form for call sites that need a comptime-known pointer.
+pub const data_slice: []const u8 = pack_bytes;

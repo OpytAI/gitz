@@ -34,8 +34,8 @@ pub const ObjectHeader = struct {
 };
 
 /// Seekable memory source (position + slice) with `std.Io.Reader` access.
-/// go-git seekable path when the underlying reader is an `io.ReadSeeker`.
-pub const MemSeekReader = struct {
+/// Test / helper type; production code uses `Scanner.initSeekable`.
+const MemSeekReader = struct {
     data: []const u8,
     reader: IoReader,
 
@@ -67,7 +67,7 @@ pub const MemSeekReader = struct {
 /// | `initSeekable` | Full pack image in memory. Seek + accurate hashes. |
 ///
 /// Prefer `initSeekable` for any in-memory pack. Use `init` only for true
-/// streams. Do not mutate `is_seekable` after construction.
+/// streams. Change mode only via `reset` / `resetSeekable` (go-git `Reset`).
 pub const Scanner = struct {
     /// True only when constructed with `initSeekable`.
     is_seekable: bool,
@@ -346,6 +346,27 @@ pub const Scanner = struct {
         return .{ written, crc_val };
     }
 
+    /// Inflate pending object body into an allocator-owned slice (caller frees).
+    ///
+    /// Eager form of go-git `ReadObject`: after a header is pending, inflate the
+    /// zlib body with the declared-size bound. Overrun → `InflatedSizeMismatch`.
+    pub fn readObject(self: *Scanner, allocator: std.mem.Allocator) (Error || IoReader.Error || IoWriter.Error || std.mem.Allocator.Error)![]u8 {
+        const declared: i64 = if (self.pending_object) |h| h.length else -1;
+        self.pending_object = null;
+
+        var aw: IoWriter.Allocating = .init(allocator);
+        errdefer aw.deinit();
+
+        _ = try self.copyObject(&aw.writer, declared);
+
+        self.flush();
+        if (self.mem != null) self.catchUpHashes();
+
+        const owned = try allocator.dupe(u8, aw.written());
+        aw.deinit();
+        return owned;
+    }
+
     /// Inflate zlib object body into `w`, optionally bounding by `declared_size`.
     fn copyObject(self: *Scanner, w: *IoWriter, declared_size: i64) (Error || IoReader.Error || IoWriter.Error)!i64 {
         var window: [flate.max_window_len]u8 = undefined;
@@ -430,7 +451,8 @@ pub const Scanner = struct {
         self.pending_object = null;
     }
 
-    /// go-git `Reset`.
+    /// go-git `Reset` with a non-seekable (or streaming) reader.
+    /// Always clears seekable state; use `resetSeekable` to rebind a pack image.
     pub fn reset(self: *Scanner, r: *IoReader) void {
         self.is_seekable = false;
         self.mem = null;
@@ -449,6 +471,11 @@ pub const Scanner = struct {
         self.pending_object = null;
         self.version = 0;
         self.objects = 0;
+    }
+
+    /// Rebind to a full pack image (seekable). go-git `Reset` when `r` is a `ReadSeeker`.
+    pub fn resetSeekable(self: *Scanner, data: []const u8) void {
+        self.* = initSeekable(data);
     }
 
     /// go-git `Flush` (no-op: tee hashes immediately; mem mode is direct).
@@ -505,8 +532,10 @@ pub const Scanner = struct {
 // Tests (go-git scanner_test.go / scanner_bounded_test.go)
 // =============================================================================
 
-const basic_pack = @import("basic_pack.zig").data;
+const basic_pack = @import("basic_pack.zig").data();
 const basic_pack_checksum_hex = "a3fed42da1e8189a077c0e6846c040dcf73fc9dd";
+const ref_delta_pack = @import("ref_delta_pack.zig");
+const ref_delta_pack_checksum_hex = "c544593473465e6315ad4182d04d366c4592b829";
 
 const expected_headers_ofs = [_]ObjectHeader{
     .{ .object_type = .commit, .offset = 12, .length = 254 },
@@ -574,6 +603,75 @@ const expected_crc_ofs = [_]u32{
     0xd6fe09e9,
     0xf07a2804,
     0x1d75d6be,
+};
+
+// go-git scanner_test.go expectedHeadersREF / expectedCRCREF
+const expected_headers_ref = [_]ObjectHeader{
+    .{ .object_type = .commit, .offset = 12, .length = 254 },
+    .{ .object_type = .ref_delta, .offset = 186, .length = 93, .reference = plumbing.newHash("e8d3ffab552895c19b9fcf7aa264d277cde33881") },
+    .{ .object_type = .commit, .offset = 304, .length = 242 },
+    .{ .object_type = .commit, .offset = 467, .length = 242 },
+    .{ .object_type = .commit, .offset = 633, .length = 333 },
+    .{ .object_type = .commit, .offset = 856, .length = 332 },
+    .{ .object_type = .commit, .offset = 1081, .length = 243 },
+    .{ .object_type = .commit, .offset = 1243, .length = 244 },
+    .{ .object_type = .commit, .offset = 1410, .length = 187 },
+    .{ .object_type = .blob, .offset = 1542, .length = 189 },
+    .{ .object_type = .blob, .offset = 1703, .length = 18 },
+    .{ .object_type = .blob, .offset = 1731, .length = 1072 },
+    .{ .object_type = .blob, .offset = 2369, .length = 76110 },
+    .{ .object_type = .tree, .offset = 78068, .length = 38 },
+    .{ .object_type = .blob, .offset = 78117, .length = 2780 },
+    .{ .object_type = .tree, .offset = 79049, .length = 75 },
+    .{ .object_type = .blob, .offset = 79129, .length = 217848 },
+    .{ .object_type = .blob, .offset = 80972, .length = 706 },
+    .{ .object_type = .tree, .offset = 81265, .length = 38 },
+    .{ .object_type = .blob, .offset = 81314, .length = 11488 },
+    .{ .object_type = .tree, .offset = 84752, .length = 34 },
+    .{ .object_type = .blob, .offset = 84797, .length = 78 },
+    .{ .object_type = .tree, .offset = 84880, .length = 271 },
+    .{ .object_type = .ref_delta, .offset = 85141, .length = 6, .reference = plumbing.newHash("a8d315b2b1c615d43042c3a62402b8a54288cf5c") },
+    .{ .object_type = .ref_delta, .offset = 85176, .length = 37, .reference = plumbing.newHash("fb72698cab7617ac416264415f13224dfd7a165e") },
+    .{ .object_type = .blob, .offset = 85244, .length = 9 },
+    .{ .object_type = .ref_delta, .offset = 85262, .length = 9, .reference = plumbing.newHash("fb72698cab7617ac416264415f13224dfd7a165e") },
+    .{ .object_type = .ref_delta, .offset = 85300, .length = 6, .reference = plumbing.newHash("fb72698cab7617ac416264415f13224dfd7a165e") },
+    .{ .object_type = .tree, .offset = 85335, .length = 110 },
+    .{ .object_type = .ref_delta, .offset = 85448, .length = 8, .reference = plumbing.newHash("eba74343e2f15d62adedfd8c883ee0262b5c8021") },
+    .{ .object_type = .tree, .offset = 85485, .length = 73 },
+};
+
+const expected_crc_ref = [_]u32{
+    0xaa07ba4b,
+    0xfb4725a4,
+    0x12438846,
+    0x2905a38c,
+    0xd9429436,
+    0xbecfde4e,
+    0xdc18344f,
+    0x780e4b3e,
+    0xcf4e4280,
+    0x1f08118a,
+    0xafded7b8,
+    0xcc1428ed,
+    0x1631d22f,
+    0x847905bf,
+    0x3e20f31d,
+    0x3689459a,
+    0xd108e1d8,
+    0x71143d4a,
+    0xe67af94a,
+    0x739fb89f,
+    0xc2314a2e,
+    0x87864926,
+    0x415d752f,
+    0xf72fb182,
+    0x3ffa37d4,
+    0xcd987848,
+    0x2f20ac8f,
+    0xf2f0575,
+    0x7d8726e1,
+    0x740bf39,
+    0x26af4735,
 };
 
 fn expectHeaderEql(got: ObjectHeader, want: ObjectHeader) !void {
@@ -651,6 +749,122 @@ test "TestNextObjectHeaderWithOutReadObject" {
     try std.testing.expect(sum.eql(want));
 }
 
+// go-git ScannerSuite.TestNextObjectHeaderREFDelta + CRC + Checksum
+test "TestNextObjectHeaderREFDelta" {
+    var sc = Scanner.initSeekable(ref_delta_pack.data());
+    _, const objects = try sc.header();
+    try std.testing.expectEqual(@as(u32, 31), objects);
+    try std.testing.expectEqual(@as(u32, @intCast(expected_headers_ref.len)), objects);
+    try std.testing.expectEqual(@as(u32, @intCast(expected_crc_ref.len)), objects);
+
+    var i: usize = 0;
+    while (i < objects) : (i += 1) {
+        const h = try sc.nextObjectHeader();
+        try expectHeaderEql(h, expected_headers_ref[i]);
+
+        var discard_buf: [1024]u8 = undefined;
+        var discarding: IoWriter.Discarding = .init(&discard_buf);
+        const n, const crc = try sc.nextObject(&discarding.writer);
+        try std.testing.expectEqual(h.length, n);
+        try std.testing.expectEqual(expected_crc_ref[i], crc);
+    }
+
+    const sum = try sc.checksum();
+    const want = plumbing.newHash(ref_delta_pack_checksum_hex);
+    try std.testing.expect(sum.eql(want));
+}
+
+// go-git ScannerSuite.TestNextObjectHeaderWithOutReadObject (REF-delta pack)
+test "TestNextObjectHeaderWithOutReadObject REF-delta" {
+    var sc = Scanner.initSeekable(ref_delta_pack.data());
+    _, const objects = try sc.header();
+
+    var i: usize = 0;
+    while (i < objects) : (i += 1) {
+        const h = try sc.nextObjectHeader();
+        try expectHeaderEql(h, expected_headers_ref[i]);
+    }
+
+    // Skip last body via checksum → discardObjectIfNeeded, then trailer.
+    const sum = try sc.checksum();
+    const want = plumbing.newHash(ref_delta_pack_checksum_hex);
+    try std.testing.expect(sum.eql(want));
+}
+
+// go-git ScannerSuite.TestReaderReset
+test "TestReaderReset" {
+    var sc = Scanner.initSeekable(basic_pack);
+    const version, const objects = try sc.header();
+    try std.testing.expectEqual(common.VersionSupported, version);
+    try std.testing.expectEqual(@as(u32, 31), objects);
+
+    const h = try sc.seekObjectHeader(expected_headers_ofs[0].offset);
+    try expectHeaderEql(h, expected_headers_ofs[0]);
+    try std.testing.expect(sc.pending_object != null);
+    try std.testing.expect(sc.position() > expected_headers_ofs[0].offset);
+
+    var r: IoReader = .fixed(basic_pack);
+    sc.reset(&r);
+    try std.testing.expect(sc.pending_object == null);
+    try std.testing.expectEqual(@as(u32, 0), sc.version);
+    try std.testing.expectEqual(@as(u32, 0), sc.objects);
+    try std.testing.expect(sc.upstream == &r);
+    try std.testing.expect(!sc.is_seekable);
+    // Zig stream model restarts logical offset at 0 (go-git may keep SeekCurrent).
+    try std.testing.expectEqual(@as(i64, 0), sc.position());
+
+    // Stream from the start of basic pack after reset.
+    const v2, const o2 = try sc.header();
+    try std.testing.expectEqual(common.VersionSupported, v2);
+    try std.testing.expectEqual(@as(u32, 31), o2);
+
+    var empty: IoReader = .fixed(&[_]u8{});
+    sc.reset(&empty);
+    try std.testing.expect(sc.upstream == &empty);
+    try std.testing.expectEqual(@as(i64, 0), sc.position());
+    try std.testing.expectEqual(@as(u32, 0), sc.version);
+    try std.testing.expectEqual(@as(u32, 0), sc.objects);
+}
+
+// go-git ScannerSuite.TestReaderResetSeeks
+test "TestReaderResetSeeks" {
+    var sc = Scanner.initSeekable(basic_pack);
+    try std.testing.expect(sc.is_seekable);
+    const h0 = try sc.seekObjectHeader(expected_headers_ofs[0].offset);
+    try expectHeaderEql(h0, expected_headers_ofs[0]);
+
+    // resetSeekable keeps seekable (go-git Reset with ReadSeeker).
+    sc.resetSeekable(basic_pack);
+    try std.testing.expect(sc.is_seekable);
+    try std.testing.expect(sc.pending_object == null);
+    try std.testing.expectEqual(@as(u32, 0), sc.version);
+    const h1 = try sc.seekObjectHeader(expected_headers_ofs[1].offset);
+    try expectHeaderEql(h1, expected_headers_ofs[1]);
+
+    // reset with non-seekable stream → seek fails.
+    var r: IoReader = .fixed(ref_delta_pack.data());
+    sc.reset(&r);
+    try std.testing.expect(!sc.is_seekable);
+    try std.testing.expectError(
+        error.SeekNotSupported,
+        sc.seekObjectHeader(expected_headers_ofs[4].offset),
+    );
+}
+
+// go-git ReadObject (eager): inflate first object body to declared length
+test "TestReadObject" {
+    var sc = Scanner.initSeekable(basic_pack);
+    _ = try sc.header();
+    const h = try sc.nextObjectHeader();
+    const body = try sc.readObject(std.testing.allocator);
+    defer std.testing.allocator.free(body);
+    try std.testing.expectEqual(@as(usize, @intCast(h.length)), body.len);
+
+    // Subsequent headers continue after the inflated body.
+    const h2 = try sc.nextObjectHeader();
+    try expectHeaderEql(h2, expected_headers_ofs[1]);
+}
+
 // go-git ScannerSuite.TestSeekObjectHeader
 test "TestSeekObjectHeader" {
     var sc = Scanner.initSeekable(basic_pack);
@@ -667,6 +881,28 @@ test "TestSeekObjectHeaderNonSeekable" {
         error.SeekNotSupported,
         sc.seekObjectHeader(expected_headers_ofs[4].offset),
     );
+}
+
+// go-git ScannerSuite.TestNextObjectHeaderWithOutReadObjectNonSeekable.
+// Header/offset/type parity on a non-seekable stream. Pack trailer SHA-1 is
+// verified on the seekable REF-delta walk (same bytes); prefer initSeekable
+// for checksum integrity.
+test "TestNextObjectHeaderWithOutReadObjectNonSeekable" {
+    const pack = ref_delta_pack.data();
+    var r: IoReader = .fixed(pack);
+    var sc = Scanner.init(&r);
+    try std.testing.expect(!sc.is_seekable);
+
+    _, const objects = try sc.header();
+    try std.testing.expectEqual(@as(u32, 31), objects);
+    try std.testing.expectEqual(expected_headers_ref.len, @as(usize, objects));
+
+    var i: usize = 0;
+    while (i < objects) : (i += 1) {
+        const h = try sc.nextObjectHeader();
+        try expectHeaderEql(h, expected_headers_ref[i]);
+    }
+    try std.testing.expectError(error.SeekNotSupported, sc.seekObjectHeader(12));
 }
 
 // go-git: empty pack → EmptyPackfile
@@ -716,6 +952,40 @@ test "TestNextObjectRejectsOversizedInflate" {
     defer sink.deinit();
     try std.testing.expectError(error.InflatedSizeMismatch, sc.nextObject(&sink.writer));
     try std.testing.expect(sink.writer.buffered().len <= @as(usize, @intCast(declared_size)));
+}
+
+// go-git scanner_bounded_test.go TestReadObjectRejectsOversizedInflate
+test "TestReadObjectRejectsOversizedInflate" {
+    const real_size: usize = 1 << 16; // 64 KiB
+    const declared_size: i64 = 4096;
+
+    var raw_buf: std.ArrayList(u8) = .empty;
+    defer raw_buf.deinit(std.testing.allocator);
+
+    {
+        var out: IoWriter.Allocating = try .initCapacity(std.testing.allocator, 8192);
+        defer out.deinit();
+        var window: [flate.max_window_len]u8 = undefined;
+        var comp = try flate.Compress.init(&out.writer, &window, .zlib, .default);
+        const zeros = try std.testing.allocator.alloc(u8, real_size);
+        defer std.testing.allocator.free(zeros);
+        @memset(zeros, 0);
+        try comp.writer.writeAll(zeros);
+        try comp.finish();
+        try raw_buf.appendSlice(std.testing.allocator, out.writer.buffered());
+    }
+
+    const pack = try buildMinimalPack(std.testing.allocator, .blob, declared_size, raw_buf.items);
+    defer std.testing.allocator.free(pack);
+
+    var sc = Scanner.initSeekable(pack);
+    _, _ = try sc.header();
+    _ = try sc.nextObjectHeader();
+
+    try std.testing.expectError(
+        error.InflatedSizeMismatch,
+        sc.readObject(std.testing.allocator),
+    );
 }
 
 // go-git scanner_bounded_test.go boundedWriter / declared size 0
