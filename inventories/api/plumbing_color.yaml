@@ -1,0 +1,36 @@
+# API inventory: plumbing/color (phase 1)
+package: plumbing/color
+phase: 1
+require:
+  types: []
+  functions: []
+  constants:
+    - Reset
+    - Bold
+    - Red
+    - Green
+    - Yellow
+    - Blue
+    - Magenta
+    - Cyan
+    - White
+  semantic:
+    - color.Reset
+    - color.Bold
+    - color.Red
+    - color.Green
+    - color.Yellow
+    - color.Blue
+    - color.Magenta
+    - color.Cyan
+    - color.White
+zig_map:
+  Reset: color.reset
+  Bold: color.bold
+  Red: color.red
+  Green: color.green
+  Yellow: color.yellow
+  Blue: color.blue
+  Magenta: color.magenta
+  Cyan: color.cyan
+  White: color.white

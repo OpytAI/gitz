@@ -6,6 +6,7 @@ exports_files([
     "AGENTS.md",
     "GO_GIT_PIN.md",
     "PORT_STRATEGY.md",
+    "PHASE_PLAN.md",
     "README.md",
     "LICENSE",
 ])

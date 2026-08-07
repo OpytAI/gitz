@@ -1,0 +1,180 @@
+# Guardrail targets (Phase G). Acceptance after G is only via bazel test //check:...
+
+package(default_visibility = ["//visibility:public"])
+
+# Shared data for inventory / golden checkers.
+filegroup(
+    name = "check_data",
+    srcs = [
+        "//inventories:all",
+        "//tools/golden:all",
+        "//tools/inventory:all",
+        "//data:all",
+        "//src:src_tree",
+        "//:GO_GIT_PIN.md",
+    ],
+)
+
+# Shell entrypoints + runfiles_env must appear together under //check in runfiles.
+CHECK_SCRIPTS = [
+    "runfiles_env.sh",
+    "file_inventory.sh",
+    "api_inventory.sh",
+    "metrics.sh",
+    "allowlists.sh",
+    "goldens_smoke.sh",
+    "self_tests.sh",
+    "file_inventory_fail_forward.sh",
+    "api_inventory_fail_forward.sh",
+]
+
+exports_files(CHECK_SCRIPTS)
+
+sh_test(
+    name = "file_inventory",
+    size = "small",
+    srcs = ["file_inventory.sh"],
+    data = CHECK_SCRIPTS + [":check_data"],
+)
+
+sh_test(
+    name = "api_inventory",
+    size = "small",
+    srcs = ["api_inventory.sh"],
+    data = CHECK_SCRIPTS + [":check_data"],
+)
+
+sh_test(
+    name = "goldens_smoke",
+    size = "small",
+    srcs = ["goldens_smoke.sh"],
+    data = CHECK_SCRIPTS + [":check_data"],
+)
+
+sh_test(
+    name = "metrics",
+    size = "small",
+    srcs = ["metrics.sh"],
+    data = CHECK_SCRIPTS + [":check_data"],
+)
+
+sh_test(
+    name = "allowlists",
+    size = "small",
+    srcs = ["allowlists.sh"],
+    data = CHECK_SCRIPTS + [":check_data"],
+)
+
+sh_test(
+    name = "checker_self_tests",
+    size = "small",
+    srcs = ["self_tests.sh"],
+    data = CHECK_SCRIPTS + [":check_data"],
+)
+
+# Fixture fail-forward (negative): frozen data/fail_forward/* + hollow fixture src.
+# Does not depend on live inventories/packages.yaml or production src/.
+sh_test(
+    name = "file_inventory_fail_forward",
+    size = "small",
+    srcs = ["file_inventory_fail_forward.sh"],
+    data = CHECK_SCRIPTS + [":check_data"],
+)
+
+sh_test(
+    name = "api_inventory_fail_forward",
+    size = "small",
+    srcs = ["api_inventory_fail_forward.sh"],
+    data = CHECK_SCRIPTS + [":check_data"],
+)
+
+# Phase G gate: inventories + goldens + metrics + fail-forward + library smoke.
+test_suite(
+    name = "phase_g",
+    tests = [
+        ":file_inventory",
+        ":api_inventory",
+        ":goldens_smoke",
+        ":metrics",
+        ":allowlists",
+        ":checker_self_tests",
+        ":file_inventory_fail_forward",
+        ":api_inventory_fail_forward",
+        "//src:gitz_test",
+    ],
+)
+
+# Phase 1–13 stubs. Green //check:phase_N alone is NOT proof of phase-N packages.
+# Merge-complete means: suite green AND inventories/packages.yaml current_phase
+# bumped so file/api inventory require non-hollow packages for phase <= N.
+# Expand each suite with package unit tests as phases land.
+test_suite(
+    name = "phase_1",
+    tests = [":phase_g"],
+)
+
+test_suite(
+    name = "phase_2",
+    tests = [":phase_1"],
+)
+
+test_suite(
+    name = "phase_3",
+    tests = [":phase_2"],
+)
+
+test_suite(
+    name = "phase_4",
+    tests = [":phase_3"],
+)
+
+test_suite(
+    name = "phase_5",
+    tests = [":phase_4"],
+)
+
+test_suite(
+    name = "phase_6",
+    tests = [":phase_5"],
+)
+
+test_suite(
+    name = "phase_7",
+    tests = [":phase_6"],
+)
+
+test_suite(
+    name = "phase_8",
+    tests = [":phase_7"],
+)
+
+test_suite(
+    name = "phase_9",
+    tests = [":phase_8"],
+)
+
+test_suite(
+    name = "phase_10",
+    tests = [":phase_9"],
+)
+
+test_suite(
+    name = "phase_11",
+    tests = [":phase_10"],
+)
+
+test_suite(
+    name = "phase_12",
+    tests = [":phase_11"],
+)
+
+test_suite(
+    name = "phase_13",
+    tests = [":phase_12"],
+)
+
+# All completed phases so far (grows as phases land).
+test_suite(
+    name = "all",
+    tests = [":phase_g"],
+)

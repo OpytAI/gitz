@@ -1,0 +1,4 @@
+name: smoke_identity
+type: file_equals
+actual: input.txt
+expected: expected.txt

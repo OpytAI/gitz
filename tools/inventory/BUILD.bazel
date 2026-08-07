@@ -1,0 +1,36 @@
+# Inventory checkers (Python 3 stdlib). Invoked by //check via sh_test wrappers.
+
+# Exclude local bytecode so `python3 …` / self-tests cannot pollute Bazel inputs.
+_PY_GLOBS = glob(
+    ["**/*"],
+    exclude = [
+        "**/__pycache__/**",
+        "**/*.pyc",
+        "**/*.pyo",
+        "**/*.py[cod]",
+    ],
+)
+
+exports_files(
+    _PY_GLOBS,
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "all",
+    srcs = _PY_GLOBS,
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "checkers",
+    srcs = [
+        "check_allowlists.py",
+        "check_api_inventory.py",
+        "check_file_inventory.py",
+        "check_metrics.py",
+        "phase_util.py",
+        "simple_yaml.py",
+    ],
+    visibility = ["//visibility:public"],
+)

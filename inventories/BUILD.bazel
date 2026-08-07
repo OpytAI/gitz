@@ -1,0 +1,36 @@
+# Inventory manifests — data for //check:* targets.
+
+exports_files(
+    glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "all",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "packages_yaml",
+    srcs = ["packages.yaml"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "metrics_yaml",
+    srcs = ["metrics.yaml"],
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "api",
+    srcs = glob(["api/**/*"]),
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "allowlists",
+    srcs = glob(["allowlists/**/*"]),
+    visibility = ["//visibility:public"],
+)

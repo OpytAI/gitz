@@ -12,3 +12,13 @@ zig_test(
     name = "gitz_test",
     main = "root.zig",
 )
+
+# Full src tree for file/API inventory checkers (//check:*).
+filegroup(
+    name = "src_tree",
+    srcs = glob(
+        ["**/*"],
+        allow_empty = True,
+    ),
+    visibility = ["//visibility:public"],
+)

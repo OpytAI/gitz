@@ -1,0 +1,11 @@
+package: fixture/beta
+phase: 1
+require:
+  types: []
+  functions:
+    - Open
+  constants: []
+  semantic:
+    - beta.open
+zig_map:
+  Open: beta.open

@@ -1,0 +1,16 @@
+# API inventory: plumbing/hash (phase 1)
+package: plumbing/hash
+phase: 1
+require:
+  types: []
+  functions:
+    - New
+    - RegisterHash
+  constants: []
+  # Semantic IDs (stable across Go/Zig naming).
+  semantic:
+    - hash.new
+    - hash.register
+zig_map:
+  New: hash.new
+  RegisterHash: hash.registerHash

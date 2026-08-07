@@ -1,0 +1,21 @@
+# API inventory: utils/sync (phase 1)
+package: utils/sync
+phase: 1
+require:
+  types: []
+  functions:
+    - GetBytesBuffer
+    - PutBytesBuffer
+    - GetZlibWriter
+    - PutZlibWriter
+  constants: []
+  semantic:
+    - sync.get_bytes_buffer
+    - sync.put_bytes_buffer
+    - sync.get_zlib_writer
+    - sync.put_zlib_writer
+zig_map:
+  GetBytesBuffer: sync.getBytesBuffer
+  PutBytesBuffer: sync.putBytesBuffer
+  GetZlibWriter: sync.getZlibWriter
+  PutZlibWriter: sync.putZlibWriter

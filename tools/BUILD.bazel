@@ -1,0 +1,9 @@
+# tools package — inventory and golden runners live in subpackages.
+filegroup(
+    name = "all",
+    srcs = [
+        "//tools/golden:all",
+        "//tools/inventory:all",
+    ],
+    visibility = ["//visibility:public"],
+)

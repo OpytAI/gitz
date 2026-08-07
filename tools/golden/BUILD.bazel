@@ -1,0 +1,33 @@
+# Exclude local bytecode so local python runs cannot pollute Bazel inputs.
+_GOLDEN_GLOBS = glob(
+    ["**/*"],
+    exclude = [
+        "**/__pycache__/**",
+        "**/*.pyc",
+        "**/*.pyo",
+        "**/*.py[cod]",
+    ],
+)
+
+exports_files(
+    _GOLDEN_GLOBS,
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "all",
+    srcs = _GOLDEN_GLOBS,
+    visibility = ["//visibility:public"],
+)
+
+filegroup(
+    name = "runner",
+    srcs = ["run_goldens.py"],
+    visibility = ["//visibility:public"],
+)
+
+# Refresh helpers are developer-only; not part of //check suites.
+exports_files([
+    "README.md",
+    "refresh_oracle_stub.sh",
+])

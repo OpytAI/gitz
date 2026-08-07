@@ -1,0 +1,323 @@
+# gitz package inventory — machine-readable source of truth.
+# Checked by //check:file_inventory. Update in the same change set as new surface.
+#
+# pin: must match GO_GIT_PIN.md
+# current_phase: g | 1..13  (updated only when a phase merges to develop)
+# phase rank: g=0, 1=1, … 13=13
+# status (lowercase only; unknown values fail the checker):
+#   required  — package root must contain ≥1 direct *.zig once phase <= current_phase
+#               (non-recursive: child packages do not satisfy parent rows)
+#   deferred  — same enforcement as required (use higher phase to postpone)
+#   excluded  — out of port scope (no zig tree expected)
+#   test_only — helpers / suites; not production library surface
+
+pin: v5.19.2
+current_phase: g
+
+packages:
+  # --- Phase 1: foundation ---
+  - go: plumbing/hash
+    zig: src/plumbing/hash
+    phase: 1
+    status: required
+  - go: plumbing
+    zig: src/plumbing
+    phase: 1
+    status: required
+    notes: "Hash, ObjectType, MemoryObject, Reference, errors"
+  - go: plumbing/filemode
+    zig: src/plumbing/filemode
+    phase: 1
+    status: required
+  - go: plumbing/color
+    zig: src/plumbing/color
+    phase: 1
+    status: required
+  - go: utils/binary
+    zig: src/utils/binary
+    phase: 1
+    status: required
+  - go: utils/sync
+    zig: src/utils/sync
+    phase: 1
+    status: required
+  - go: utils/ioutil
+    zig: src/utils/ioutil
+    phase: 1
+    status: required
+  - go: utils/trace
+    zig: src/utils/trace
+    phase: 1
+    status: required
+
+  # --- Phase 2: leaf codecs ---
+  - go: plumbing/format/pktline
+    zig: src/plumbing/format/pktline
+    phase: 2
+    status: required
+  - go: plumbing/format/objfile
+    zig: src/plumbing/format/objfile
+    phase: 2
+    status: required
+  - go: plumbing/format/config
+    zig: src/plumbing/format/config
+    phase: 2
+    status: required
+  - go: plumbing/format/idxfile
+    zig: src/plumbing/format/idxfile
+    phase: 2
+    status: required
+
+  # --- Phase 3: packfile read ---
+  - go: plumbing/format/packfile
+    zig: src/plumbing/format/packfile
+    phase: 3
+    status: required
+    notes: "encoder symbols phase 5; allowlist until then"
+
+  # --- Phase 4: storer + memory ---
+  - go: plumbing/storer
+    zig: src/plumbing/storer
+    phase: 4
+    status: required
+  - go: plumbing/cache
+    zig: src/plumbing/cache
+    phase: 4
+    status: required
+  - go: storage
+    zig: src/storage
+    phase: 4
+    status: required
+  - go: storage/memory
+    zig: src/storage/memory
+    phase: 4
+    status: required
+
+  # --- Phase 5: index + pack write ---
+  - go: plumbing/format/index
+    zig: src/plumbing/format/index
+    phase: 5
+    status: required
+
+  # --- Phase 6: filesystem storage ---
+  - go: go-billy
+    zig: src/fs
+    phase: 6
+    status: required
+    notes: "billy equivalent: trait + mem + os (external in go-git)"
+  - go: storage/filesystem/dotgit
+    zig: src/storage/filesystem/dotgit
+    phase: 6
+    status: required
+  - go: storage/filesystem
+    zig: src/storage/filesystem
+    phase: 6
+    status: required
+  - go: storage/transactional
+    zig: src/storage/transactional
+    phase: 6
+    status: required
+
+  # --- Phase 7: objects + revlist ---
+  - go: plumbing/object
+    zig: src/plumbing/object
+    phase: 7
+    status: required
+  - go: plumbing/format/commitgraph
+    zig: src/plumbing/format/commitgraph
+    phase: 7
+    status: required
+    notes: "prefer v2 API only; fold v2 into this package"
+  - go: plumbing/format/commitgraph/v2
+    zig: src/plumbing/format/commitgraph
+    phase: 7
+    status: required
+    notes: "maps into format/commitgraph (no separate zig path)"
+  - go: plumbing/object/commitgraph
+    zig: src/plumbing/object/commitgraph
+    phase: 7
+    status: required
+  - go: plumbing/revlist
+    zig: src/plumbing/revlist
+    phase: 7
+    status: required
+
+  # --- Phase 8: protocol + transport core ---
+  - go: plumbing/protocol/packp
+    zig: src/plumbing/protocol/packp
+    phase: 8
+    status: required
+  - go: plumbing/protocol/packp/capability
+    zig: src/plumbing/protocol/packp/capability
+    phase: 8
+    status: required
+  - go: plumbing/protocol/packp/sideband
+    zig: src/plumbing/protocol/packp/sideband
+    phase: 8
+    status: required
+  - go: plumbing/transport
+    zig: src/plumbing/transport
+    phase: 8
+    status: required
+  - go: plumbing/transport/client
+    zig: src/plumbing/transport/client
+    phase: 8
+    status: required
+  - go: plumbing/transport/internal/common
+    zig: src/plumbing/transport/internal/common
+    phase: 8
+    status: required
+  - go: plumbing/transport/server
+    zig: src/plumbing/transport/server
+    phase: 8
+    status: required
+
+  # --- Phase 9: diff / status shell ---
+  - go: utils/merkletrie
+    zig: src/utils/merkletrie
+    phase: 9
+    status: required
+  - go: utils/merkletrie/noder
+    zig: src/utils/merkletrie/noder
+    phase: 9
+    status: required
+  - go: utils/merkletrie/index
+    zig: src/utils/merkletrie/index
+    phase: 9
+    status: required
+  - go: utils/merkletrie/filesystem
+    zig: src/utils/merkletrie/filesystem
+    phase: 9
+    status: required
+  - go: utils/merkletrie/internal/frame
+    zig: src/utils/merkletrie/internal/frame
+    phase: 9
+    status: required
+  - go: plumbing/format/gitignore
+    zig: src/plumbing/format/gitignore
+    phase: 9
+    status: required
+  - go: plumbing/format/gitattributes
+    zig: src/plumbing/format/gitattributes
+    phase: 9
+    status: required
+  - go: plumbing/format/diff
+    zig: src/plumbing/format/diff
+    phase: 9
+    status: required
+  - go: utils/diff
+    zig: src/utils/diff
+    phase: 9
+    status: required
+  - go: internal/pathutil
+    zig: src/internal/pathutil
+    phase: 9
+    status: required
+  - go: internal/path_util
+    zig: src/internal/path_util
+    phase: 9
+    status: required
+  - go: internal/revision
+    zig: src/internal/revision
+    phase: 9
+    status: required
+  - go: internal/url
+    zig: src/internal/url
+    phase: 9
+    status: required
+  - go: internal/reference
+    zig: src/internal/reference
+    phase: 9
+    status: required
+
+  # --- Phase 10: config + repository core ---
+  - go: config
+    zig: src/config
+    phase: 10
+    status: required
+  - go: git/repository
+    zig: src/repo
+    phase: 10
+    status: required
+    notes: "root package repository open/init/facades (partial)"
+
+  # --- Phase 11: remote ---
+  - go: git/remote
+    zig: src/remote
+    phase: 11
+    status: required
+    notes: "root remote.go orchestration"
+
+  # --- Phase 12: worktree + clone/pull ---
+  - go: git/worktree
+    zig: src/worktree
+    phase: 12
+    status: required
+    notes: "worktree status/add/commit/checkout/reset/clean"
+  - go: git/porcelain
+    zig: src/porcelain
+    phase: 12
+    status: required
+    notes: "clone/pull/plain helpers as needed"
+
+  # --- Phase 13: transports + extras ---
+  - go: plumbing/transport/http
+    zig: src/plumbing/transport/http
+    phase: 13
+    status: required
+  - go: plumbing/transport/ssh
+    zig: src/plumbing/transport/ssh
+    phase: 13
+    status: required
+  - go: plumbing/transport/git
+    zig: src/plumbing/transport/git
+    phase: 13
+    status: required
+  - go: plumbing/transport/file
+    zig: src/plumbing/transport/file
+    phase: 13
+    status: required
+  - go: plumbing/serverinfo
+    zig: src/plumbing/serverinfo
+    phase: 13
+    status: required
+  - go: git/submodule
+    zig: src/submodule
+    phase: 13
+    status: required
+  - go: git/blame
+    zig: src/blame
+    phase: 13
+    status: required
+  - go: git/prune
+    zig: src/prune
+    phase: 13
+    status: required
+    notes: "prune + object_walker as go-git implements"
+
+  # --- Excluded from port inventory ---
+  - go: _examples
+    status: excluded
+    notes: "examples only"
+  - go: cli
+    status: excluded
+    notes: "optional later tool; not library scope"
+
+  # --- Test-only (no production zig package required) ---
+  - go: internal/test
+    status: test_only
+    notes: "use Zig std.testing"
+  - go: storage/test
+    status: test_only
+    notes: "port as gitz test suite, not production package"
+  - go: plumbing/transport/test
+    status: test_only
+  - go: plumbing/transport/http/internal/test
+    status: test_only
+  - go: plumbing/transport/ssh/internal/test
+    status: test_only
+  - go: utils/merkletrie/internal/fsnoder
+    status: test_only
+    notes: "test helpers for merkletrie"
+  - go: tests/objectverify
+    status: test_only

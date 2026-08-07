@@ -214,7 +214,7 @@ go-git/                   reference clone (sibling, pinned)
 
 ## Phase workflow
 
-Work runs in **phases**. Phase order is **sequential**. Detail for each phase lives in a **separate phase plan**. Write that plan after this file exists and after go-git is cloned and analyzed.
+Work runs in **phases**. Phase order is **sequential**. Detail for each phase lives in **`PHASE_PLAN.md`**. Strategy background: **`PORT_STRATEGY.md`**.
 
 ### Sequence rules
 
@@ -222,6 +222,7 @@ Work runs in **phases**. Phase order is **sequential**. Detail for each phase li
 - Do not merge phase N+1 work before phase N checks pass.
 - Each phase uses its own worktree and branch (or a named feature branch for that phase).
 - Merge phase results into `develop` when the phase is done and Bazel checks pass.
+- **After Phase G:** acceptance for inventories, goldens, metrics, and phase gates is **only** `bazel test //check:phase_N` (and related `//check:…` targets). Hand-run scripts are not completion criteria. See `docs/GATES.md`.
 
 ### Parallel work inside a phase
 
@@ -302,22 +303,32 @@ git branch -d hotfix/xyz
 
 ## Checks and balances
 
-Port quality is enforced by **Bazel genrules and tests**, not by long checklists in markdown.
+Port quality is enforced by **Bazel tests under `//check:…`**, not by long checklists in markdown and not by hand-run scripts.
 
-Required classes of check (implement these in Bazel as the port grows):
+**After Phase G:** “done” means the relevant Bazel gate is green. Inventories, goldens, metrics, and allowlists run only through Bazel (`docs/GATES.md`). Example:
 
-| Check | Role |
-|---|---|
-| **File inventory** | Compare gitz surface to go-git modules. Fail on missing or unexpected files. |
-| **Function inventory** | Compare exported API and key functions to go-git. Fail on missing coverage. |
-| **Behavioral goldens** | Run known Git cases (objects, packs, indexes, and related cases). Fail on mismatch. |
+```bash
+bazel test //check:phase_g
+bazel test //check:phase_N
+```
+
+Required classes of check:
+
+| Check | Bazel target (examples) | Role |
+|---|---|---|
+| **File inventory** | `//check:file_inventory` | Compare gitz surface to inventory; fail on missing/hollow packages |
+| **Function / API inventory** | `//check:api_inventory` | Semantic IDs / exports for due packages |
+| **Behavioral goldens** | `//check:goldens_smoke` (+ later suites) | Known Git cases; fail on mismatch |
+| **Metrics / allowlists** | `//check:metrics`, `//check:allowlists` | Thresholds, pin, overdue gaps |
 
 ### Rules for these checks
 
 - Do not weaken, skip, or disable these targets without user approval.
 - Prefer genrules and tests that read the pinned `go-git/` tree and gitz sources.
-- Phase work is done only when the phase targets and the shared inventories pass.
+- Phase work is done only when `//check:phase_N` is green **and** `inventories/packages.yaml` `current_phase` is bumped so due packages are enforced.
+- Green `//check:phase_N` while `current_phase` is still behind N is **not** merge-complete for phase N packages.
 - When you add a go-git area to gitz, extend the inventories and goldens in the same change set when possible.
+- Do not treat markdown text as a substitute for failing Bazel checks.
 
 ## Rules for AI agents
 

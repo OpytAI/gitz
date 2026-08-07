@@ -1,0 +1,15 @@
+# API inventory: utils/ioutil (phase 1)
+package: utils/ioutil
+phase: 1
+require:
+  types: []
+  functions:
+    - NonEmptyReader
+    - NewReaderFromBuf
+  constants: []
+  semantic:
+    - ioutil.non_empty_reader
+    - ioutil.new_reader_from_buf
+zig_map:
+  NonEmptyReader: ioutil.nonEmptyReader
+  NewReaderFromBuf: ioutil.newReaderFromBuf

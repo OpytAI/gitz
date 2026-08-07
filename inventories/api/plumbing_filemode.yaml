@@ -1,0 +1,33 @@
+# API inventory: plumbing/filemode (phase 1)
+package: plumbing/filemode
+phase: 1
+require:
+  types:
+    - FileMode
+  functions: []
+  constants:
+    - Empty
+    - Dir
+    - Regular
+    - Deprecated
+    - Executable
+    - Symlink
+    - Submodule
+  semantic:
+    - filemode.FileMode
+    - filemode.Empty
+    - filemode.Dir
+    - filemode.Regular
+    - filemode.Deprecated
+    - filemode.Executable
+    - filemode.Symlink
+    - filemode.Submodule
+zig_map:
+  FileMode: filemode.FileMode
+  Empty: filemode.empty
+  Dir: filemode.dir
+  Regular: filemode.regular
+  Deprecated: filemode.deprecated
+  Executable: filemode.executable
+  Symlink: filemode.symlink
+  Submodule: filemode.submodule

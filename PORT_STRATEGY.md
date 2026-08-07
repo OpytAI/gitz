@@ -1,10 +1,10 @@
 # gitz port strategy
 
-**Status:** analysis complete (go-git `v5.19.2`). Phase plan is separate and comes next.  
+**Status:** analysis complete (go-git `v5.19.2`). Concrete phases live in **`PHASE_PLAN.md`**.  
 **Pin:** see `GO_GIT_PIN.md`.  
 **Goal:** full behavioral port of go-git into Zig, under Bazel + rules_zig (Zig 0.16), with strict automated guardrails.
 
-This document is the strategy. It does not list every phase deliverable. Phases will reference this document.
+This document is the strategy (how). **`PHASE_PLAN.md`** lists phase deliverables, gates, and parallel slices (what/when).
 
 ---
 
@@ -117,7 +117,7 @@ gitz-develop/                 # worktree (example)
     utils/...
     config/
     git/                      # porcelain (or repo/ remote/ worktree/)
-  testdata/
+  data/
     goldens/                  # committed expected outputs
     fixtures/                 # vendored or generated from go-git-fixtures
   check/                      # Bazel packages that ONLY run guardrails
@@ -207,8 +207,8 @@ require:
 
 **Sources of truth (in order):**
 
-1. Existing go-git unit test vectors (extract to `testdata/goldens`).  
-2. `go-git-fixtures` packs and repos (vendor selected fixtures under `testdata/fixtures`, do not depend on network).  
+1. Existing go-git unit test vectors (extract to `data/goldens`).  
+2. `go-git-fixtures` packs and repos (vendor selected fixtures under `data/fixtures`, do not depend on network).  
 3. Optional **oracle mode**: genrule runs a tiny Go helper in `tools/` against pinned go-git and writes expected JSON; committed goldens must match. Oracle is for **refresh**, not a runtime dependency of default tests (keeps gitz tests pure Zig).
 
 #### Class B — suite goldens (storage / protocol without network)
@@ -341,7 +341,7 @@ Match go-git client filters: no multi_ack, no thin-pack by default. Packp golden
 
 Suggested parallel splits by phase type:
 
-- **Codec phase:** one agent per format package + one agent on goldens/testdata.  
+- **Codec phase:** one agent per format package + one agent on goldens/data.  
 - **Storage phase:** memory storer ∥ API inventory ∥ filesystem/dotgit after codecs land.  
 - **Porcelain phase:** remote ∥ worktree only after shared repo type is stable.
 
@@ -377,13 +377,12 @@ A **phase** is done when `//check:phase_N` is green and the phase branch is merg
 
 ---
 
-## 11. Immediate next steps (after this strategy)
+## 11. Immediate next steps
 
-1. Write the **phase plan** (ordered phases, package sets, gate targets, parallel work slices).  
-2. Bootstrap Bazel (`MODULE.bazel`, rules_zig 0.16, `//:gitz` skeleton).  
-3. Add `inventories/packages.yaml` for L0–L1 packages and empty `//check:file_inventory` that fails until packages exist.  
-4. Implement L0 + first goldens (hash, filemode, binary, pktline).  
-5. Grow inventories and goldens with every phase — never as a cleanup at the end.
+1. ~~Write the phase plan~~ → **`PHASE_PLAN.md`**.  
+2. ~~Bootstrap Bazel~~ → rules_zig 0.16 + `//src:gitz` on `develop`.  
+3. ~~**Execute Phase G** (guardrails)~~ → inventories, goldens harness, metrics, `//check:phase_*` (see `docs/GATES.md`).  
+4. Execute Phase 1+ per plan; grow inventories and goldens every phase — never as a cleanup at the end.
 
 ---
 

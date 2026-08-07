@@ -1,0 +1,27 @@
+# API inventory: utils/binary (phase 1)
+package: utils/binary
+phase: 1
+require:
+  types: []
+  functions:
+    - ReadVariableWidthInt
+    - WriteVariableWidthInt
+    - ReadUint32
+    - WriteUint32
+    - ReadUint64
+    - WriteUint64
+  constants: []
+  semantic:
+    - binary.read_variable_width_int
+    - binary.write_variable_width_int
+    - binary.read_u32
+    - binary.write_u32
+    - binary.read_u64
+    - binary.write_u64
+zig_map:
+  ReadVariableWidthInt: binary.readVariableWidthInt
+  WriteVariableWidthInt: binary.writeVariableWidthInt
+  ReadUint32: binary.readUint32
+  WriteUint32: binary.writeUint32
+  ReadUint64: binary.readUint64
+  WriteUint64: binary.writeUint64

@@ -1,0 +1,12 @@
+# API inventory: utils/trace (phase 1)
+package: utils/trace
+phase: 1
+require:
+  types: []
+  functions:
+    - Performance
+  constants: []
+  semantic:
+    - trace.performance
+zig_map:
+  Performance: trace.performance

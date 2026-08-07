@@ -1,0 +1,24 @@
+# API inventory: plumbing root (phase 1)
+package: plumbing
+phase: 1
+require:
+  types:
+    - Hash
+    - ObjectType
+    - MemoryObject
+    - Reference
+  functions: []
+  constants:
+    - ZeroHash
+  semantic:
+    - plumbing.Hash
+    - plumbing.ObjectType
+    - plumbing.MemoryObject
+    - plumbing.Reference
+    - plumbing.ZeroHash
+zig_map:
+  Hash: plumbing.Hash
+  ObjectType: plumbing.ObjectType
+  MemoryObject: plumbing.MemoryObject
+  Reference: plumbing.Reference
+  ZeroHash: plumbing.zero_hash
