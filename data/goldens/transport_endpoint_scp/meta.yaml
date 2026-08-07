@@ -2,3 +2,4 @@ name: transport_endpoint_scp
 type: file_equals
 actual: actual.txt
 expected: expected.txt
+note: Endpoint.string for git@github.com:user/repo.git (scp-like)

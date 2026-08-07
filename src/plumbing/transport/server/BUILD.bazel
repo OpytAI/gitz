@@ -1,16 +1,15 @@
 load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
 
 # go-git plumbing/transport/server — in-process upload-pack / receive-pack.
-_SRCS = [
+_LIB_SRCS = [
     "loader.zig",
     "server.zig",
-    "server_test.zig",
 ]
 
 zig_library(
     name = "server",
     main = "root.zig",
-    srcs = _SRCS,
+    srcs = _LIB_SRCS,
     import_name = "server",
     visibility = ["//visibility:public"],
     deps = [
@@ -31,14 +30,20 @@ zig_library(
     ],
 )
 
+# Unit tests: separate main so production root never imports fixtures.
 zig_test(
     name = "server_test",
     size = "small",
-    main = "root.zig",
-    srcs = _SRCS,
+    main = "server_test_root.zig",
+    srcs = _LIB_SRCS + [
+        "root.zig",
+        "server_test.zig",
+        "server_test_root.zig",
+    ],
     deps = [
         "//src/plumbing",
         "//src/plumbing/transport",
+        "//src/plumbing/transport/test:fixtures",
         "//src/plumbing/protocol/packp",
         "//src/plumbing/protocol/packp/capability",
         "//src/plumbing/protocol/packp/sideband",

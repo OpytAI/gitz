@@ -257,6 +257,7 @@ test_suite(
         "//src/plumbing/transport/client:client_test",
         "//src/plumbing/transport/server:server_test",
         "//src/plumbing/transport/internal/common:common_test",
+        "//src/plumbing/transport/test:transport_test",
     ],
 )
 

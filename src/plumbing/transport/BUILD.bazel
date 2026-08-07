@@ -31,7 +31,7 @@ zig_test(
 )
 
 # Sources for //check file/API inventory (parent globs do not cross package borders).
-# Exclude nested Bazel packages (client, server, internal/common).
+# Exclude nested Bazel packages (client, server, internal/common, test).
 filegroup(
     name = "package_srcs",
     srcs = glob(
@@ -40,6 +40,7 @@ filegroup(
             "client/**",
             "server/**",
             "internal/**",
+            "test/**",
         ],
     ),
     visibility = ["//visibility:public"],

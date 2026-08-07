@@ -16,8 +16,10 @@ require:
     - newClient
     - UploadPackSession
     - ReceivePackSession
+    - RepoStorer
 zig_map:
   MapLoader: MapLoader
   Loader: Loader
   NewServer: newServer
   NewClient: newClient
+  RepoStorer: RepoStorer

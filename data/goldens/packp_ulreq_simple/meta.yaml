@@ -2,3 +2,4 @@ name: packp_ulreq_simple
 type: file_equals
 actual: actual.txt
 expected: expected.txt
+note: Minimal want + flush pkt-line

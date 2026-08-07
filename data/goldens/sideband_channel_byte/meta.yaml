@@ -2,3 +2,4 @@ name: sideband_channel_byte
 type: file_equals
 actual: actual.txt
 expected: expected.txt
+note: pkt-line 0009 + PackData channel + PACK

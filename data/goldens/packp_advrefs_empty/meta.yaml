@@ -2,3 +2,4 @@ name: packp_advrefs_empty
 type: file_equals
 actual: actual.txt
 expected: expected.txt
+note: Wire from packp advrefs_encode.TestCapsNoHead

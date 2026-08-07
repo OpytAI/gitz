@@ -9,17 +9,24 @@
 //! # Design notes
 //!
 //! - Storers are type-erased via `RepoStorer` (memory + filesystem backends).
+//! - `RepoStorer.reference` always returns **caller-owned** name/target strings;
+//!   free with `freeReference` (erases memory-borrowed vs FS-owned backends).
+//! - `FilesystemLoader` chroots into `.git` for non-bare endpoints so DotGit
+//!   sees `config`/`objects`/`refs` at the FS root (go-git leaves the worktree).
+//! - Advertise peels annotated tags under `refs/tags/*` (go-git still TODOs this).
 //! - Upload-pack encodes the pack into an allocated buffer (no goroutine pipe).
 //! - Receive-pack unpacks via `packfile.updateObjectStorage` then copies objects
 //!   into the session storer and applies ref create/update/delete.
 //! - `as_client` (NewClient) returns `EmptyRemoteRepository` when advertise is empty.
+//! - Cross-package serve e2e lives in `//src/plumbing/transport/test` (not here).
 //!
 //! # go-git test map
 //!
 //! | go-git | Zig |
 //! |--------|-----|
 //! | MapLoader load | `MapLoader load and miss` |
-//! | Advertise refs + caps | `advertise refs on memory storage` |
+//! | FilesystemLoader bare/non-bare | `FilesystemLoaderMem *` |
+//! | Advertise refs + caps + peel | `advertise refs *` / `advertise peels *` |
 //! | asClient empty repo | `asClient empty repo` |
 //! | UploadPack encode | `upload-pack roundtrip pack objects` |
 //! | ReceivePack ref update | `receive-pack create update delete refs` |
@@ -46,8 +53,10 @@ pub const ReceivePackSession = server_mod.ReceivePackSession;
 pub const ReceivePackOutcome = server_mod.ReceivePackOutcome;
 pub const Error = server_mod.Error;
 
+// Unit tests for this package are pulled in by `server_test_root.zig`
+// (//server:server_test). Keep the production root free of test-only imports
+// so dependents do not require `server_test.zig` / fixtures.
 test {
     _ = @import("loader.zig");
     _ = @import("server.zig");
-    _ = @import("server_test.zig");
 }

@@ -74,6 +74,21 @@ bazel --output_user_root=/mnt/workspace/gitz/bazel-cache test //...
 bazel --output_user_root=/mnt/workspace/gitz/bazel-cache shutdown
 ```
 
+## Testing layout
+
+Full rules: **`docs/TESTING.md`**.
+
+Short form:
+
+| Kind | Location |
+|------|----------|
+| Unit | Co-located `*_test.zig` in the production package |
+| Shared fixtures / suites | `src/<area>/test/` as a **test-only** Bazel library |
+| Cross-package e2e | Same `…/test/` package as go-git (e.g. `src/plumbing/transport/test`) |
+
+Production `zig_library` targets must **not** depend on test packages. Prefer
+shared fixtures over copy-pasted `populateRepo` helpers.
+
 ## Initializing a fresh project
 
 If there is no repository yet:

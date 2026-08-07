@@ -318,7 +318,9 @@ packages:
     status: test_only
     notes: "port as gitz test suite, not production package"
   - go: plumbing/transport/test
+    zig: src/plumbing/transport/test
     status: test_only
+    notes: "fixtures + cross-package e2e; see docs/TESTING.md"
   - go: plumbing/transport/http/internal/test
     status: test_only
   - go: plumbing/transport/ssh/internal/test

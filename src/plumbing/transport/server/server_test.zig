@@ -5,7 +5,6 @@
 
 const std = @import("std");
 const plumbing = @import("plumbing");
-const transport = @import("transport");
 const packp = @import("packp");
 const capability = @import("capability");
 const memory = @import("memory");
@@ -13,6 +12,7 @@ const packfile = @import("packfile");
 const sync = @import("utils/sync");
 const revlist = @import("revlist");
 const fs_pkg = @import("fs");
+const fixtures = @import("transport_test_fixtures");
 
 const server_pkg = @import("root.zig");
 const MapLoader = server_pkg.MapLoader;
@@ -26,92 +26,12 @@ const Hash = plumbing.Hash;
 const ZeroHash = plumbing.ZeroHash;
 const Reference = plumbing.Reference;
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn makeEndpoint(allocator: Allocator, url: []const u8) !transport.Endpoint {
-    return transport.newEndpoint(allocator, std.testing.io, url);
-}
-
-fn freeEndpoint(allocator: Allocator, ep: *transport.Endpoint) void {
-    _ = allocator;
-    ep.deinit();
-}
-
-fn storeBlob(s: *memory.Storage, content: []const u8) !Hash {
-    const obj = try s.newEncodedObject();
-    obj.setType(.blob);
-    _ = try obj.write(content);
-    return s.setEncodedObject(obj);
-}
-
-fn storeTree(s: *memory.Storage, allocator: Allocator, blob: Hash, name: []const u8) !Hash {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
-    try buf.appendSlice(allocator, "100644 ");
-    try buf.appendSlice(allocator, name);
-    try buf.append(allocator, 0);
-    try buf.appendSlice(allocator, blob.bytes[0..]);
-    const obj = try s.newEncodedObject();
-    obj.setType(.tree);
-    _ = try obj.write(buf.items);
-    return s.setEncodedObject(obj);
-}
-
-fn storeCommit(s: *memory.Storage, allocator: Allocator, tree: Hash, msg: []const u8) !Hash {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
-    var tree_hex: [plumbing.HexSize]u8 = undefined;
-    try buf.appendSlice(allocator, "tree ");
-    try buf.appendSlice(allocator, tree.string(&tree_hex));
-    try buf.append(allocator, '\n');
-    try buf.appendSlice(allocator, "author A <a@b> 1 +0000\n");
-    try buf.appendSlice(allocator, "committer A <a@b> 1 +0000\n");
-    try buf.append(allocator, '\n');
-    try buf.appendSlice(allocator, msg);
-    const obj = try s.newEncodedObject();
-    obj.setType(.commit);
-    _ = try obj.write(buf.items);
-    return s.setEncodedObject(obj);
-}
-
-fn populateRepo(s: *memory.Storage, allocator: Allocator) !Hash {
-    const blob = try storeBlob(s, "hello");
-    const tree = try storeTree(s, allocator, blob, "hello.txt");
-    const commit = try storeCommit(s, allocator, tree, "init\n");
-    try s.setReference(Reference.newHashReference(plumbing.master, commit));
-    try s.setReference(Reference.newSymbolicReference(plumbing.HEAD, plumbing.master));
-    return commit;
-}
-
-/// Store an annotated tag object pointing at `target` (`target_type` is e.g. "commit" or "tag").
-fn storeAnnotatedTag(
-    s: *memory.Storage,
-    allocator: Allocator,
-    target: Hash,
-    target_type: []const u8,
-    name: []const u8,
-) !Hash {
-    var buf: std.ArrayList(u8) = .empty;
-    defer buf.deinit(allocator);
-    var hex: [plumbing.HexSize]u8 = undefined;
-    try buf.appendSlice(allocator, "object ");
-    try buf.appendSlice(allocator, target.string(&hex));
-    try buf.append(allocator, '\n');
-    try buf.appendSlice(allocator, "type ");
-    try buf.appendSlice(allocator, target_type);
-    try buf.append(allocator, '\n');
-    try buf.appendSlice(allocator, "tag ");
-    try buf.appendSlice(allocator, name);
-    try buf.append(allocator, '\n');
-    try buf.appendSlice(allocator, "tagger A <a@b> 1 +0000\n\n");
-    try buf.appendSlice(allocator, "annotated tag\n");
-    const obj = try s.newEncodedObject();
-    obj.setType(.tag);
-    _ = try obj.write(buf.items);
-    return s.setEncodedObject(obj);
-}
+const makeEndpoint = fixtures.makeEndpoint;
+const populateRepo = fixtures.populateRepo;
+const storeBlob = fixtures.storeBlob;
+const storeTree = fixtures.storeTree;
+const storeCommit = fixtures.storeCommit;
+const storeAnnotatedTag = fixtures.storeAnnotatedTag;
 
 // ---------------------------------------------------------------------------
 // MapLoader
@@ -123,7 +43,7 @@ test "MapLoader load and miss" {
     defer loader.deinit();
 
     var ep = try makeEndpoint(allocator, "file://test-repo");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
 
     try std.testing.expectError(error.RepositoryNotFound, loader.load(&ep));
 
@@ -139,15 +59,68 @@ test "MapLoader load and miss" {
     try std.testing.expect(got.ptr == @as(*anyopaque, @ptrCast(sto)));
 }
 
+test "RepoStorer reference is always caller-owned" {
+    const allocator = std.testing.allocator;
+    const sto = try memory.newStorage(allocator);
+    defer {
+        sto.deinit();
+        allocator.destroy(sto);
+    }
+    _ = try populateRepo(sto, allocator);
+
+    const rs = server_pkg.RepoStorer.from(memory.Storage, sto);
+    // Memory backend borrows internally; RepoStorer must dupe so free is safe.
+    const head = try rs.reference(plumbing.HEAD);
+    defer rs.freeReference(head);
+    try std.testing.expect(head.type == .symbolic);
+
+    const resolved = try rs.resolveReference(plumbing.HEAD);
+    defer rs.freeReference(resolved);
+    try std.testing.expect(resolved.type == .hash);
+
+    try std.testing.expect(try rs.hasReference(plumbing.master));
+    try std.testing.expect(!try rs.hasReference(plumbing.ReferenceName.init("refs/heads/nope")));
+}
+
 // ---------------------------------------------------------------------------
-// FilesystemLoader (Mem) — go-git loader_test.go parity
+// FilesystemLoader (Mem) — go-git loader_test.go parity + usable DotGit root
 // ---------------------------------------------------------------------------
 
-/// Write a small file on a Mem FS (parent dirs created by open/create).
 fn writeMemFile(mem: *fs_pkg.Mem, path: []const u8, content: []const u8) !void {
     var f = try mem.create(path);
     defer f.close() catch {};
     if (content.len > 0) _ = try f.write(content);
+}
+
+/// Minimal bare git dir under `root` (config + objects/refs scaffolding).
+fn seedBareLayout(mem: *fs_pkg.Mem, root: []const u8) !void {
+    try mem.mkdirAll(root, 0o755);
+    var path_buf: [256]u8 = undefined;
+    const config = try std.fmt.bufPrint(&path_buf, "{s}/config", .{root});
+    try writeMemFile(mem, config, "[core]\n\tbare = true\n");
+    inline for (.{ "objects/pack", "objects/info", "refs/heads", "refs/tags" }) |sub| {
+        const p = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ root, sub });
+        try mem.mkdirAll(p, 0o755);
+    }
+}
+
+/// Minimal non-bare worktree: `$root/.git/{config,objects,refs}`.
+fn seedNonBareLayout(mem: *fs_pkg.Mem, root: []const u8) !void {
+    var path_buf: [256]u8 = undefined;
+    const git = try std.fmt.bufPrint(&path_buf, "{s}/.git", .{root});
+    try seedBareLayout(mem, git);
+    // Overwrite bare flag for honesty; layout detection only needs `.git` present.
+    const config = try std.fmt.bufPrint(&path_buf, "{s}/.git/config", .{root});
+    try writeMemFile(mem, config, "[core]\n\tbare = false\n");
+}
+
+/// Write a hash ref through the loaded storer (proves DotGit root is live).
+fn writeProbeRef(sto: server_pkg.RepoStorer) !void {
+    const h = plumbing.newHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    try sto.setReference(Reference.newHashReference(
+        plumbing.ReferenceName.init("refs/heads/loader-check"),
+        h,
+    ));
 }
 
 test "FilesystemLoaderMem loads bare repo" {
@@ -155,48 +128,39 @@ test "FilesystemLoaderMem loads bare repo" {
 
     var mem = try fs_pkg.Mem.init(allocator);
     defer mem.deinit();
-
-    // Bare layout: config at repository root (go-git bare = Stat("config") ok).
-    try mem.mkdirAll("/repo", 0o755);
-    try writeMemFile(&mem, "/repo/config", "[core]\n\tbare = true\n");
-    try mem.mkdirAll("/repo/objects/pack", 0o755);
-    try mem.mkdirAll("/repo/objects/info", 0o755);
-    try mem.mkdirAll("/repo/refs/heads", 0o755);
-    try mem.mkdirAll("/repo/refs/tags", 0o755);
+    try seedBareLayout(&mem, "/repo");
 
     var loader = newFilesystemLoaderMem(allocator, &mem);
     defer loader.deinit();
 
     var ep = try makeEndpoint(allocator, "/repo");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
 
-    // Load succeeds and yields a non-null type-erased storer (go-git: sto NotNil).
     const sto = try loader.load(&ep);
-    try std.testing.expect(@intFromPtr(sto.ptr) != 0);
+    try writeProbeRef(sto);
+    // Loose ref lands under the bare root (not a nested `.git`).
+    _ = try mem.stat("/repo/refs/heads/loader-check");
 }
 
-test "FilesystemLoaderMem loads non-bare repo" {
+test "FilesystemLoaderMem loads non-bare repo via .git" {
     const allocator = std.testing.allocator;
 
     var mem = try fs_pkg.Mem.init(allocator);
     defer mem.deinit();
-
-    // Non-bare: worktree root has `.git` (no top-level config).
-    try mem.mkdirAll("/work/.git", 0o755);
-    try writeMemFile(&mem, "/work/.git/config", "[core]\n\tbare = false\n");
-    try mem.mkdirAll("/work/.git/objects/pack", 0o755);
-    try mem.mkdirAll("/work/.git/objects/info", 0o755);
-    try mem.mkdirAll("/work/.git/refs/heads", 0o755);
-    try mem.mkdirAll("/work/.git/refs/tags", 0o755);
+    try seedNonBareLayout(&mem, "/work");
 
     var loader = newFilesystemLoaderMem(allocator, &mem);
     defer loader.deinit();
 
     var ep = try makeEndpoint(allocator, "/work");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
 
+    // Storage must be rooted at `.git`, not the worktree.
     const sto = try loader.load(&ep);
-    try std.testing.expect(@intFromPtr(sto.ptr) != 0);
+    try writeProbeRef(sto);
+    _ = try mem.stat("/work/.git/refs/heads/loader-check");
+    // Without the `.git` chroot, refs would incorrectly appear under the worktree.
+    try std.testing.expectError(error.NotExist, mem.stat("/work/refs/heads/loader-check"));
 }
 
 test "FilesystemLoaderMem missing path is RepositoryNotFound" {
@@ -209,7 +173,7 @@ test "FilesystemLoaderMem missing path is RepositoryNotFound" {
     defer loader.deinit();
 
     var ep = try makeEndpoint(allocator, "/does-not-exist");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
 
     try std.testing.expectError(error.RepositoryNotFound, loader.load(&ep));
 }
@@ -225,7 +189,7 @@ test "FilesystemLoaderMem ignore host on missing path" {
 
     // Host is ignored; only path `/does-not-exist` is resolved on base FS.
     var ep = try makeEndpoint(allocator, "https://github.com/does-not-exist");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
 
     try std.testing.expectError(error.RepositoryNotFound, loader.load(&ep));
 }
@@ -235,14 +199,13 @@ test "FilesystemLoaderMem empty dir without config or .git is RepositoryNotFound
 
     var mem = try fs_pkg.Mem.init(allocator);
     defer mem.deinit();
-
     try mem.mkdirAll("/empty", 0o755);
 
     var loader = newFilesystemLoaderMem(allocator, &mem);
     defer loader.deinit();
 
     var ep = try makeEndpoint(allocator, "/empty");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
 
     try std.testing.expectError(error.RepositoryNotFound, loader.load(&ep));
 }
@@ -252,19 +215,18 @@ test "FilesystemLoaderMem file URL bare repo" {
 
     var mem = try fs_pkg.Mem.init(allocator);
     defer mem.deinit();
-
-    try mem.mkdirAll("/bare.git", 0o755);
-    try writeMemFile(&mem, "/bare.git/config", "[core]\n\tbare = true\n");
+    try seedBareLayout(&mem, "/bare.git");
 
     var loader = FilesystemLoaderMem.init(allocator, &mem);
     defer loader.deinit();
 
     var ep = try makeEndpoint(allocator, "file:///bare.git");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
     try std.testing.expectEqualStrings("/bare.git", ep.path);
 
     const sto = try loader.load(&ep);
-    try std.testing.expect(@intFromPtr(sto.ptr) != 0);
+    try writeProbeRef(sto);
+    _ = try mem.stat("/bare.git/refs/heads/loader-check");
 }
 
 // ---------------------------------------------------------------------------
@@ -285,7 +247,7 @@ test "advertise refs on memory storage" {
     const head = try populateRepo(sto, allocator);
 
     var ep = try makeEndpoint(allocator, "file://adv-repo");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
     try loader.put(&ep, sto);
 
     var srv = newServer(allocator, loader.asLoader());
@@ -338,7 +300,7 @@ test "advertise peels annotated tag under refs/tags" {
     ));
 
     var ep = try makeEndpoint(allocator, "file://peel-repo");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
     try loader.put(&ep, sto);
 
     var srv = newServer(allocator, loader.asLoader());
@@ -376,7 +338,7 @@ test "asClient empty repo yields EmptyRemoteRepository" {
     }
 
     var ep = try makeEndpoint(allocator, "file://empty-repo");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
     try loader.put(&ep, sto);
 
     var client = newClient(allocator, loader.asLoader());
@@ -399,7 +361,7 @@ test "receive-pack advertise empty repo is ok" {
     }
 
     var ep = try makeEndpoint(allocator, "file://empty-rp");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
     try loader.put(&ep, sto);
 
     var srv = newServer(allocator, loader.asLoader());
@@ -431,7 +393,7 @@ test "upload-pack roundtrip pack objects" {
     const head = try populateRepo(sto, allocator);
 
     var ep = try makeEndpoint(allocator, "file://up-repo");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
     try loader.put(&ep, sto);
 
     var srv = newServer(allocator, loader.asLoader());
@@ -493,7 +455,7 @@ test "receive-pack create update delete refs" {
     const head2 = try storeCommit(sto, allocator, tree2, "second\n");
 
     var ep = try makeEndpoint(allocator, "file://rp-repo");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
     try loader.put(&ep, sto);
 
     var srv = newServer(allocator, loader.asLoader());
@@ -590,7 +552,7 @@ test "receive-pack create fails when ref exists" {
     const head = try populateRepo(sto, allocator);
 
     var ep = try makeEndpoint(allocator, "file://rp-exists");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
     try loader.put(&ep, sto);
 
     var srv = newServer(allocator, loader.asLoader());
@@ -629,7 +591,7 @@ test "receive-pack atomic rejects all when one command invalid" {
     const head = try populateRepo(sto, allocator);
 
     var ep = try makeEndpoint(allocator, "file://rp-atomic");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
     try loader.put(&ep, sto);
 
     var srv = newServer(allocator, loader.asLoader());
@@ -680,7 +642,7 @@ test "upload-pack empty request" {
     _ = try populateRepo(sto, allocator);
 
     var ep = try makeEndpoint(allocator, "file://up-empty");
-    defer freeEndpoint(allocator, &ep);
+    defer ep.deinit();
     try loader.put(&ep, sto);
 
     var srv = newServer(allocator, loader.asLoader());

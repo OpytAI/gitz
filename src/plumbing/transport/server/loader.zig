@@ -14,6 +14,7 @@ const memory = @import("memory");
 const filesystem = @import("filesystem");
 const cache_pkg = @import("cache");
 const fs_pkg = @import("fs");
+const storer = @import("storer");
 
 const Allocator = std.mem.Allocator;
 const Endpoint = transport.Endpoint;
@@ -23,6 +24,44 @@ const ObjectType = plumbing.ObjectType;
 const Reference = plumbing.Reference;
 const ReferenceName = plumbing.ReferenceName;
 
+/// Invoke a method that returns either `void` or `!void` (memory vs filesystem).
+fn callMaybeError(result: anytype) !void {
+    if (comptime @typeInfo(@TypeOf(result)) == .error_union) {
+        return try result;
+    }
+}
+
+fn referenceReturnsOwned(comptime T: type) bool {
+    return @hasDecl(T, "reference_returns_owned") and T.reference_returns_owned;
+}
+
+/// Deep-copy a reference so name/target strings are allocator-owned.
+fn dupeReference(allocator: Allocator, r: Reference) Allocator.Error!Reference {
+    const name = try allocator.dupe(u8, r.name.raw);
+    errdefer allocator.free(name);
+    switch (r.type) {
+        .hash => return Reference.newHashReference(ReferenceName.init(name), r.hash),
+        .symbolic => {
+            const target = try allocator.dupe(u8, r.target.raw);
+            errdefer allocator.free(target);
+            return Reference.newSymbolicReference(
+                ReferenceName.init(name),
+                ReferenceName.init(target),
+            );
+        },
+        .invalid => {
+            allocator.free(name);
+            return r;
+        },
+    }
+}
+
+/// Free name/target strings of a caller-owned reference.
+fn freeOwnedReference(allocator: Allocator, r: Reference) void {
+    if (r.name.raw.len > 0) allocator.free(r.name.raw);
+    if (r.type == .symbolic and r.target.raw.len > 0) allocator.free(r.target.raw);
+}
+
 // ---------------------------------------------------------------------------
 // RepoStorer — type-erased storer.Storer subset used by server sessions
 // ---------------------------------------------------------------------------
@@ -31,6 +70,13 @@ const ReferenceName = plumbing.ReferenceName;
 pub const HashRefCallback = *const fn (ctx: *anyopaque, name: []const u8, hash: Hash) anyerror!void;
 
 /// Type-erased repository storer (go-git `storer.Storer` subset for server).
+///
+/// # Reference ownership (uniform)
+///
+/// `reference` / `resolveReference` always return a **caller-owned** `Reference`:
+/// both `name.raw` and symbolic `target.raw` are heap slices. Free exactly once
+/// with `freeReference`. This erases the memory (borrowed) vs filesystem (owned)
+/// backend difference at the vtable boundary.
 pub const RepoStorer = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
@@ -41,6 +87,7 @@ pub const RepoStorer = struct {
         setEncodedObject: *const fn (ptr: *anyopaque, obj: *MemoryObject) anyerror!Hash,
         setReference: *const fn (ptr: *anyopaque, ref: Reference) anyerror!void,
         reference: *const fn (ptr: *anyopaque, name: ReferenceName) anyerror!Reference,
+        freeReference: *const fn (ptr: *anyopaque, ref: Reference) void,
         removeReference: *const fn (ptr: *anyopaque, name: ReferenceName) anyerror!void,
         forEachHashRef: *const fn (ptr: *anyopaque, ctx: *anyopaque, cb: HashRefCallback) anyerror!void,
     };
@@ -61,8 +108,14 @@ pub const RepoStorer = struct {
         return self.vtable.setReference(self.ptr, ref);
     }
 
+    /// Lookup; returned reference is always caller-owned — `freeReference` it.
     pub fn reference(self: RepoStorer, name: ReferenceName) anyerror!Reference {
         return self.vtable.reference(self.ptr, name);
+    }
+
+    /// Free a reference returned by `reference` or `resolveReference`.
+    pub fn freeReference(self: RepoStorer, ref: Reference) void {
+        self.vtable.freeReference(self.ptr, ref);
     }
 
     pub fn removeReference(self: RepoStorer, name: ReferenceName) anyerror!void {
@@ -73,7 +126,43 @@ pub const RepoStorer = struct {
         return self.vtable.forEachHashRef(self.ptr, ctx, cb);
     }
 
+    /// True if a reference exists (does not leak on success).
+    pub fn hasReference(self: RepoStorer, name: ReferenceName) anyerror!bool {
+        const r = self.reference(name) catch |err| {
+            if (err == error.ReferenceNotFound) return false;
+            return err;
+        };
+        self.freeReference(r);
+        return true;
+    }
+
+    /// Resolve symbolic refs to a hash ref. Intermediate hops are freed.
+    /// Caller owns the returned reference — `freeReference` it.
+    pub fn resolveReference(self: RepoStorer, name: ReferenceName) anyerror!Reference {
+        var current = try self.reference(name);
+        var depth: usize = 0;
+        while (current.type == .symbolic) {
+            if (depth >= storer.MaxResolveRecursion) {
+                self.freeReference(current);
+                return error.MaxResolveRecursion;
+            }
+            depth += 1;
+            const next = self.reference(current.target) catch |err| {
+                self.freeReference(current);
+                return err;
+            };
+            self.freeReference(current);
+            current = next;
+        }
+        return current;
+    }
+
     /// Build from a concrete EncodedObjectStorer + ReferenceStorer type.
+    ///
+    /// `T` must expose `.allocator` and the usual storage methods. If
+    /// `T.reference_returns_owned` is true (filesystem), values from
+    /// `reference` are already owned; otherwise they are duplicated so the
+    /// free contract is uniform.
     pub fn from(comptime T: type, impl: *T) RepoStorer {
         const gen = struct {
             fn encodedObjectFn(ptr: *anyopaque, t: ObjectType, h: Hash) anyerror!*MemoryObject {
@@ -94,20 +183,22 @@ pub const RepoStorer = struct {
             }
             fn referenceFn(ptr: *anyopaque, name: ReferenceName) anyerror!Reference {
                 const s: *T = @ptrCast(@alignCast(ptr));
-                return s.reference(name);
+                const r = try s.reference(name);
+                if (comptime referenceReturnsOwned(T)) return r;
+                return try dupeReference(s.allocator, r);
+            }
+            fn freeReferenceFn(ptr: *anyopaque, ref: Reference) void {
+                const s: *T = @ptrCast(@alignCast(ptr));
+                freeOwnedReference(s.allocator, ref);
             }
             fn removeReferenceFn(ptr: *anyopaque, name: ReferenceName) anyerror!void {
                 const s: *T = @ptrCast(@alignCast(ptr));
-                // memory.Storage.removeReference is void; filesystem/transactional return !void.
-                const result = s.removeReference(name);
-                if (comptime @typeInfo(@TypeOf(result)) == .error_union) {
-                    return try result;
-                }
+                return callMaybeError(s.removeReference(name));
             }
             fn forEachHashRefFn(ptr: *anyopaque, ctx: *anyopaque, cb: HashRefCallback) anyerror!void {
                 const s: *T = @ptrCast(@alignCast(ptr));
                 var it = try s.iterReferences();
-                // ReferenceSliceIter (memory) owns a snapshot array — must free.
+                // Iter deinit frees FS-owned snapshot refs; memory frees the slice only.
                 defer it.deinit();
                 while (true) {
                     const ref = it.next() catch |err| {
@@ -124,6 +215,7 @@ pub const RepoStorer = struct {
                 .setEncodedObject = setEncodedObjectFn,
                 .setReference = setReferenceFn,
                 .reference = referenceFn,
+                .freeReference = freeReferenceFn,
                 .removeReference = removeReferenceFn,
                 .forEachHashRef = forEachHashRefFn,
             };
@@ -202,59 +294,86 @@ pub fn FilesystemLoader(comptime Fs: type) type {
             return Loader.from(Self, self);
         }
 
-        /// go-git `(*fsLoader).Load`.
+        /// go-git `(*fsLoader).Load`, with a robust non-bare fix:
+        /// go-git leaves the worktree FS as the storage root (DotGit then cannot
+        /// see `config`/`objects` under `.git/`). We chroot into `.git` so the
+        /// filesystem storer is usable for both bare and non-bare layouts.
         pub fn load(self: *Self, ep: *const Endpoint) anyerror!RepoStorer {
             const path = endpointPath(ep);
-            const chrooted = self.base.chroot(path) catch {
-                return transport.Error.RepositoryNotFound;
-            };
 
-            // Track whether ownership transferred to `owned_*` lists so errdefer
-            // does not double-free after a successful append.
-            var fs_owned = false;
-            var cache_owned = false;
+            // Resolve first so a miss never touches heap-owned Fs state.
+            var git_fs = try resolveGitDir(Fs, self.base, path);
 
-            const fs_ptr = try self.allocator.create(Fs);
-            errdefer if (!fs_owned) {
-                fs_ptr.deinit();
-                self.allocator.destroy(fs_ptr);
+            const fs_ptr = self.allocator.create(Fs) catch |err| {
+                git_fs.deinit();
+                return err;
             };
-            fs_ptr.* = chrooted;
+            fs_ptr.* = git_fs;
 
-            // Bare repo has top-level `config`; non-bare has `.git`.
-            var bare = true;
-            _ = fs_ptr.stat("config") catch {
-                bare = false;
-            };
-            if (!bare) {
-                _ = fs_ptr.stat(".git") catch {
-                    return transport.Error.RepositoryNotFound;
-                };
+            // Initialized heap values; free on error until transferred to `owned_*`.
+            var pending_fs: ?*Fs = fs_ptr;
+            var pending_cache: ?*cache_pkg.ObjectLru = null;
+            var pending_sto: ?*StorageT = null;
+            errdefer {
+                if (pending_sto) |s| {
+                    s.deinit();
+                    self.allocator.destroy(s);
+                }
+                if (pending_cache) |c| {
+                    c.deinit();
+                    self.allocator.destroy(c);
+                }
+                if (pending_fs) |f| {
+                    f.deinit();
+                    self.allocator.destroy(f);
+                }
             }
-
-            try self.owned_fs.append(self.allocator, fs_ptr);
-            fs_owned = true;
 
             const cache_ptr = try self.allocator.create(cache_pkg.ObjectLru);
-            errdefer if (!cache_owned) {
-                cache_ptr.deinit();
-                self.allocator.destroy(cache_ptr);
-            };
             cache_ptr.* = cache_pkg.ObjectLru.initDefault(self.allocator);
-            try self.owned_caches.append(self.allocator, cache_ptr);
-            cache_owned = true;
+            pending_cache = cache_ptr;
 
             const sto = try filesystem.newStorageWithOptionsFor(Fs, self.allocator, fs_ptr, cache_ptr, .{});
-            errdefer {
-                // Storage owns nothing of fs/cache beyond pointers; free on failure
-                // before it is recorded in owned_storages.
-                sto.deinit();
-                self.allocator.destroy(sto);
-            }
+            pending_sto = sto;
+
+            try self.owned_fs.append(self.allocator, fs_ptr);
+            pending_fs = null;
+            try self.owned_caches.append(self.allocator, cache_ptr);
+            pending_cache = null;
             try self.owned_storages.append(self.allocator, sto);
+            pending_sto = null;
+
             return RepoStorer.from(StorageT, sto);
         }
     };
+}
+
+/// Open `base` at `path` and return a FS rooted at the git directory.
+///
+/// - Bare: top-level `config` exists → use that root.
+/// - Non-bare: `.git` exists → chroot into `.git` (usable DotGit layout).
+/// - Otherwise → `RepositoryNotFound`.
+fn resolveGitDir(comptime Fs: type, base: *Fs, path: []const u8) !Fs {
+    var root = base.chroot(path) catch return transport.Error.RepositoryNotFound;
+
+    const bare = blk: {
+        _ = root.stat("config") catch break :blk false;
+        break :blk true;
+    };
+    if (bare) return root;
+
+    _ = root.stat(".git") catch {
+        root.deinit();
+        return transport.Error.RepositoryNotFound;
+    };
+
+    const git_dir = root.chroot(".git") catch {
+        root.deinit();
+        return transport.Error.RepositoryNotFound;
+    };
+    // Worktree view only held the path prefix; free it after nesting into `.git`.
+    root.deinit();
+    return git_dir;
 }
 
 pub const FilesystemLoaderMem = FilesystemLoader(fs_pkg.Mem);

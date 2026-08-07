@@ -6,7 +6,6 @@ _SRCS = [
     "server.zig",
     "mocks.zig",
     "common_test.zig",
-    "serve_test.zig",
 ]
 
 zig_library(
@@ -18,14 +17,11 @@ zig_library(
     deps = [
         "//src/plumbing",
         "//src/plumbing/transport",
-        "//src/plumbing/transport/server",
         "//src/plumbing/protocol/packp",
         "//src/plumbing/protocol/packp/capability",
         "//src/plumbing/protocol/packp/sideband",
         "//src/plumbing/format/pktline",
-        "//src/storage/memory",
         "//src/utils/ioutil",
-        "//src/utils/sync",
     ],
 )
 
@@ -37,14 +33,11 @@ zig_test(
     deps = [
         "//src/plumbing",
         "//src/plumbing/transport",
-        "//src/plumbing/transport/server",
         "//src/plumbing/protocol/packp",
         "//src/plumbing/protocol/packp/capability",
         "//src/plumbing/protocol/packp/sideband",
         "//src/plumbing/format/pktline",
-        "//src/storage/memory",
         "//src/utils/ioutil",
-        "//src/utils/sync",
     ],
 )
 

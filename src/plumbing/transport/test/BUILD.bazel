@@ -1,0 +1,44 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/transport/test — fixtures + cross-package e2e.
+# Production packages must NOT depend on this target.
+
+zig_library(
+    name = "fixtures",
+    main = "fixtures.zig",
+    import_name = "transport_test_fixtures",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/transport",
+        "//src/storage/memory",
+    ],
+)
+
+_TEST_SRCS = [
+    "fixtures.zig",
+    "serve_e2e.zig",
+]
+
+zig_test(
+    name = "transport_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _TEST_SRCS,
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/transport",
+        "//src/plumbing/transport/server",
+        "//src/plumbing/transport/internal/common",
+        "//src/plumbing/protocol/packp",
+        "//src/plumbing/protocol/packp/capability",
+        "//src/storage/memory",
+        "//src/utils/sync",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

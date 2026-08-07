@@ -10,7 +10,6 @@ const packp = @import("packp");
 const capability = @import("capability");
 const revlist = @import("revlist");
 const packfile = @import("packfile");
-const storer = @import("storer");
 const sync = @import("utils/sync");
 
 const loader_mod = @import("loader.zig");
@@ -526,14 +525,16 @@ fn setHEAD(s: RepoStorer, ar: *packp.AdvRefs) !void {
         if (err == error.ReferenceNotFound) return;
         return err;
     };
+    defer s.freeReference(ref);
 
     if (ref.type == .symbolic) {
-        // go-git ignores AddReference error for symrefs.
+        // go-git ignores AddReference error for symrefs (copies name/target into caps).
         ar.addReference(ref) catch {};
-        const resolved = storer.resolveReference(s, ref.target) catch |err| {
+        const resolved = s.resolveReference(ref.target) catch |err| {
             if (err == error.ReferenceNotFound) return;
             return err;
         };
+        defer s.freeReference(resolved);
         if (resolved.type != .hash) return plumbing.Error.InvalidType;
         ar.head = resolved.hash;
         return;
@@ -550,14 +551,11 @@ fn setReferences(s: RepoStorer, ar: *packp.AdvRefs) !void {
         fn cb(ctx: *anyopaque, name: []const u8, hash: Hash) anyerror!void {
             const self: *@This() = @ptrCast(@alignCast(ctx));
             try self.ar.putReference(name, hash);
-            // Pack-protocol peel for annotated tags under refs/tags/*
-            // (go-git server still leaves this as a TODO).
-            if (std.mem.startsWith(u8, name, "refs/tags/")) {
-                if (try peelToNonTag(self.storer, hash)) |peeled| {
-                    if (!peeled.eql(hash)) {
-                        try self.ar.putPeeled(name, peeled);
-                    }
-                }
+            // Pack-protocol peel for annotated tags (go-git server still TODOs this).
+            if (!ReferenceName.init(name).isTag()) return;
+            if (try peelToNonTag(self.storer, hash)) |peeled| {
+                // Lightweight tags (ref → commit) yield null; only real peels differ.
+                if (!peeled.eql(hash)) try self.ar.putPeeled(name, peeled);
             }
         }
     };
@@ -565,53 +563,45 @@ fn setReferences(s: RepoStorer, ar: *packp.AdvRefs) !void {
     try s.forEachHashRef(@ptrCast(&ctx), Ctx.cb);
 }
 
-/// Follow annotated tag chains to the first non-tag target hash.
-/// Returns null if the object is not a tag or cannot be read.
+/// Follow annotated-tag object chains to the first non-tag target.
+///
+/// Returns `null` when `start` is not an annotated tag (lightweight tags, missing
+/// objects, non-tag types). Returned objects from `encodedObject` are store-owned —
+/// do not free them.
 fn peelToNonTag(s: RepoStorer, start: Hash) !?Hash {
     var current = start;
+    var walked = false;
     var depth: usize = 0;
     const max_peel: usize = 16;
+
     while (depth < max_peel) : (depth += 1) {
-        // Store-owned pointer (e.g. memory.Storage); do not free.
         const obj = s.encodedObject(.any, current) catch |err| {
-            if (err == error.ObjectNotFound) return if (depth == 0) null else current;
+            if (err == error.ObjectNotFound) break;
             return err;
         };
-        if (obj.object_type != .tag) {
-            return if (depth == 0) null else current;
-        }
-        const target = parseTagTarget(obj.readerBytes()) orelse return if (depth == 0) null else current;
-        current = target;
+        if (obj.object_type != .tag) break;
+        current = parseTagTarget(obj.readerBytes()) orelse break;
+        walked = true;
     }
-    return current;
+
+    return if (walked) current else null;
 }
 
-/// Minimal tag body parse: first `object <40-hex>` line.
+/// Parse the first `object <40-hex>` header from an annotated tag body.
+/// Mirrors the lightweight path in `revlist.parseTag` without allocating a Tag.
 fn parseTagTarget(body: []const u8) ?Hash {
-    var line_start: usize = 0;
-    while (line_start < body.len) {
-        const rest = body[line_start..];
-        const nl = std.mem.indexOfScalar(u8, rest, '\n') orelse rest.len;
-        const line = rest[0..nl];
-        if (std.mem.startsWith(u8, line, "object ")) {
-            const hex = line["object ".len..];
-            if (hex.len >= plumbing.HexSize) {
-                return plumbing.newHash(hex[0..plumbing.HexSize]);
-            }
-            return null;
-        }
-        if (line.len == 0) break; // end of headers
-        line_start += nl + 1;
+    var lines = std.mem.splitScalar(u8, body, '\n');
+    while (lines.next()) |line| {
+        if (line.len == 0) return null; // end of headers
+        if (!std.mem.startsWith(u8, line, "object ")) continue;
+        const hex = std.mem.trim(u8, line["object ".len..], " \t\r");
+        return plumbing.parseHash(hex) catch null;
     }
     return null;
 }
 
 fn referenceExists(s: RepoStorer, n: ReferenceName) !bool {
-    _ = s.reference(n) catch |err| {
-        if (err == error.ReferenceNotFound) return false;
-        return err;
-    };
-    return true;
+    return s.hasReference(n);
 }
 
 // ---------------------------------------------------------------------------
