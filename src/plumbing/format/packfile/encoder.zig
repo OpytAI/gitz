@@ -22,8 +22,10 @@
 //! | TestDecodeEncodeWithDeltaDecodeOFS | `encoder_test.TestDecodeEncodeWithDeltaDecodeOFS` |
 //! | TestDecodeEncodeWithDeltasDecodeREF | `encoder_test.TestDecodeEncodeWithDeltasDecodeREF` |
 //! | TestDecodeEncodeWithDeltasDecodeOFS | `encoder_test.TestDecodeEncodeWithDeltasDecodeOFS` |
-//! | TestDecodeEncodeWithCycleREF/OFS | cycle undeltify path implemented; dedicated cycle graphs deferred |
-//! | encoder_advanced_test.go | fixture-repo encode (filesystem phase) |
+//! | TestDecodeEncodeWithCycleREF | `encoder_test.TestDecodeEncodeWithCycleREF` |
+//! | TestDecodeEncodeWithCycleOFS | `encoder_test.TestDecodeEncodeWithCycleOFS` |
+//! | objectsEqual (type+hash+size+content) | `objectsEqual` helper |
+//! | encoder_advanced_test.go | `encoder_advanced.zig` (embedded pack fixtures) |
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -39,7 +41,9 @@ const otp_mod = @import("object_to_pack.zig");
 const ds_mod = @import("delta_selector.zig");
 const scanner_mod = @import("scanner.zig");
 const parser_mod = @import("parser.zig");
+const packfile_mod = @import("packfile.zig");
 const diff_delta_mod = @import("diff_delta.zig");
+const idxfile = @import("idxfile");
 
 const Hash = plumbing.Hash;
 const Size = plumbing.Size;
@@ -52,6 +56,7 @@ const Store = ds_mod.Store;
 const freeObjectsToPack = ds_mod.freeObjectsToPack;
 const Scanner = scanner_mod.Scanner;
 const Parser = parser_mod.Parser;
+const Packfile = packfile_mod.Packfile;
 
 /// Pack-write errors beyond I/O / allocator / store misses.
 pub const EncodeError = error{
@@ -175,8 +180,9 @@ pub const Encoder = struct {
     fn entry(self: *Encoder, o: *ObjectToPack) anyerror!void {
         if (o.wantWrite()) {
             // Cycle in delta chain — undeltify (go-git ignores restore error).
+            // Free owned delta bodies: Zig has no GC (go-git just drops the ptr).
             self.restoreOriginal(o) catch {};
-            o.backToOriginal();
+            o.backToOriginal(self.allocator);
         }
 
         if (o.isWritten()) return;
@@ -311,9 +317,13 @@ const MapStore = struct {
     fn put(self: *MapStore, obj: *MemoryObject) !Hash {
         const h = obj.hash();
         const gop = try self.map.getOrPut(self.allocator, h.bytes);
+        // Overwrite frees the previous store-owned object; same pointer is a no-op
+        // free (matches ObjectStorage / delta_selector MapStore).
         if (gop.found_existing) {
-            gop.value_ptr.*.deinit();
-            self.allocator.destroy(gop.value_ptr.*);
+            if (gop.value_ptr.* != obj) {
+                gop.value_ptr.*.deinit();
+                self.allocator.destroy(gop.value_ptr.*);
+            }
         }
         gop.value_ptr.* = obj;
         return h;
@@ -335,44 +345,6 @@ fn newObject(allocator: Allocator, t: ObjectType, content: []const u8) !*MemoryO
     return o;
 }
 
-fn destroyObject(allocator: Allocator, o: *MemoryObject) void {
-    o.deinit();
-    allocator.destroy(o);
-}
-
-/// Minimal git delta: copy all of `src`, then insert `suffix`.
-fn buildSimpleDelta(allocator: Allocator, src: []const u8, suffix: []const u8) !*MemoryObject {
-    std.debug.assert(src.len < 128);
-    std.debug.assert(suffix.len < 128);
-
-    var raw: [64]u8 = undefined;
-    var i: usize = 0;
-    raw[i] = @intCast(src.len);
-    i += 1;
-    raw[i] = @intCast(src.len + suffix.len);
-    i += 1;
-    if (src.len > 0) {
-        raw[i] = 0x80 | 0x10; // copy, size present, offset 0
-        i += 1;
-        raw[i] = @intCast(src.len);
-        i += 1;
-    }
-    if (suffix.len > 0) {
-        raw[i] = @intCast(suffix.len);
-        i += 1;
-        @memcpy(raw[i .. i + suffix.len], suffix);
-        i += suffix.len;
-    }
-
-    const delta = try allocator.create(MemoryObject);
-    errdefer allocator.destroy(delta);
-    delta.* = MemoryObject.init(allocator);
-    errdefer delta.deinit();
-    delta.setType(.ofs_delta);
-    try delta.setContent(raw[0..i]);
-    return delta;
-}
-
 fn objectsEqual(a: *MemoryObject, b: *MemoryObject) !void {
     try std.testing.expect(a.object_type == b.object_type);
     try std.testing.expect(a.hash().eql(b.hash()));
@@ -387,68 +359,36 @@ fn parsePackChecksum(allocator: Allocator, pack: []const u8) !Hash {
     return try parser.parse();
 }
 
+/// Build a random-access `Packfile` from an in-memory pack image (go-git
+/// `packfileFromReader`): parse with `idxfile.Writer` as Observer → MemoryIndex,
+/// then `Packfile.init`.
+///
+/// `idx_writer` must outlive `pf` (owns the MemoryIndex). `pack` must remain
+/// valid for the lifetime of `pf`. Call `pf.close()` when done (does not free
+/// index or pack bytes). Returns the pack checksum from `Parser.parse`.
+fn packfileFromBytes(
+    allocator: Allocator,
+    pack: []const u8,
+    idx_writer: *idxfile.Writer,
+    pf: *Packfile,
+) !Hash {
+    var sc = Scanner.initSeekable(pack);
+    var observers = [_]parser_mod.Observer{
+        parser_mod.Observer.from(idxfile.Writer, idx_writer),
+    };
+    var parser = try Parser.init(allocator, &sc, observers[0..]);
+    defer parser.deinit();
+    const checksum = try parser.parse();
+    const index = try idx_writer.getIndex();
+    pf.init(allocator, index, pack);
+    return checksum;
+}
+
 fn heapOtp(allocator: Allocator, value: ObjectToPack) !*ObjectToPack {
     const p = try allocator.create(ObjectToPack);
     p.* = value;
     return p;
 }
-
-const ObjectCollector = struct {
-    allocator: Allocator,
-    map: std.AutoHashMapUnmanaged([Size]u8, *MemoryObject) = .empty,
-    pending_type: ObjectType = .invalid,
-
-    fn init(allocator: Allocator) ObjectCollector {
-        return .{ .allocator = allocator };
-    }
-
-    fn deinit(self: *ObjectCollector) void {
-        var it = self.map.iterator();
-        while (it.next()) |e| {
-            e.value_ptr.*.deinit();
-            self.allocator.destroy(e.value_ptr.*);
-        }
-        self.map.deinit(self.allocator);
-    }
-
-    fn get(self: *ObjectCollector, h: Hash) ?*MemoryObject {
-        return self.map.get(h.bytes);
-    }
-
-    pub fn onHeader(_: *ObjectCollector, _: u32) !void {}
-
-    pub fn onInflatedObjectHeader(self: *ObjectCollector, t: ObjectType, _: i64, _: i64) !void {
-        self.pending_type = t;
-    }
-
-    pub fn onInflatedObjectContent(self: *ObjectCollector, h: Hash, _: i64, _: u32, content: []const u8) !void {
-        const obj = try self.allocator.create(MemoryObject);
-        errdefer self.allocator.destroy(obj);
-        obj.* = MemoryObject.init(self.allocator);
-        errdefer obj.deinit();
-        obj.setType(self.pending_type);
-        try obj.setContent(content);
-        // Ensure hash matches pack id (content may match multiple type labels).
-        if (!obj.hash().eql(h)) {
-            const types = [_]ObjectType{ .blob, .commit, .tree, .tag };
-            for (types) |t| {
-                if (plumbing.computeHash(t, content).eql(h)) {
-                    obj.setType(t);
-                    obj.cached_hash = h;
-                    break;
-                }
-            }
-        }
-        const gop = try self.map.getOrPut(self.allocator, h.bytes);
-        if (gop.found_existing) {
-            gop.value_ptr.*.deinit();
-            self.allocator.destroy(gop.value_ptr.*);
-        }
-        gop.value_ptr.* = obj;
-    }
-
-    pub fn onFooter(_: *ObjectCollector, _: Hash) !void {}
-};
 
 // ---------------------------------------------------------------------------
 // Tests — encoder_test.go
@@ -572,18 +512,13 @@ fn simpleDeltaTest(use_ref_deltas: bool) !void {
     _ = try store.put(target_obj);
 
     const delta_obj = try diff_delta_mod.getDelta(allocator, src_obj, target_obj);
-    // delta body is owned by ObjectToPack via setDelta path; free on test end if not transferred.
-    // newDeltaObjectToPack takes pointer; encoder does not free store objects.
 
     const src_pack = try heapOtp(allocator, otp_mod.newObjectToPack(src_obj));
     defer allocator.destroy(src_pack);
     const delta_pack = try heapOtp(allocator, otp_mod.newDeltaObjectToPack(src_pack, target_obj, delta_obj));
+    delta_pack.takeObjectOwnership();
     defer {
-        // Free the delta body (not in store).
-        if (delta_pack.object) |d| {
-            d.deinit();
-            allocator.destroy(d);
-        }
+        delta_pack.releaseOwnedObject(allocator);
         allocator.destroy(delta_pack);
     }
 
@@ -595,12 +530,23 @@ fn simpleDeltaTest(use_ref_deltas: bool) !void {
 
     const pack = aw.written();
     try std.testing.expect(pack.len > 12 + Size);
-    // Pack trailer checksum must match encoder output.
     try std.testing.expectEqualSlices(u8, enc_hash.bytes[0..], pack[pack.len - Size ..][0..Size]);
 
-    // Round-trip: parser must accept the pack (checksum validation).
-    const dec_hash = try parsePackChecksum(allocator, pack);
+    // go-git packfileFromReader: Parser + idxfile.Writer → MemoryIndex → Packfile.
+    var idx_writer = idxfile.Writer.init(allocator);
+    defer idx_writer.deinit();
+    var pf: Packfile = undefined;
+    _ = try packfileFromBytes(allocator, pack, &idx_writer, &pf);
+    defer pf.close();
+
+    const dec_hash = try pf.id();
     try std.testing.expect(enc_hash.eql(dec_hash));
+
+    const dec_src = try pf.get(src_obj.hash());
+    try objectsEqual(dec_src, src_obj);
+
+    const dec_target = try pf.get(target_obj.hash());
+    try objectsEqual(dec_target, target_obj);
 }
 
 test "encoder_test.TestDecodeEncodeWithDeltaDecodeOFS" {
@@ -633,19 +579,15 @@ fn deltaOverDeltaTest(use_ref_deltas: bool) !void {
     const target_pack = try heapOtp(allocator, otp_mod.newObjectToPack(target_obj));
     defer allocator.destroy(target_pack);
     const delta1 = try heapOtp(allocator, otp_mod.newDeltaObjectToPack(src_pack, target_obj, d1));
+    delta1.takeObjectOwnership();
     defer {
-        if (delta1.object) |d| {
-            d.deinit();
-            allocator.destroy(d);
-        }
+        delta1.releaseOwnedObject(allocator);
         allocator.destroy(delta1);
     }
     const delta2 = try heapOtp(allocator, otp_mod.newDeltaObjectToPack(target_pack, other_obj, d2));
+    delta2.takeObjectOwnership();
     defer {
-        if (delta2.object) |d| {
-            d.deinit();
-            allocator.destroy(d);
-        }
+        delta2.releaseOwnedObject(allocator);
         allocator.destroy(delta2);
     }
 
@@ -662,8 +604,25 @@ fn deltaOverDeltaTest(use_ref_deltas: bool) !void {
 
     const pack = aw.written();
     try std.testing.expectEqualSlices(u8, enc_hash.bytes[0..], pack[pack.len - Size ..][0..Size]);
-    const dec_hash = try parsePackChecksum(allocator, pack);
+
+    // go-git packfileFromReader: Parser + idxfile.Writer → MemoryIndex → Packfile.
+    var idx_writer = idxfile.Writer.init(allocator);
+    defer idx_writer.deinit();
+    var pf: Packfile = undefined;
+    _ = try packfileFromBytes(allocator, pack, &idx_writer, &pf);
+    defer pf.close();
+
+    const dec_hash = try pf.id();
     try std.testing.expect(enc_hash.eql(dec_hash));
+
+    const dec_src = try pf.get(src_obj.hash());
+    try objectsEqual(dec_src, src_obj);
+
+    const dec_target = try pf.get(target_obj.hash());
+    try objectsEqual(dec_target, target_obj);
+
+    const dec_other = try pf.get(other_obj.hash());
+    try objectsEqual(dec_other, other_obj);
 }
 
 test "encoder_test.TestDecodeEncodeWithDeltasDecodeOFS" {
@@ -672,6 +631,105 @@ test "encoder_test.TestDecodeEncodeWithDeltasDecodeOFS" {
 
 test "encoder_test.TestDecodeEncodeWithDeltasDecodeREF" {
     try deltaOverDeltaTest(true);
+}
+
+/// go-git `deltaOverDeltaCyclicTest` — mutual delta cycle between o3/o4 plus a
+/// normal delta o1→o2. CleanOriginal on pd2/pd3 exercises restoreOriginal while
+/// writing (Original nil, resolved metadata + store lookup).
+fn deltaOverDeltaCyclicTest(use_ref_deltas: bool) !void {
+    const allocator = std.testing.allocator;
+    defer sync.deinitPools(allocator);
+
+    var store = MapStore.init(allocator);
+    defer store.deinit();
+
+    const o1 = try newObject(allocator, .blob, "0");
+    const o2 = try newObject(allocator, .blob, "01");
+    const o3 = try newObject(allocator, .blob, "011111");
+    const o4 = try newObject(allocator, .blob, "01111100000");
+    _ = try store.put(o1);
+    _ = try store.put(o2);
+    _ = try store.put(o3);
+    _ = try store.put(o4);
+
+    const d2 = try diff_delta_mod.getDelta(allocator, o1, o2);
+    const d3 = try diff_delta_mod.getDelta(allocator, o4, o3);
+    const d4 = try diff_delta_mod.getDelta(allocator, o3, o4);
+
+    const po1 = try heapOtp(allocator, otp_mod.newObjectToPack(o1));
+    defer allocator.destroy(po1);
+    const pd2 = try heapOtp(allocator, otp_mod.newDeltaObjectToPack(po1, o2, d2));
+    pd2.takeObjectOwnership();
+    defer {
+        pd2.releaseOwnedObject(allocator);
+        allocator.destroy(pd2);
+    }
+    const pd3 = try heapOtp(allocator, otp_mod.newObjectToPack(o3));
+    defer {
+        pd3.releaseOwnedObject(allocator);
+        allocator.destroy(pd3);
+    }
+    const pd4 = try heapOtp(allocator, otp_mod.newObjectToPack(o4));
+    defer {
+        pd4.releaseOwnedObject(allocator);
+        allocator.destroy(pd4);
+    }
+
+    // Mutual cycle: o3 δ← o4 and o4 δ← o3 (setDelta claims ownership of d3/d4).
+    pd3.setDelta(pd4, d3);
+    pd4.setDelta(pd3, d4);
+
+    // SetOriginal fills type/hash/size used when Original is later nil.
+    po1.setOriginal(po1.original);
+    pd2.setOriginal(pd2.original);
+    pd2.cleanOriginal();
+
+    pd3.setOriginal(pd3.original);
+    pd3.cleanOriginal();
+
+    pd4.setOriginal(pd4.original);
+
+    var aw: IoWriter.Allocating = try .initCapacity(allocator, 4096);
+    defer aw.deinit();
+
+    var enc = Encoder.initFrom(allocator, &aw.writer, MapStore, &store, use_ref_deltas);
+    const enc_hash = try enc.encodeObjects(&[_]*ObjectToPack{
+        po1,
+        pd2,
+        pd3,
+        pd4,
+    });
+
+    const pack = aw.written();
+    try std.testing.expectEqualSlices(u8, enc_hash.bytes[0..], pack[pack.len - Size ..][0..Size]);
+
+    // go-git packfileFromReader: Parser + idxfile.Writer → MemoryIndex → Packfile.
+    var idx_writer = idxfile.Writer.init(allocator);
+    defer idx_writer.deinit();
+    var pf: Packfile = undefined;
+    const dec_hash = try packfileFromBytes(allocator, pack, &idx_writer, &pf);
+    defer pf.close();
+
+    try std.testing.expect(enc_hash.eql(dec_hash));
+    const pack_id = try pf.id();
+    try std.testing.expect(enc_hash.eql(pack_id));
+
+    const dec1 = try pf.get(o1.hash());
+    try objectsEqual(dec1, o1);
+    const dec2 = try pf.get(o2.hash());
+    try objectsEqual(dec2, o2);
+    const dec3 = try pf.get(o3.hash());
+    try objectsEqual(dec3, o3);
+    const dec4 = try pf.get(o4.hash());
+    try objectsEqual(dec4, o4);
+}
+
+test "encoder_test.TestDecodeEncodeWithCycleOFS" {
+    try deltaOverDeltaCyclicTest(false);
+}
+
+test "encoder_test.TestDecodeEncodeWithCycleREF" {
+    try deltaOverDeltaCyclicTest(true);
 }
 
 test "encoder entryHead bit packing commit size 0 is 0x10" {

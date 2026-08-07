@@ -89,6 +89,8 @@ sh_test(
 )
 
 # Phase G gate: inventories + goldens + metrics + fail-forward + library smoke.
+# Fixture generators that are part of the hermetic graph are pulled in by later
+# phase suites (e.g. //tools:gen_index_fixtures_test under phase_5).
 test_suite(
     name = "phase_g",
     tests = [
@@ -192,6 +194,8 @@ test_suite(
     tests = [
         "//src/plumbing/format/index:index_test",
         "//src/plumbing/format/packfile:packfile_test",
+        # Hermetic fixture generator must match committed embeds (rules_python).
+        "//tools:gen_index_fixtures_test",
     ],
 )
 

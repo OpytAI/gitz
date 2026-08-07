@@ -1,9 +1,69 @@
-# tools package — inventory and golden runners live in subpackages.
+# tools — inventory / golden runners + hermetic generators.
+#
+# Index fixture generation is rules_python only (//tools:gen_index_fixtures).
+# There is no supported host-python invocation.
+
+load("@rules_python//python:defs.bzl", "py_binary", "py_library", "py_test")
+
 filegroup(
     name = "all",
     srcs = [
         "//tools/golden:all",
         "//tools/inventory:all",
+        ":gen_index_fixtures",
+        ":gen_index_fixtures_lib",
     ],
+    visibility = ["//visibility:public"],
+)
+
+# ---------------------------------------------------------------------------
+# Index fixtures (Phase 5) — pure stdlib, hermetic CPython via rules_python.
+# ---------------------------------------------------------------------------
+
+py_library(
+    name = "gen_index_fixtures_lib",
+    srcs = ["gen_index_fixtures.py"],
+    imports = ["."],
+    visibility = ["//visibility:private"],
+)
+
+py_binary(
+    name = "gen_index_fixtures",
+    srcs = ["gen_index_fixtures.py"],
+    main = "gen_index_fixtures.py",
+    visibility = ["//visibility:public"],
+    deps = [":gen_index_fixtures_lib"],
+)
+
+# Graph edge: committed data/fixtures/index/* and fixtures.zig == generator.
+py_test(
+    name = "gen_index_fixtures_test",
+    size = "small",
+    srcs = ["gen_index_fixtures_test.py"],
+    data = [
+        "//data:fixtures",
+        "//src/plumbing/format/index:package_srcs",
+    ],
+    deps = [":gen_index_fixtures_lib"],
+)
+
+# Materialise synthetic images under bazel-out for dependent rules.
+genrule(
+    name = "index_fixture_images",
+    outs = [
+        "index_fixtures/v2_simple",
+        "index_fixtures/v3_intent",
+        "index_fixtures/v4_prefix",
+        "index_fixtures/v2_simple.hex",
+        "index_fixtures/v3_intent.hex",
+        "index_fixtures/v4_prefix.hex",
+    ],
+    cmd = """
+set -euo pipefail
+OUTDIR="$$(dirname "$(location index_fixtures/v2_simple)")"
+mkdir -p "$$OUTDIR"
+"$(location :gen_index_fixtures)" --outdir "$$OUTDIR"
+""",
+    tools = [":gen_index_fixtures"],
     visibility = ["//visibility:public"],
 )

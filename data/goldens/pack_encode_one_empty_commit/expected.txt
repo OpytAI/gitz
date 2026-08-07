@@ -1,0 +1,23 @@
+# Pack encode with one empty commit object Class A golden (phase 5)
+# go-git: plumbing/format/packfile Encoder.Encode([empty_commit], packWindow)
+# Source: encoder_test.go TestCorrectPackWithOneEmptyObject
+# Layout: PACK | version 2 | object_count 1 | type/size byte | zlib(empty) | SHA-1 trailer
+# Object: MemoryObject type=commit size=0; header byte 0x10 = (CommitObject<<4)|0
+# Zlib empty store block (go stdlib deflate): 78 9c 01 00 00 ff ff 00 00 00 01
+# pack_hash is SHA-1 of bytes before trailer (header + object entry)
+package: plumbing/format/packfile
+case: encode_one_empty_commit
+signature: PACK
+signature_hex: 5041434b
+version: 2
+objects: 1
+object_type: commit
+object_size: 0
+object_header_byte: 16
+object_header_hex: 10
+zlib_empty_hex: 789c010000ffff00000001
+header_hex: 5041434b0000000200000001
+body_before_hash_hex: 5041434b000000020000000110789c010000ffff00000001
+pack_hash: d017e0836817a227504ed46b4c7e20d77543c9a3
+file_hex: 5041434b000000020000000110789c010000ffff00000001d017e0836817a227504ed46b4c7e20d77543c9a3
+size_bytes: 44

@@ -1,4 +1,4 @@
-# API inventory: plumbing/format/packfile (phase 3 read + phase 5 encoder)
+# API inventory: plumbing/format/packfile (phase 3 read + phase 5 write)
 # Encoder / DiffDelta / GetDelta / ObjectToPack land in phase 5.
 # Go NewEncoder maps to Zig Encoder.init; DiffDelta/GetDelta keep go names as zig_map
 # targets diffDelta/getDelta (package-root re-exports, same style as patchDelta).
@@ -15,6 +15,9 @@ require:
     - ObjectIterator
     - Encoder
     - ObjectToPack
+    - DeltaIndex
+    - DeltaSelector
+    - Store
   functions:
     - NewScanner
     - NewParser
@@ -25,6 +28,13 @@ require:
     - NewEncoder
     - DiffDelta
     - GetDelta
+    - DiffDeltaWithIndex
+    - GetDeltaWithIndex
+    - NewObjectToPack
+    - NewDeltaObjectToPack
+    - FreeObjectsToPack
+    - UpdateObjectStorage
+    - WritePackfileToObjectStorage
   constants:
     - VersionSupported
   semantic:
@@ -66,7 +76,9 @@ require:
     # Phase 5 write path (package-root re-exports)
     - Encoder
     - Encoder.init
+    - Encoder.initFrom
     - Encoder.encode
+    - Encoder.encodeObjects
     - ObjectToPack
     - ObjectToPack.isDelta
     - ObjectToPack.backToOriginal
@@ -77,11 +89,22 @@ require:
     - ObjectToPack.saveOriginalMetadata
     - ObjectToPack.cleanOriginal
     - ObjectToPack.setDelta
-    - ObjectToPack.type
-    - ObjectToPack.hash
-    - ObjectToPack.size
+    - ObjectToPack.objectType
+    - ObjectToPack.objectHash
+    - ObjectToPack.objectSize
+    - newObjectToPack
+    - newDeltaObjectToPack
+    - DeltaIndex
     - diffDelta
     - getDelta
+    - getDeltaWithIndex
+    - diffDeltaWithIndex
+    - DeltaSelector
+    - DeltaSelector.init
+    - Store
+    - freeObjectsToPack
+    - updateObjectStorage
+    - writePackfileToObjectStorage
 zig_map:
   Scanner: Scanner
   ObjectHeader: ObjectHeader
@@ -99,6 +122,16 @@ zig_map:
   VersionSupported: VersionSupported
   Encoder: Encoder
   ObjectToPack: ObjectToPack
+  DeltaIndex: DeltaIndex
+  DeltaSelector: DeltaSelector
+  Store: Store
   NewEncoder: Encoder.init
   DiffDelta: diffDelta
   GetDelta: getDelta
+  DiffDeltaWithIndex: diffDeltaWithIndex
+  GetDeltaWithIndex: getDeltaWithIndex
+  NewObjectToPack: newObjectToPack
+  NewDeltaObjectToPack: newDeltaObjectToPack
+  FreeObjectsToPack: freeObjectsToPack
+  UpdateObjectStorage: updateObjectStorage
+  WritePackfileToObjectStorage: writePackfileToObjectStorage

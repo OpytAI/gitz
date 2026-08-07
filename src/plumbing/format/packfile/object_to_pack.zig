@@ -1,11 +1,13 @@
 //! ObjectToPack — object scheduled for pack encoding
-//! (go-git `plumbing/format/packfile/object_pack.go`).
+//! (go-git `plumbing/format/packfile/object_pack.go` → `object_to_pack.zig`).
 //!
-//! Encoded objects are always `*plumbing.MemoryObject` (no Go interface).
+//! Encoded objects are always `*plumbing.MemoryObject`. Optional `DeltaMeta`
+//! on a `MemoryObject` is the Zig stand-in for go-git `plumbing.DeltaObject`.
 
 const std = @import("std");
 const plumbing = @import("plumbing");
 
+const Allocator = std.mem.Allocator;
 const MemoryObject = plumbing.MemoryObject;
 const ObjectType = plumbing.ObjectType;
 const Hash = plumbing.Hash;
@@ -28,6 +30,11 @@ pub const ObjectToPack = struct {
     /// WantWrite (see `markWantWrite` / `wantWrite` / `isWritten`).
     offset: i64 = 0,
 
+    /// When true, `object` is an owned delta body allocated for this OTP
+    /// (e.g. by `getDeltaWithIndex`). Free it in `freeObjectsToPack` or
+    /// `backToOriginal` — never free store-owned objects.
+    owns_object: bool = false,
+
     // Metadata cached from `original` so Type/Hash/Size still work after
     // `cleanOriginal` (go-git unexported fields).
     resolved_original: bool = false,
@@ -36,12 +43,36 @@ pub const ObjectToPack = struct {
     original_hash: Hash = ZeroHash,
 
     /// go-git `BackToOriginal` — undeltify if this was a delta and Original is set.
-    pub fn backToOriginal(self: *ObjectToPack) void {
+    ///
+    /// When `allocator` is non-null and `owns_object`, the previous delta body
+    /// is freed (Zig has no GC; go-git just drops the pointer). Pass null when
+    /// the caller still owns the delta (tests that free manually).
+    pub fn backToOriginal(self: *ObjectToPack, allocator: ?Allocator) void {
         if (self.isDelta() and self.original != null) {
+            if (allocator) |a| {
+                self.releaseOwnedObject(a);
+            } else {
+                // Drop ownership without freeing — caller retains the pointer.
+                self.owns_object = false;
+            }
             self.object = self.original;
             self.base = null;
             self.depth = 0;
         }
+    }
+
+    /// Free owned `object` when it is a distinct delta body; clear `owns_object`.
+    pub fn releaseOwnedObject(self: *ObjectToPack, allocator: Allocator) void {
+        if (!self.owns_object) return;
+        if (self.object) |obj| {
+            const aliases_original = if (self.original) |orig| obj == orig else false;
+            if (!aliases_original) {
+                obj.deinit();
+                allocator.destroy(obj);
+            }
+        }
+        self.object = null;
+        self.owns_object = false;
     }
 
     /// go-git `IsWritten` — true when a real pack offset was recorded (`offset > 1`).
@@ -101,9 +132,8 @@ pub const ObjectToPack = struct {
 
     /// go-git `Hash`.
     ///
-    /// When Original is absent and metadata was not saved, go-git falls back to
-    /// `plumbing.DeltaObject.ActualHash`. This port has no DeltaObject type, so
-    /// that path is unreachable (same as an unresolved object in go-git).
+    /// Fallback order: Original → saved metadata → `DeltaMeta.actual_hash`
+    /// (go-git `plumbing.DeltaObject.ActualHash`).
     pub fn objectHash(self: *ObjectToPack) Hash {
         if (self.original) |orig| {
             return orig.hash();
@@ -111,18 +141,25 @@ pub const ObjectToPack = struct {
         if (self.resolved_original) {
             return self.original_hash;
         }
+        if (self.object) |obj| {
+            if (obj.actualHash()) |h| return h;
+        }
         unreachable;
     }
 
     /// go-git `Size`.
     ///
-    /// Same notes as `objectHash` regarding the missing DeltaObject fallback.
+    /// Fallback order: Original → saved metadata → `DeltaMeta.actual_size`
+    /// (go-git `plumbing.DeltaObject.ActualSize`).
     pub fn objectSize(self: *const ObjectToPack) i64 {
         if (self.original) |orig| {
             return orig.size;
         }
         if (self.resolved_original) {
             return self.original_size;
+        }
+        if (self.object) |obj| {
+            if (obj.actualSize()) |sz| return sz;
         }
         unreachable;
     }
@@ -132,11 +169,28 @@ pub const ObjectToPack = struct {
         return self.base != null;
     }
 
-    /// go-git `SetDelta` — attach a delta object based on `base`.
+    /// go-git `SetDelta` — attach an **owned** delta body based on `base`.
+    ///
+    /// Sets `owns_object = true`. Callers that attach a store-owned delta
+    /// should use `setDeltaBorrowed` instead.
     pub fn setDelta(self: *ObjectToPack, base: *ObjectToPack, delta: *MemoryObject) void {
         self.object = delta;
         self.base = base;
         self.depth = base.depth + 1;
+        self.owns_object = true;
+    }
+
+    /// Attach a store-owned delta (not freed by `freeObjectsToPack`).
+    pub fn setDeltaBorrowed(self: *ObjectToPack, base: *ObjectToPack, delta: *MemoryObject) void {
+        self.object = delta;
+        self.base = base;
+        self.depth = base.depth + 1;
+        self.owns_object = false;
+    }
+
+    /// Claim ownership of the current `object` pointer (heap delta body).
+    pub fn takeObjectOwnership(self: *ObjectToPack) void {
+        self.owns_object = true;
     }
 };
 
@@ -145,11 +199,17 @@ pub fn newObjectToPack(o: *MemoryObject) ObjectToPack {
     return .{
         .object = o,
         .original = o,
+        .owns_object = false,
     };
 }
 
 /// go-git `newDeltaObjectToPack` — delta against `base`, target `original`,
 /// delta body `delta`. Depth is `base.depth + 1`.
+///
+/// Ownership: the delta body is **not** marked owned by default (matches
+/// go-git tests that allocate and free the delta separately). After a heap
+/// transfer into the selector/encoder pipeline, call `takeObjectOwnership` or
+/// use `setDelta` (which marks owned).
 pub fn newDeltaObjectToPack(
     base: *ObjectToPack,
     original: *MemoryObject,
@@ -160,6 +220,7 @@ pub fn newDeltaObjectToPack(
         .base = base,
         .original = original,
         .depth = base.depth + 1,
+        .owns_object = false,
     };
 }
 
@@ -174,7 +235,7 @@ fn makeBlob(allocator: std.mem.Allocator, content: []const u8) !MemoryObject {
     return o;
 }
 
-test "newObjectToPack non-delta" {
+test "ObjectToPackSuite.TestObjectToPack" {
     var obj = try makeBlob(std.testing.allocator, "hello");
     defer obj.deinit();
 
@@ -191,7 +252,7 @@ test "newObjectToPack non-delta" {
     try std.testing.expectEqual(@as(i64, 5), otp.objectSize());
 }
 
-test "newDeltaObjectToPack" {
+test "ObjectToPackSuite.newDeltaObjectToPack" {
     var base_obj = try makeBlob(std.testing.allocator, "base-content");
     defer base_obj.deinit();
     var original = try makeBlob(std.testing.allocator, "full-target");
@@ -214,7 +275,7 @@ test "newDeltaObjectToPack" {
     try std.testing.expectEqual(@as(i64, 11), dtp.objectSize());
 }
 
-test "nested delta depth" {
+test "ObjectToPackSuite.nested delta depth" {
     var o1 = try makeBlob(std.testing.allocator, "a");
     defer o1.deinit();
     var o2 = try makeBlob(std.testing.allocator, "ab");
@@ -237,7 +298,7 @@ test "nested delta depth" {
     try std.testing.expect(mid.base == &base);
 }
 
-test "want write / written state machine" {
+test "ObjectToPackSuite.want write state machine" {
     var obj = try makeBlob(std.testing.allocator, "x");
     defer obj.deinit();
     var otp = newObjectToPack(&obj);
@@ -262,7 +323,7 @@ test "want write / written state machine" {
     try std.testing.expect(!otp.wantWrite());
 }
 
-test "backToOriginal undeltifies" {
+test "ObjectToPackSuite.backToOriginal" {
     var base_obj = try makeBlob(std.testing.allocator, "base");
     defer base_obj.deinit();
     var original = try makeBlob(std.testing.allocator, "orig");
@@ -276,7 +337,8 @@ test "backToOriginal undeltifies" {
     try std.testing.expectEqual(@as(i32, 1), dtp.depth);
     try std.testing.expect(dtp.object == &delta);
 
-    dtp.backToOriginal();
+    // Stack-backed delta: do not free (allocator = null).
+    dtp.backToOriginal(null);
     try std.testing.expect(!dtp.isDelta());
     try std.testing.expect(dtp.base == null);
     try std.testing.expectEqual(@as(i32, 0), dtp.depth);
@@ -284,16 +346,16 @@ test "backToOriginal undeltifies" {
     try std.testing.expect(dtp.original == &original);
 }
 
-test "backToOriginal no-op when not delta" {
+test "ObjectToPackSuite.backToOriginal no-op non-delta" {
     var obj = try makeBlob(std.testing.allocator, "solo");
     defer obj.deinit();
     var otp = newObjectToPack(&obj);
-    otp.backToOriginal();
+    otp.backToOriginal(null);
     try std.testing.expect(otp.object == &obj);
     try std.testing.expect(otp.base == null);
 }
 
-test "backToOriginal no-op when original cleaned" {
+test "ObjectToPackSuite.backToOriginal no-op cleaned" {
     var base_obj = try makeBlob(std.testing.allocator, "base");
     defer base_obj.deinit();
     var original = try makeBlob(std.testing.allocator, "orig");
@@ -304,13 +366,51 @@ test "backToOriginal no-op when original cleaned" {
     var base = newObjectToPack(&base_obj);
     var dtp = newDeltaObjectToPack(&base, &original, &delta);
     dtp.cleanOriginal();
-    dtp.backToOriginal(); // Original is nil → stay delta
+    dtp.backToOriginal(null); // Original is nil → stay delta
     try std.testing.expect(dtp.isDelta());
     try std.testing.expect(dtp.object == &delta);
     try std.testing.expectEqual(@as(i32, 1), dtp.depth);
 }
 
-test "setOriginal save and clean metadata" {
+test "ObjectToPackSuite.backToOriginal frees owned heap delta" {
+    const allocator = std.testing.allocator;
+    var base_obj = try makeBlob(allocator, "base");
+    defer base_obj.deinit();
+    var original = try makeBlob(allocator, "orig");
+    defer original.deinit();
+
+    const delta = try allocator.create(MemoryObject);
+    delta.* = try makeBlob(allocator, "dlt");
+    // transferred to OTP ownership
+
+    var base = newObjectToPack(&base_obj);
+    var dtp = newDeltaObjectToPack(&base, &original, delta);
+    dtp.takeObjectOwnership();
+    dtp.backToOriginal(allocator);
+    try std.testing.expect(!dtp.isDelta());
+    try std.testing.expect(dtp.object == &original);
+    try std.testing.expect(!dtp.owns_object);
+}
+
+test "ObjectToPackSuite.ActualHash ActualSize from DeltaMeta" {
+    var delta = try makeBlob(std.testing.allocator, "delta-payload");
+    defer delta.deinit();
+    delta.setType(.ref_delta);
+    const want_hash = plumbing.newHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    delta.setDeltaMeta(.{
+        .base_hash = plumbing.newHash("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        .actual_hash = want_hash,
+        .actual_size = 99,
+    });
+
+    var otp = newObjectToPack(&delta);
+    otp.original = null;
+    otp.resolved_original = false;
+    try std.testing.expect(otp.objectHash().eql(want_hash));
+    try std.testing.expectEqual(@as(i64, 99), otp.objectSize());
+}
+
+test "ObjectToPackSuite.setOriginal metadata" {
     var obj = try makeBlob(std.testing.allocator, "content");
     defer obj.deinit();
     var otp = newObjectToPack(&obj);
@@ -331,7 +431,7 @@ test "setOriginal save and clean metadata" {
     try std.testing.expect(otp.objectHash().eql(h));
 }
 
-test "setOriginal nil keeps resolved metadata" {
+test "ObjectToPackSuite.setOriginal nil" {
     var obj = try makeBlob(std.testing.allocator, "keep-me");
     defer obj.deinit();
     var otp = newObjectToPack(&obj);
@@ -348,7 +448,7 @@ test "setOriginal nil keeps resolved metadata" {
     try std.testing.expectEqual(saved_size, otp.objectSize());
 }
 
-test "setDelta attaches base and increments depth" {
+test "ObjectToPackSuite.setDelta" {
     var base_obj = try makeBlob(std.testing.allocator, "b");
     defer base_obj.deinit();
     var target = try makeBlob(std.testing.allocator, "target");
@@ -360,17 +460,19 @@ test "setDelta attaches base and increments depth" {
     var target_otp = newObjectToPack(&target);
     try std.testing.expect(!target_otp.isDelta());
 
-    target_otp.setDelta(&base, &delta);
+    // Stack delta — use borrowed attach so suite teardown does not free stack.
+    target_otp.setDeltaBorrowed(&base, &delta);
     try std.testing.expect(target_otp.isDelta());
     try std.testing.expect(target_otp.base == &base);
     try std.testing.expect(target_otp.object == &delta);
     try std.testing.expectEqual(@as(i32, 1), target_otp.depth);
+    try std.testing.expect(!target_otp.owns_object);
     // Original still the full target for Type/Size.
     try std.testing.expect(target_otp.original == &target);
     try std.testing.expect(target_otp.objectType() == .blob);
 }
 
-test "Type falls back to base when original cleaned without metadata" {
+test "ObjectToPackSuite.Type fallback base" {
     var base_obj = try makeBlob(std.testing.allocator, "base");
     defer base_obj.deinit();
     base_obj.setType(.tree);
@@ -388,7 +490,7 @@ test "Type falls back to base when original cleaned without metadata" {
     try std.testing.expect(dtp.objectType() == .tree);
 }
 
-test "Type falls back to object when no original base or metadata" {
+test "ObjectToPackSuite.Type fallback object" {
     var obj = try makeBlob(std.testing.allocator, "solo");
     defer obj.deinit();
     obj.setType(.commit);

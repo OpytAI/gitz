@@ -1,4 +1,5 @@
-//! Delta fingerprint index for delta creation (go-git `delta_index.go`).
+//! Delta fingerprint index for delta creation
+//! (go-git `plumbing/format/packfile/delta_index.go`).
 //!
 //! Modified JGit DeltaIndex: stores block offsets in entries (no key recovery).
 //! See: https://github.com/eclipse/jgit (DeltaIndexScanner).
@@ -15,21 +16,34 @@ const max_chain_length: usize = 64;
 /// Fingerprint index over a source buffer (go-git `deltaIndex`).
 pub const DeltaIndex = struct {
     allocator: Allocator,
+    /// Hash bucket heads into `entries`. Empty `&.{}` means uninitialized / freed.
     table: []usize = &.{},
+    /// Packed block offsets; empty `&.{}` means uninitialized / freed.
     entries: []usize = &.{},
     mask: usize = 0,
 
+    /// Free `table` / `entries` if owned. Idempotent: safe twice and after a
+    /// failed `initFrom` (which always leaves both slices empty on error).
     pub fn deinit(self: *DeltaIndex) void {
-        if (self.table.len != 0) self.allocator.free(self.table);
-        if (self.entries.len != 0) self.allocator.free(self.entries);
-        self.table = &.{};
-        self.entries = &.{};
+        // Never free the static empty slice `&.{}` (not allocator-owned).
+        if (self.table.len != 0) {
+            self.allocator.free(self.table);
+            self.table = &.{};
+        }
+        if (self.entries.len != 0) {
+            self.allocator.free(self.entries);
+            self.entries = &.{};
+        }
         self.mask = 0;
     }
 
     /// Build the index over `buf` (go-git `(*deltaIndex).init`).
     /// Replaces any previous table/entries.
+    ///
+    /// On error, `self` is left empty (same as after `deinit`) so a later
+    /// `deinit` or retry is always safe.
     pub fn initFrom(self: *DeltaIndex, buf: []const u8) Allocator.Error!void {
+        // Drop any previous ownership before allocating again.
         self.deinit();
 
         var scanner = try DeltaIndexScanner.scan(self.allocator, buf);
@@ -39,6 +53,8 @@ pub const DeltaIndex = struct {
         // (go-git order: count before copying; table still owned by scanner here).
         const cnt = countEntries(&scanner);
 
+        // Allocate entries first so a failure leaves table with the scanner
+        // (freed by `defer scanner.deinit`) and self still empty.
         self.entries = try self.allocator.alloc(usize, cnt + 1);
         errdefer {
             self.allocator.free(self.entries);
@@ -46,8 +62,8 @@ pub const DeltaIndex = struct {
         }
         @memset(self.entries, 0);
 
+        // Take ownership of scanner.table only after entries is allocated.
         self.mask = scanner.mask;
-        // Take ownership of scanner.table (copyEntries writes into it).
         self.table = scanner.table;
         scanner.table = &.{};
         errdefer {
@@ -151,6 +167,7 @@ const DeltaIndexScanner = struct {
     mask: usize = 0,
     count: usize = 0,
 
+    /// Idempotent: safe if `table` was already taken by `DeltaIndex.initFrom`.
     fn deinit(self: *DeltaIndexScanner, allocator: Allocator) void {
         if (self.table.len != 0) allocator.free(self.table);
         if (self.entries.len != 0) allocator.free(self.entries);
@@ -336,4 +353,44 @@ test "DeltaIndex finds identical block" {
 
 test "T table has 256 entries" {
     try std.testing.expectEqual(@as(usize, 256), T.len);
+}
+
+test "DeltaIndex deinit is idempotent and safe after empty init" {
+    const allocator = std.testing.allocator;
+    var idx = DeltaIndex{ .allocator = allocator };
+
+    // Never initialized: double deinit must not free static empties.
+    idx.deinit();
+    idx.deinit();
+
+    try idx.initFrom("short"); // < blksz → empty table, entries sentinel only
+    try std.testing.expectEqual(@as(usize, 0), idx.table.len);
+    try std.testing.expect(idx.entries.len >= 1);
+
+    idx.deinit();
+    try std.testing.expectEqual(@as(usize, 0), idx.table.len);
+    try std.testing.expectEqual(@as(usize, 0), idx.entries.len);
+    // Second deinit after successful free.
+    idx.deinit();
+}
+
+test "DeltaIndex initFrom replaces previous tables without leak" {
+    const allocator = std.testing.allocator;
+    var src_a: [32]u8 = undefined;
+    @memset(src_a[0..16], 'A');
+    @memset(src_a[16..32], 'B');
+    var src_b: [48]u8 = undefined;
+    @memset(&src_b, 'C');
+
+    var idx = DeltaIndex{ .allocator = allocator };
+    defer idx.deinit();
+
+    try idx.initFrom(&src_a);
+    try std.testing.expect(idx.table.len > 0);
+    try std.testing.expect(idx.entries.len > 1);
+
+    // Re-init over a different buffer: previous table/entries must be freed.
+    try idx.initFrom(&src_b);
+    try std.testing.expect(idx.table.len > 0);
+    try std.testing.expect(idx.entries.len > 1);
 }

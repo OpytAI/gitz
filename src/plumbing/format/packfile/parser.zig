@@ -148,9 +148,12 @@ pub const ObjectStore = struct {
     pub fn set(self: *ObjectStore, obj: *MemoryObject) (Allocator.Error)!Hash {
         const h = obj.hash();
         const gop = try self.map.getOrPut(self.allocator, h.bytes);
+        // Overwrite frees the previous owned object; same pointer is a no-op free.
         if (gop.found_existing) {
-            gop.value_ptr.*.deinit();
-            self.allocator.destroy(gop.value_ptr.*);
+            if (gop.value_ptr.* != obj) {
+                gop.value_ptr.*.deinit();
+                self.allocator.destroy(gop.value_ptr.*);
+            }
         }
         gop.value_ptr.* = obj;
         return h;
@@ -754,6 +757,53 @@ test "ObjectStore put and get" {
     try std.testing.expect(obj.object_type == .blob);
     try std.testing.expectEqualStrings(content, obj.readerBytes());
     try std.testing.expectError(error.ObjectNotFound, store.get(ZeroHash));
+}
+
+// ---------------------------------------------------------------------------
+// UpdateObjectStorage (go-git common.go — non-PackfileWriter path)
+// ---------------------------------------------------------------------------
+
+/// go-git `UpdateObjectStorage` when the backend is **not** a `PackfileWriter`.
+///
+/// Parses a seekable pack image into `storage` (same as
+/// `NewParserWithStorage` + `Parse`). Empty input yields `error.EmptyPackfile`
+/// via `Scanner.header` (go-git `CommonSuite.TestEmptyUpdateObjectStorage`).
+///
+/// For backends that implement PackfileWriter (filesystem, phase 6), use
+/// `writePackfileToObjectStorage` instead (go-git type-assert branch).
+pub fn updateObjectStorage(
+    allocator: Allocator,
+    storage: *ObjectStore,
+    pack_bytes: []const u8,
+) !Hash {
+    var sc = Scanner.initSeekable(pack_bytes);
+    var p = try Parser.initWithStorage(allocator, &sc, storage, &.{});
+    defer p.deinit();
+    return p.parse();
+}
+
+test "CommonSuite.TestEmptyUpdateObjectStorage" {
+    // go-git common_test.go TestEmptyUpdateObjectStorage
+    const allocator = std.testing.allocator;
+    var store = ObjectStore.init(allocator);
+    defer store.deinit();
+    try std.testing.expectError(error.EmptyPackfile, updateObjectStorage(allocator, &store, &.{}));
+}
+
+test "UpdateObjectStorage ingests basic pack into ObjectStore" {
+    const allocator = std.testing.allocator;
+    var store = ObjectStore.init(allocator);
+    defer store.deinit();
+
+    const pack = @import("basic_pack.zig").data();
+    const checksum = try updateObjectStorage(allocator, &store, pack);
+    try std.testing.expect(!checksum.isZero());
+
+    // First object hash from go-git parser_test.go TestParserHashes.
+    const first = plumbing.newHash("e8d3ffab552895c19b9fcf7aa264d277cde33881");
+    const obj = try store.get(first);
+    try std.testing.expect(obj.object_type != .invalid);
+    try std.testing.expect(obj.size >= 0);
 }
 
 // ---------------------------------------------------------------------------

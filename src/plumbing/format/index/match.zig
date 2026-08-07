@@ -252,3 +252,15 @@ test "match question and class" {
     try std.testing.expect(!try match("[^f]oo", "foo"));
     try std.testing.expect(try match("[^b]oo", "foo"));
 }
+
+test "match BadPattern trailing escape and empty class" {
+    // filepath.ErrBadPattern → Error.BadPattern (go-git match.go getEsc / matchChunk).
+    // Note: trailing `\` only errors when name still has bytes after the prefix
+    // (go-git returns false, not BadPattern, when name is exhausted first).
+    try std.testing.expectError(Error.BadPattern, match("foo\\", "foox"));
+    try std.testing.expectError(Error.BadPattern, match("\\", "x"));
+    try std.testing.expectError(Error.BadPattern, match("[", "a"));
+    try std.testing.expectError(Error.BadPattern, match("[]", "a"));
+    // Exhausted name before trailing escape: no BadPattern (go-git / Go Match).
+    try std.testing.expect(!(try match("foo\\", "foo")));
+}

@@ -1,0 +1,25 @@
+# Index v3 with intent-to-add extended flags (Class A golden, phase 5)
+# go-git: plumbing/format/index Encoder.encodeEntry (entryExtended | intentToAddMask)
+# Layout: 12-byte header + 1 entry (v3 extended flags) + 20-byte SHA-1 trailer
+# Entry name "x"; all timestamps/mode/hash zeroed for determinism
+# flags = entryExtended(0x4000) | name_len(1) = 0x4001
+# extended_flags = intentToAddMask (1<<13) = 0x2000
+# wrote = entry_header(62) + ext(2) + name(1) = 65; pad = 8 - (65%8) = 7 NULs
+package: plumbing/format/index
+case: v3_intent_to_add
+signature: DIRC
+signature_hex: 44495243
+version: 3
+entry_count: 1
+name: x
+intent_to_add: true
+skip_worktree: false
+flags_hex: 4001
+extended_flags_hex: 2000
+header_hex: 444952430000000300000001
+entry_fixed_hex: 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+entry_flags_name_pad_hex: 400120007800000000000000
+body_hex: 444952430000000300000001000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000400120007800000000000000
+checksum: 44e2f781298073bf5006cb5fd5a25dc37b5e71dd
+file_hex: 44495243000000030000000100000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000040012000780000000000000044e2f781298073bf5006cb5fd5a25dc37b5e71dd
+size_bytes: 104

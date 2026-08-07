@@ -6,6 +6,7 @@ _SRCS = [
     "match.zig",
     "decoder.zig",
     "encoder.zig",
+    "fixtures.zig",
 ]
 
 zig_library(

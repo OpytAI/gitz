@@ -479,7 +479,7 @@ test "TestIndexGlob" {
     }
 }
 
-test "SkipUnless sets skip_worktree" {
+test "IndexSuite.SkipUnless sets skip_worktree" {
     const allocator = std.testing.allocator;
     var idx = Index.init(allocator);
     defer idx.deinit();
@@ -534,4 +534,31 @@ test "Time isZero" {
     try std.testing.expect((Time{}).isZero());
     try std.testing.expect(!Time.unix(1, 0).isZero());
     try std.testing.expect(!Time.unix(0, 1).isZero());
+}
+
+test "Index.string concatenates entry debug lines" {
+    // go-git Index.String — concatenation of every Entry.String()
+    const allocator = std.testing.allocator;
+    var idx = Index.init(allocator);
+    defer idx.deinit();
+
+    const e1 = try idx.add("a");
+    e1.mode = filemode.Regular;
+    e1.stage = 0;
+    e1.size = 1;
+    const e2 = try idx.add("b");
+    e2.mode = filemode.Regular;
+    e2.stage = TheirMode;
+    e2.size = 2;
+
+    const s = try idx.string(allocator);
+    defer allocator.free(s);
+
+    try std.testing.expect(std.mem.indexOf(u8, s, "\ta\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "\tb\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "  size: 1\tflags: 0\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, "  size: 2\tflags: 0\n") != null);
+    // Stage digits appear before the tab+name (go-git "%d\t%s").
+    try std.testing.expect(std.mem.indexOf(u8, s, " 0\ta\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, s, " 3\tb\n") != null);
 }

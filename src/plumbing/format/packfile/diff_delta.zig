@@ -40,12 +40,18 @@ pub fn getDelta(
 }
 
 /// go-git `getDelta` — same as `getDelta` but reuses `index` across calls.
+///
+/// On every error path: temporary delta bytes are freed (`defer`), and a
+/// partially constructed `MemoryObject` is `deinit`+`destroy`ed (`errdefer`).
+/// Pooled buffers used by `diffDeltaWithIndex` are always returned via
+/// `putBytesBuffer`.
 pub fn getDeltaWithIndex(
     allocator: Allocator,
     index: *DeltaIndex,
     base: *const MemoryObject,
     target: *const MemoryObject,
 ) Allocator.Error!*MemoryObject {
+    // Owned encode buffer: free on success (after write copies it) and on error.
     const db = try diffDeltaWithIndex(allocator, index, base.readerBytes(), target.readerBytes());
     defer allocator.free(db);
 
@@ -69,6 +75,10 @@ pub fn diffDelta(allocator: Allocator, src: []const u8, tgt: []const u8) Allocat
 }
 
 /// go-git `diffDelta` — core encode using (and populating) `index`.
+///
+/// Always pairs `getBytesBuffer` with `putBytesBuffer` (via `defer`), including
+/// on error. Callers under a leak-checking allocator must still call
+/// `sync.deinitPools` so free-list nodes are released.
 pub fn diffDeltaWithIndex(
     allocator: Allocator,
     index: *DeltaIndex,
@@ -320,7 +330,7 @@ fn deltaTestCases() []const DeltaCase {
     };
 }
 
-test "DiffDelta AddDelta suite" {
+test "DeltaSuite.TestAddDelta" {
     // go-git `TestAddDelta` (all cases except the 100KiB random copy; see separate test).
     const allocator = std.testing.allocator;
     defer sync.deinitPools(allocator);
@@ -341,7 +351,7 @@ test "DiffDelta AddDelta suite" {
     }
 }
 
-test "DiffDelta AddDelta big copy operation" {
+test "DeltaSuite.TestAddDelta big copy" {
     // go-git case "A copy operation bigger than 64kb".
     const allocator = std.testing.allocator;
     defer sync.deinitPools(allocator);
@@ -367,7 +377,7 @@ test "DiffDelta AddDelta big copy operation" {
     try std.testing.expectEqualSlices(u8, target_buf, result);
 }
 
-test "DiffDelta AddDeltaReader suite" {
+test "DeltaSuite.TestAddDeltaReader" {
     // go-git `TestAddDeltaReader` — DiffDelta + readerFromDelta.
     const allocator = std.testing.allocator;
     defer sync.deinitPools(allocator);
@@ -387,7 +397,7 @@ test "DiffDelta AddDeltaReader suite" {
     }
 }
 
-test "DiffDelta IncompleteDelta suite" {
+test "DeltaSuite.TestIncompleteDelta" {
     // go-git `TestIncompleteDelta`.
     const allocator = std.testing.allocator;
     defer sync.deinitPools(allocator);
@@ -416,7 +426,7 @@ test "DiffDelta IncompleteDelta suite" {
     );
 }
 
-test "DiffDelta MaxCopySizeDelta" {
+test "DeltaSuite.TestMaxCopySizeDelta" {
     // go-git `TestMaxCopySizeDelta`.
     const allocator = std.testing.allocator;
     defer sync.deinitPools(allocator);
@@ -438,7 +448,7 @@ test "DiffDelta MaxCopySizeDelta" {
     try std.testing.expectEqualSlices(u8, target_buf, result);
 }
 
-test "DiffDelta MaxCopySizeDeltaReader" {
+test "DeltaSuite.TestMaxCopySizeDeltaReader" {
     // go-git `TestMaxCopySizeDeltaReader`.
     const allocator = std.testing.allocator;
     defer sync.deinitPools(allocator);
@@ -460,7 +470,7 @@ test "DiffDelta MaxCopySizeDeltaReader" {
     try std.testing.expectEqualSlices(u8, target_buf, result);
 }
 
-test "GetDelta returns OFSDelta MemoryObject" {
+test "DeltaSuite.GetDelta OFSDelta MemoryObject" {
     const allocator = std.testing.allocator;
     defer sync.deinitPools(allocator);
 
@@ -514,7 +524,7 @@ test "deltaEncodeSize known values" {
     }
 }
 
-test "DiffDelta identical buffers" {
+test "DeltaSuite.DiffDelta identical buffers" {
     const allocator = std.testing.allocator;
     defer sync.deinitPools(allocator);
 
@@ -525,4 +535,51 @@ test "DiffDelta identical buffers" {
     const out = try patch_delta.patchDelta(allocator, data, delta);
     defer allocator.free(out);
     try std.testing.expectEqualSlices(u8, data, out);
+}
+
+test "many getDelta then deinitPools has zero leaks" {
+    // Stress encode path: pooled BytesBuffers + DeltaIndex tables must not
+    // leak under testing.allocator when deinitPools runs at the end.
+    const allocator = std.testing.allocator;
+    defer sync.deinitPools(allocator);
+
+    var base_buf: [256]u8 = undefined;
+    @memset(base_buf[0..128], 'a');
+    @memset(base_buf[128..256], 'b');
+
+    var base = MemoryObject.init(allocator);
+    defer base.deinit();
+    base.setType(.blob);
+    _ = try base.write(&base_buf);
+
+    // Shared fingerprint index across targets (go-git getDelta reuse).
+    var index = DeltaIndex{ .allocator = allocator };
+    defer index.deinit();
+
+    var n: usize = 0;
+    while (n < 32) : (n += 1) {
+        var tgt_buf: [320]u8 = undefined;
+        @memcpy(tgt_buf[0..256], &base_buf);
+        @memset(tgt_buf[256..320], @as(u8, 'c') +% @as(u8, @intCast(n % 10)));
+
+        var target = MemoryObject.init(allocator);
+        defer target.deinit();
+        target.setType(.blob);
+        _ = try target.write(&tgt_buf);
+
+        // Alternate fresh getDelta and reused-index getDeltaWithIndex.
+        const delta_obj = if (n % 2 == 0)
+            try getDelta(allocator, &base, &target)
+        else
+            try getDeltaWithIndex(allocator, &index, &base, &target);
+        defer {
+            delta_obj.deinit();
+            allocator.destroy(delta_obj);
+        }
+
+        try std.testing.expectEqual(plumbing.ObjectType.ofs_delta, delta_obj.object_type);
+        const restored = try patch_delta.patchDelta(allocator, base.readerBytes(), delta_obj.readerBytes());
+        defer allocator.free(restored);
+        try std.testing.expectEqualSlices(u8, target.readerBytes(), restored);
+    }
 }

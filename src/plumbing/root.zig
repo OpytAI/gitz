@@ -28,8 +28,9 @@ pub const computeHash = hash_mod.computeHash;
 // --- ObjectType ---
 pub const ObjectType = object_mod.ObjectType;
 
-// --- MemoryObject ---
+// --- MemoryObject (+ optional DeltaObject metadata) ---
 pub const MemoryObject = memory_mod.MemoryObject;
+pub const DeltaMeta = memory_mod.DeltaMeta;
 
 // --- Reference ---
 pub const Reference = reference_mod.Reference;
@@ -110,6 +111,24 @@ test "computeHash empty blob" {
         "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
         h.string(&buf),
     );
+}
+
+test "MemoryObject DeltaMeta BaseHash ActualHash ActualSize" {
+    var obj = MemoryObject.init(std.testing.allocator);
+    defer obj.deinit();
+    obj.setType(.ref_delta);
+    try std.testing.expect(!obj.isDeltaObject());
+    const base = try parseHash("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    const actual = try parseHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    obj.setDeltaMeta(.{
+        .base_hash = base,
+        .actual_hash = actual,
+        .actual_size = 42,
+    });
+    try std.testing.expect(obj.isDeltaObject());
+    try std.testing.expect(obj.baseHash().?.eql(base));
+    try std.testing.expect(obj.actualHash().?.eql(actual));
+    try std.testing.expectEqual(@as(i64, 42), obj.actualSize().?);
 }
 
 test "MemoryObject write and hash" {

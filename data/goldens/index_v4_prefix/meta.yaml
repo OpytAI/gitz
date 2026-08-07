@@ -1,0 +1,4 @@
+name: index_v4_prefix
+type: file_equals
+actual: actual.txt
+expected: expected.txt

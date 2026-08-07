@@ -8,6 +8,7 @@ module(
 bazel_dep(name = "platforms", version = "1.1.0")
 bazel_dep(name = "bazel_skylib", version = "1.9.0")
 bazel_dep(name = "rules_zig", version = "0.16.0")
+bazel_dep(name = "rules_python", version = "1.4.1")
 
 # Hermetic Zig 0.16.0 — same pin pattern as agent-os (sha-locked local index).
 zig = use_extension("@rules_zig//zig:extensions.bzl", "zig")
@@ -17,3 +18,10 @@ use_repo(zig, "zig_toolchains")
 
 register_toolchains("@rules_zig//zig/target:all")
 register_toolchains("@zig_toolchains//:all")
+
+# Hermetic CPython (rules_python). Fixture generation: //tools:gen_index_fixtures.
+python = use_extension("@rules_python//python/extensions:python.bzl", "python")
+python.toolchain(
+    is_default = True,
+    python_version = "3.12",
+)

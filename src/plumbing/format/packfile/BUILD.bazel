@@ -15,6 +15,7 @@ _SRCS = [
     "diff_delta.zig",
     "delta_selector.zig",
     "encoder.zig",
+    "encoder_advanced.zig",
     "basic_pack.zig",
     "ref_delta_pack.zig",
     "ref_delta_idx.zig",

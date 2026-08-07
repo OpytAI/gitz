@@ -20,6 +20,7 @@ const Index = index_mod.Index;
 const Entry = index_mod.Entry;
 const Tree = index_mod.Tree;
 const ResolveUndo = index_mod.ResolveUndo;
+const ResolveUndoEntry = index_mod.ResolveUndoEntry;
 const EndOfIndexEntry = index_mod.EndOfIndexEntry;
 const Time = index_mod.Time;
 const Stage = index_mod.Stage;
@@ -29,8 +30,11 @@ const Error = err_mod.Error;
 // Wire constants (go-git decoder.go / encoder.go)
 // ---------------------------------------------------------------------------
 
-/// Highest index version this encoder writes (go-git `EncodeVersionSupported`).
+/// Highest index version this encoder accepts (go-git `EncodeVersionSupported uint32 = 4`).
+/// go-git comments call this a “range”; the value is the maximum only (min is not gated).
 pub const encode_version_supported: u32 = 4;
+/// go-git exported name for `encode_version_supported`.
+pub const EncodeVersionSupported = encode_version_supported;
 
 /// Fixed-size entry header before the path name (go-git `entryHeaderLength`).
 const entry_header_length: usize = 62;
@@ -403,7 +407,7 @@ fn decimalLen(v: i32) usize {
 // Tests — map from go-git encoder_test.go
 // ---------------------------------------------------------------------------
 
-test "encode unsupported version" {
+test "IndexSuite.TestEncodeUnsupportedVersion" {
     // go-git IndexSuite.TestEncodeUnsupportedVersion
     const allocator = std.testing.allocator;
     var idx = Index.init(allocator);
@@ -416,7 +420,7 @@ test "encode unsupported version" {
     try std.testing.expectError(Error.UnsupportedVersion, e.encode(&idx));
 }
 
-test "encode sorts entries by name" {
+test "IndexSuite.TestEncode" {
     // go-git IndexSuite.TestEncode — sort order after round-trip
     const allocator = std.testing.allocator;
     var idx = Index.init(allocator);
@@ -477,7 +481,7 @@ test "encode sorts entries by name" {
     try std.testing.expectEqualSlices(u8, &sum, out[out.len - 20 ..]);
 }
 
-test "encode long name uses name mask" {
+test "TestEncodeLongName" {
     // go-git TestEncodeLongName — name length ≥ 4095 sets flags name field to 0xFFF
     const allocator = std.testing.allocator;
     var idx = Index.init(allocator);
@@ -520,7 +524,7 @@ test "encode long name uses name mask" {
     try std.testing.expectEqualSlices(u8, long_name[0..16], out[flags_off + 2 ..][0..16]);
 }
 
-test "encode v4 prefix compression" {
+test "TestEncodeV4" {
     // go-git TestEncodeV4 — deterministic names with shared prefixes
     const allocator = std.testing.allocator;
     var idx = Index.init(allocator);
@@ -560,8 +564,11 @@ test "encode v4 prefix compression" {
     try std.testing.expectEqualSlices(u8, "bar\x00", name0[1..5]);
 }
 
-test "encode intent to add extended flags" {
+test "IndexSuite.TestEncodeWithIntentToAdd" {
     // go-git IndexSuite.TestEncodeWithIntentToAddUnsupportedVersion
+    // Despite the go-git name, this is a successful v3 encode/decode of IntentToAdd
+    // (not an UnsupportedVersion error). Extended flags are written when the bit is
+    // set; go-git does not auto-bump version 2 → 3.
     const allocator = std.testing.allocator;
     var idx = Index.init(allocator);
     defer idx.deinit();
@@ -586,10 +593,23 @@ test "encode intent to add extended flags" {
     const ext = std.mem.readInt(u16, out[12 + 62 ..][0..2], .big);
     try std.testing.expect((ext & intent_to_add_mask) != 0);
     try std.testing.expect((ext & skip_work_tree_mask) == 0);
+
+    // Full round-trip like go-git (decode and assert IntentToAdd).
+    const decoder_mod = @import("decoder.zig");
+    var r: std.Io.Reader = .fixed(out);
+    var dec = decoder_mod.Decoder.init(&r);
+    var out_idx = Index.init(allocator);
+    defer out_idx.deinit();
+    try dec.decode(&out_idx);
+    try std.testing.expectEqual(@as(u32, 3), out_idx.version);
+    try std.testing.expectEqual(@as(usize, 1), out_idx.entries.items.len);
+    try std.testing.expect(out_idx.entries.items[0].intent_to_add);
+    try std.testing.expect(!out_idx.entries.items[0].skip_worktree);
 }
 
-test "encode skip worktree extended flags" {
+test "IndexSuite.TestEncodeWithSkipWorktree" {
     // go-git IndexSuite.TestEncodeWithSkipWorktreeUnsupportedVersion
+    // Same naming quirk as IntentToAdd: successful v3 round-trip of SkipWorktree.
     const allocator = std.testing.allocator;
     var idx = Index.init(allocator);
     defer idx.deinit();
@@ -612,9 +632,20 @@ test "encode skip worktree extended flags" {
     const ext = std.mem.readInt(u16, out[12 + 62 ..][0..2], .big);
     try std.testing.expect((ext & skip_work_tree_mask) != 0);
     try std.testing.expect((ext & intent_to_add_mask) == 0);
+
+    const decoder_mod = @import("decoder.zig");
+    var r: std.Io.Reader = .fixed(out);
+    var dec = decoder_mod.Decoder.init(&r);
+    var out_idx = Index.init(allocator);
+    defer out_idx.deinit();
+    try dec.decode(&out_idx);
+    try std.testing.expectEqual(@as(u32, 3), out_idx.version);
+    try std.testing.expectEqual(@as(usize, 1), out_idx.entries.items.len);
+    try std.testing.expect(out_idx.entries.items[0].skip_worktree);
+    try std.testing.expect(!out_idx.entries.items[0].intent_to_add);
 }
 
-test "encode rejects negative timestamps" {
+test "IndexSuite.TestEncodeInvalidTimestamp" {
     // go-git ErrInvalidTimestamp
     const allocator = std.testing.allocator;
     var idx = Index.init(allocator);
@@ -633,7 +664,7 @@ test "encode rejects negative timestamps" {
     try std.testing.expectError(Error.InvalidTimestamp, enc.encode(&idx));
 }
 
-test "encode TREE and EOIE extensions" {
+test "IndexSuite.TestEncodeTREEAndEOIE" {
     const allocator = std.testing.allocator;
     var idx = Index.init(allocator);
     defer idx.deinit();
@@ -682,7 +713,7 @@ test "encode TREE and EOIE extensions" {
     try std.testing.expectEqualSlices(u8, &sum, out[out.len - 20 ..]);
 }
 
-test "encodeWithoutFooter then raw extension then footer" {
+test "IndexSuite.TestEncodeWithoutFooterRawExt" {
     // go-git buildIndexWithExtension pattern
     const allocator = std.testing.allocator;
     var idx = Index.init(allocator);
@@ -708,7 +739,7 @@ test "encodeWithoutFooter then raw extension then footer" {
     try std.testing.expectEqualSlices(u8, &sum, out[out.len - 20 ..]);
 }
 
-test "encode v2 padding is multiple of 8" {
+test "IndexSuite.TestEncodeV2Padding" {
     const allocator = std.testing.allocator;
     var idx = Index.init(allocator);
     defer idx.deinit();
@@ -735,6 +766,102 @@ test "commonPrefixLen" {
     try std.testing.expectEqual(@as(usize, 4), commonPrefixLen("baz/", "baz/bar"));
 }
 
-test "encode_version_supported is 4" {
+test "EncodeVersionSupported is 4" {
     try std.testing.expectEqual(@as(u32, 4), encode_version_supported);
+    try std.testing.expectEqual(encode_version_supported, EncodeVersionSupported);
+}
+
+test "encode merge conflict stages round-trip stage flags" {
+    // Stage bits live in flags>>12; decoder TestDecodeMergeConflict covers
+    // synthetic decode; this exercises the encoder path + round-trip.
+    const allocator = std.testing.allocator;
+    var idx = Index.init(allocator);
+    defer idx.deinit();
+    idx.version = 2;
+
+    const h1 = plumbing.newHash("880cd14280f4b9b6ed3986d6671f907d7cc2a198");
+    const h2 = plumbing.newHash("d499a1a0b79b7d87a35155afd0c1cce78b37a91c");
+    const h3 = plumbing.newHash("14f8e368114f561c38e134f6e68ea6fea12d77ed");
+    // Distinct names so go-git byName sort (name-only, unstable on ties) is not
+    // an issue; stages still exercise flags packing.
+    const stages = [_]struct { name: []const u8, stage: Stage, hash: plumbing.Hash }{
+        .{ .name = "a", .stage = index_mod.AncestorMode, .hash = h1 },
+        .{ .name = "b", .stage = index_mod.OurMode, .hash = h2 },
+        .{ .name = "c", .stage = index_mod.TheirMode, .hash = h3 },
+    };
+    for (stages) |s| {
+        const owned = try allocator.dupe(u8, s.name);
+        try idx.entries.append(allocator, .{
+            .name = owned,
+            .stage = s.stage,
+            .hash = s.hash,
+            .mode = 0o100644,
+        });
+    }
+
+    var storage: [1024]u8 = undefined;
+    var w: Writer = .fixed(&storage);
+    var enc = Encoder.init(&w);
+    try enc.encode(&idx);
+
+    const decoder_mod = @import("decoder.zig");
+    var r: std.Io.Reader = .fixed(w.buffered());
+    var dec = decoder_mod.Decoder.init(&r);
+    var out = Index.init(allocator);
+    defer out.deinit();
+    try dec.decode(&out);
+
+    try std.testing.expectEqual(@as(usize, 3), out.entries.items.len);
+    try std.testing.expectEqual(index_mod.AncestorMode, (try out.entry("a")).stage);
+    try std.testing.expectEqual(index_mod.OurMode, (try out.entry("b")).stage);
+    try std.testing.expectEqual(index_mod.TheirMode, (try out.entry("c")).stage);
+    try std.testing.expect((try out.entry("a")).hash.eql(h1));
+    try std.testing.expect((try out.entry("b")).hash.eql(h2));
+    try std.testing.expect((try out.entry("c")).hash.eql(h3));
+}
+
+test "encode REUC resolve undo round-trip" {
+    // Encoder writes REUC (beyond go-git Encode TODO); decoder already covers
+    // synthetic REUC. Round-trip exercises encodeResolveUndoExtension payload.
+    const allocator = std.testing.allocator;
+    var idx = Index.init(allocator);
+    defer idx.deinit();
+    idx.version = 2;
+
+    const ru = try allocator.create(ResolveUndo);
+    ru.* = .{};
+    idx.resolve_undo = ru;
+
+    const path = try allocator.dupe(u8, "go/example.go");
+    var e = ResolveUndoEntry{ .path = path };
+    const ha = plumbing.newHash("1111111111111111111111111111111111111111");
+    const hb = plumbing.newHash("2222222222222222222222222222222222222222");
+    const hc = plumbing.newHash("3333333333333333333333333333333333333333");
+    e.setStage(1, ha);
+    e.setStage(2, hb);
+    e.setStage(3, hc);
+    try ru.entries.append(allocator, e);
+
+    var storage: [512]u8 = undefined;
+    var w: Writer = .fixed(&storage);
+    var enc = Encoder.init(&w);
+    try enc.encode(&idx);
+
+    const out = w.buffered();
+    try std.testing.expect(std.mem.indexOf(u8, out, "REUC") != null);
+
+    const decoder_mod = @import("decoder.zig");
+    var r: std.Io.Reader = .fixed(out);
+    var dec = decoder_mod.Decoder.init(&r);
+    var decoded = Index.init(allocator);
+    defer decoded.deinit();
+    try dec.decode(&decoded);
+
+    try std.testing.expect(decoded.resolve_undo != null);
+    const dru = decoded.resolve_undo.?;
+    try std.testing.expectEqual(@as(usize, 1), dru.entries.items.len);
+    try std.testing.expectEqualStrings("go/example.go", dru.entries.items[0].path);
+    try std.testing.expect(dru.entries.items[0].getStage(1).?.eql(ha));
+    try std.testing.expect(dru.entries.items[0].getStage(2).?.eql(hb));
+    try std.testing.expect(dru.entries.items[0].getStage(3).?.eql(hc));
 }

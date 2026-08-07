@@ -14,7 +14,7 @@ packages:
   max_missing: 0
 
 api:
-  # Count of inventories/api/*.yaml (phases 1–4 + phase 5 index).
+  # Count of inventories/api/*.yaml (phases 1–5: foundation through index + pack write).
   # Bump when adding API inventory files.
   min_files: 19
   # For due API files (phase ≤ current): zig_map coverage of require names.
@@ -23,8 +23,10 @@ api:
 
 goldens:
   # Number of Class A golden case dirs (data/goldens/**/meta.yaml).
-  # Phase 1–4: 17 suites; phase 5 adds index_v2_empty + pack_encode_empty.
-  min_count: 19
+  # Phase 1–4: 17; phase 5: index multi-version (v2 empty, v3 intent, v4 prefix)
+  # + pack_encode_empty + pack_encode_one_empty_commit.
+  min_count: 22
+
 
 allowlists:
   # Entries with remove_by_phase <= current_phase must not remain.

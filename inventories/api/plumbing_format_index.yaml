@@ -1,6 +1,7 @@
 # API inventory: plumbing/format/index (phase 5)
 # Go NewDecoder/NewEncoder map to Zig Decoder.init / Encoder.init.
 # Semantic last-path tokens must appear in package-root *.zig (orchestrator re-exports).
+# Fixtures are test-only and are NOT required public API.
 package: plumbing/format/index
 phase: 5
 require:
@@ -10,52 +11,85 @@ require:
     - Decoder
     - Encoder
     - Stage
+    - Time
     - Tree
     - TreeEntry
     - ResolveUndo
     - ResolveUndoEntry
     - EndOfIndexEntry
+    - Error
   functions:
     - NewDecoder
     - NewEncoder
+    - Match
   constants:
     - Merged
     - AncestorMode
     - OurMode
     - TheirMode
     - EncodeVersionSupported
+    - DecodeVersionSupported
     - index_signature
+    - tree_ext_signature
+    - resolve_undo_ext_signature
+    - end_of_index_entry_ext_signature
   semantic:
+    # Core types (package-root re-exports)
     - Index
-    - Index.init
-    - Index.add
-    - Index.entry
-    - Index.remove
-    - Index.glob
-    - Index.skipUnless
     - Entry
+    - Time
     - Decoder
-    - Decoder.init
-    - Decoder.decode
     - Encoder
-    - Encoder.init
-    - Encoder.encode
     - Stage
     - Tree
     - TreeEntry
     - ResolveUndo
     - ResolveUndoEntry
     - EndOfIndexEntry
+    - Error
+    # Index methods (go-git IndexSuite)
+    - Index.init
+    - Index.deinit
+    - Index.add
+    - Index.entry
+    - Index.remove
+    - Index.glob
+    - Index.skipUnless
+    # Time helpers
+    - Time.isZero
+    - Time.unix
+    # Match / glob path
+    - match
+    # Codec
+    - Decoder.init
+    - Decoder.decode
+    - Encoder.init
+    - Encoder.encode
+    # Stage constants
     - Merged
     - AncestorMode
     - OurMode
     - TheirMode
+    # Version bounds + signatures
     - EncodeVersionSupported
-    - index_signature
     - DecodeVersionSupported
+    - index_signature
+    - tree_ext_signature
+    - resolve_undo_ext_signature
+    - end_of_index_entry_ext_signature
+    # Error set members (substring check against error.zig)
+    - Error.UnsupportedVersion
+    - Error.EntryNotFound
+    - Error.InvalidTimestamp
+    - Error.MalformedSignature
+    - Error.InvalidChecksum
+    - Error.UnknownExtension
+    - Error.MalformedIndexFile
+    - Error.BadPattern
 zig_map:
   Index: Index
   Entry: Entry
+  Time: Time
   Decoder: Decoder
   Encoder: Encoder
   Stage: Stage
@@ -64,11 +98,25 @@ zig_map:
   ResolveUndo: ResolveUndo
   ResolveUndoEntry: ResolveUndoEntry
   EndOfIndexEntry: EndOfIndexEntry
+  Error: Error
   NewDecoder: Decoder.init
   NewEncoder: Encoder.init
+  Match: match
   Merged: Merged
   AncestorMode: AncestorMode
   OurMode: OurMode
   TheirMode: TheirMode
   EncodeVersionSupported: EncodeVersionSupported
+  DecodeVersionSupported: DecodeVersionSupported
   indexSignature: index_signature
+  treeExtSignature: tree_ext_signature
+  resolveUndoExtSignature: resolve_undo_ext_signature
+  endOfIndexEntryExtSignature: end_of_index_entry_ext_signature
+  ErrUnsupportedVersion: Error.UnsupportedVersion
+  ErrEntryNotFound: Error.EntryNotFound
+  ErrInvalidTimestamp: Error.InvalidTimestamp
+  ErrMalformedSignature: Error.MalformedSignature
+  ErrInvalidChecksum: Error.InvalidChecksum
+  ErrUnknownExtension: Error.UnknownExtension
+  ErrMalformedIndexFile: Error.MalformedIndexFile
+  ErrBadPattern: Error.BadPattern

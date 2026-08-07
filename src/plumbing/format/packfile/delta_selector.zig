@@ -1,4 +1,5 @@
-//! Delta window selection for pack encoding (go-git `delta_selector.go`).
+//! Delta window selection for pack encoding
+//! (go-git `plumbing/format/packfile/delta_selector.go`).
 //!
 //! Builds a list of `ObjectToPack` from object hashes, optionally creating
 //! OFS deltas within a sliding `pack_window`.
@@ -216,11 +217,22 @@ pub const DeltaSelector = struct {
         // Already fixed once Base is assigned (go-git).
         if (otp.base != null) return;
 
-        // go-git uses plumbing.DeltaObject.BaseHash(). This port has no
-        // DeltaObject type on MemoryObject, so break the chain (undeltify).
-        // When a future storer returns richer delta metadata, wire BaseHash here.
-        _ = objects;
-        try self.undeltify(otp);
+        // go-git: type-assert plumbing.DeltaObject; without BaseHash we cannot
+        // re-link the chain and must undeltify.
+        const base_hash = obj.baseHash() orelse {
+            try self.undeltify(otp);
+            return;
+        };
+
+        const base = objects.get(base_hash) orelse {
+            // Base not in this pack set — break the chain.
+            try self.undeltify(otp);
+            return;
+        };
+
+        try self.fixAndBreakChainsOne(objects, base);
+        // Store-owned delta body: do not take ownership.
+        otp.setDeltaBorrowed(base, obj);
     }
 
     fn restoreOriginal(self: *DeltaSelector, otp: *ObjectToPack) !void {
@@ -354,13 +366,8 @@ pub const DeltaSelector = struct {
 
         // Keep delta only if strictly better than the size limit / current delta.
         if (delta.size < msz) {
-            if (target.isDelta()) {
-                if (target.object) |old| {
-                    // Previous OFS delta body from an earlier tryToDeltify.
-                    old.deinit();
-                    self.allocator.destroy(old);
-                }
-            }
+            // Drop previous owned delta body (if any) before claiming the new one.
+            target.releaseOwnedObject(self.allocator);
             target.setDelta(base, delta);
         } else {
             delta.deinit();
@@ -392,24 +399,14 @@ pub fn deltaSizeLimit(
 
 /// Free a slice from `objectsToPack` / `objectsToPackBuild`.
 ///
-/// Frees each `ObjectToPack` node and any delta `MemoryObject` attached when
-/// `isDelta()`. Store-owned originals are not freed.
+/// Frees each `ObjectToPack` node and any **owned** delta body (`owns_object`,
+/// typically from `getDeltaWithIndex` / `setDelta`). Store-owned originals and
+/// borrowed deltas (`setDeltaBorrowed`) are never freed — the storer retains them.
+/// Empty literal `&.{}` must not be freed (not allocator-owned).
 pub fn freeObjectsToPack(allocator: Allocator, otps: []*ObjectToPack) void {
-    // Empty literal `&.{}` must not be freed (not allocator-owned).
     if (otps.len == 0) return;
     for (otps) |otp| {
-        // Free only OFS/REF delta *bodies* created by getDeltaWithIndex.
-        // Store-owned originals stay alive for the storer.
-        if (otp.isDelta()) {
-            if (otp.object) |obj| {
-                const is_store_original = if (otp.original) |orig| obj == orig else false;
-                if (!is_store_original) {
-                    obj.deinit();
-                    allocator.destroy(obj);
-                    otp.object = null;
-                }
-            }
-        }
+        otp.releaseOwnedObject(allocator);
         allocator.destroy(otp);
     }
     allocator.free(otps);
@@ -460,6 +457,13 @@ const MapStore = struct {
 
     fn put(self: *MapStore, obj: *MemoryObject) !Hash {
         const h = obj.hash();
+        // base and o1 share content → same hash; free the displaced object.
+        if (self.map.fetchRemove(h)) |kv| {
+            if (kv.value != obj) {
+                kv.value.deinit();
+                self.allocator.destroy(kv.value);
+            }
+        }
         try self.map.put(self.allocator, h, obj);
         return h;
     }
@@ -559,7 +563,15 @@ fn createTestObjects(allocator: Allocator, store: *MapStore) !TestIds {
         if (std.mem.eql(u8, spec.id, "o1")) ids.o1 = h;
         if (std.mem.eql(u8, spec.id, "o2")) ids.o2 = h;
         if (std.mem.eql(u8, spec.id, "o3")) ids.o3 = h;
-        if (std.mem.eql(u8, spec.id, "bigBase")) ids.big_base = h;
+    }
+
+    // go-git bigBase: 1_000_000 × "a" (radical size vs target).
+    {
+        const content = try allocator.alloc(u8, 1_000_000);
+        defer allocator.free(content);
+        @memset(content, 'a');
+        const obj = try newObject(allocator, .blob, content);
+        ids.big_base = try store.put(obj);
     }
 
     {
@@ -570,7 +582,11 @@ fn createTestObjects(allocator: Allocator, store: *MapStore) !TestIds {
     return ids;
 }
 
-test "sort by type and size" {
+fn storeObj(store: *MapStore, h: Hash) *MemoryObject {
+    return store.map.get(h).?;
+}
+
+test "DeltaSelectorSuite.TestSort" {
     const allocator = std.testing.allocator;
     var store: MapStore = .{ .allocator = allocator };
     defer store.deinit();
@@ -641,63 +657,225 @@ test "sort by type and size" {
     }
 }
 
-test "deltaSizeLimit at maxDepth" {
+test "DeltaSelectorSuite.TestMaxDepth" {
     // go-git TestMaxDepth
     const dsl = deltaSizeLimit(0, 0, @intCast(max_depth), true);
     try std.testing.expectEqual(@as(i64, 0), dsl);
 }
 
-test "ObjectsToPack pack_window 0 preserves order without deltas" {
+// Full go-git `DeltaSelectorSuite.TestObjectsToPack` coverage.
+// Leak strategy: `defer sync.deinitPools(allocator)` drains BytesBuffer free
+// lists filled by `getDeltaWithIndex`; `freeObjectsToPack` destroys OFS delta
+// `MemoryObject`s; walk frees every `DeltaIndex`; store owns originals.
+test "DeltaSelectorSuite.TestObjectsToPack" {
     const allocator = std.testing.allocator;
     defer sync.deinitPools(allocator);
 
     var store: MapStore = .{ .allocator = allocator };
     defer store.deinit();
-
-    const a = try newObject(allocator, .blob, "aaaaaaaaaaaaaaaa"); // 16 bytes
-    const b = try newObject(allocator, .blob, "bbbbbbbbbbbbbbbb");
-    const ha = try store.put(a);
-    const hb = try store.put(b);
-
+    const ids = try createTestObjects(allocator, &store);
     var ds = DeltaSelector.init(allocator, Store.from(MapStore, &store));
-    const hashes = [_]Hash{ ha, hb };
-    const otp = try ds.objectsToPack(&hashes, 0);
-    defer freeObjectsToPack(allocator, otp);
-    try std.testing.expectEqual(@as(usize, 2), otp.len);
-    try std.testing.expect(!otp[0].isDelta());
-    try std.testing.expect(!otp[1].isDelta());
-    try std.testing.expect(otp[0].object == a);
-    try std.testing.expect(otp[1].object == b);
+    const window: u32 = 10;
+
+    // 1. Different types → no delta (walk groups by type).
+    {
+        const hashes = [_]Hash{ ids.base, ids.tree_type };
+        const otp = try ds.objectsToPack(&hashes, window);
+        defer freeObjectsToPack(allocator, otp);
+        try std.testing.expectEqual(@as(usize, 2), otp.len);
+        try std.testing.expect(otp[0].object == storeObj(&store, ids.base));
+        try std.testing.expect(otp[1].object == storeObj(&store, ids.tree_type));
+        try std.testing.expect(!otp[0].isDelta());
+        try std.testing.expect(!otp[1].isDelta());
+    }
+
+    // 2. Radically different sizes → no delta.
+    {
+        const hashes = [_]Hash{ ids.big_base, ids.target };
+        const otp = try ds.objectsToPack(&hashes, window);
+        defer freeObjectsToPack(allocator, otp);
+        try std.testing.expectEqual(@as(usize, 2), otp.len);
+        try std.testing.expect(otp[0].object == storeObj(&store, ids.big_base));
+        try std.testing.expect(otp[1].object == storeObj(&store, ids.target));
+        try std.testing.expect(!otp[0].isDelta());
+        try std.testing.expect(!otp[1].isDelta());
+    }
+
+    // 3. Tiny objects → no delta (msz ≤ 8 / size budget).
+    {
+        const hashes = [_]Hash{ ids.small_base, ids.small_target };
+        const otp = try ds.objectsToPack(&hashes, window);
+        defer freeObjectsToPack(allocator, otp);
+        try std.testing.expectEqual(@as(usize, 2), otp.len);
+        try std.testing.expect(otp[0].object == storeObj(&store, ids.small_base));
+        try std.testing.expect(otp[1].object == storeObj(&store, ids.small_target));
+        try std.testing.expect(!otp[0].isDelta());
+        try std.testing.expect(!otp[1].isDelta());
+    }
+
+    // 4. base/target → creates depth-1 delta (larger target first after sort).
+    {
+        const hashes = [_]Hash{ ids.base, ids.target };
+        const otp = try ds.objectsToPack(&hashes, window);
+        defer freeObjectsToPack(allocator, otp);
+        try std.testing.expectEqual(@as(usize, 2), otp.len);
+        try std.testing.expect(otp[0].object == storeObj(&store, ids.target));
+        try std.testing.expect(!otp[0].isDelta());
+        try std.testing.expect(otp[1].original == storeObj(&store, ids.base));
+        try std.testing.expect(otp[1].isDelta());
+        try std.testing.expectEqual(@as(i32, 1), otp[1].depth);
+    }
+
+    // 5. o1/o2/o3 chain: depths 0, 1, 2.
+    {
+        const hashes = [_]Hash{ ids.o1, ids.o2, ids.o3 };
+        const otp = try ds.objectsToPack(&hashes, window);
+        defer freeObjectsToPack(allocator, otp);
+        try std.testing.expectEqual(@as(usize, 3), otp.len);
+        try std.testing.expect(otp[0].object == storeObj(&store, ids.o1));
+        try std.testing.expect(!otp[0].isDelta());
+        try std.testing.expect(otp[1].original == storeObj(&store, ids.o2));
+        try std.testing.expect(otp[1].isDelta());
+        try std.testing.expectEqual(@as(i32, 1), otp[1].depth);
+        try std.testing.expect(otp[2].original == storeObj(&store, ids.o3));
+        try std.testing.expect(otp[2].isDelta());
+        try std.testing.expectEqual(@as(i32, 2), otp[2].depth);
+    }
+
+    // 6. Sliding window: objects outside window produce no delta on target.
+    //    Unsorted path: objectsToPackBuild + walk (go-git objectsToPack + walk).
+    {
+        var hashes_list: std.ArrayListUnmanaged(Hash) = .empty;
+        defer hashes_list.deinit(allocator);
+        try hashes_list.append(allocator, ids.base);
+        var k: u32 = 0;
+        while (k < window) : (k += 1) {
+            try hashes_list.append(allocator, ids.small_target);
+        }
+        try hashes_list.append(allocator, ids.target);
+
+        const otp = try ds.objectsToPackBuild(hashes_list.items, window);
+        defer freeObjectsToPack(allocator, otp);
+        try ds.walk(otp, window);
+        try std.testing.expectEqual(@as(usize, window + 2), otp.len);
+        const target_idx = otp.len - 1;
+        try std.testing.expect(!otp[target_idx].isDelta());
+    }
+
+    // 7. pack_window 0: no deltas, original input order.
+    {
+        const hashes = [_]Hash{ ids.base, ids.target };
+        const otp = try ds.objectsToPack(&hashes, 0);
+        defer freeObjectsToPack(allocator, otp);
+        try std.testing.expectEqual(@as(usize, 2), otp.len);
+        try std.testing.expect(otp[0].object == storeObj(&store, ids.base));
+        try std.testing.expect(!otp[0].isDelta());
+        try std.testing.expect(otp[1].original == storeObj(&store, ids.target));
+        try std.testing.expect(!otp[1].isDelta());
+        try std.testing.expectEqual(@as(i32, 0), otp[1].depth);
+    }
 }
 
-test "ObjectsToPack creates OFS delta within window" {
+test "MapStore put overwrite deinit destroys previous and same pointer is safe" {
+    // Ownership contract for test MapStore (and production ObjectStorage pattern):
+    // put of a new object with an existing hash frees the old MemoryObject;
+    // put of the same pointer must not double-free.
+    const allocator = std.testing.allocator;
+    var store: MapStore = .{ .allocator = allocator };
+    defer store.deinit();
+
+    const a = try newObject(allocator, .blob, "same-bytes");
+    const b = try newObject(allocator, .blob, "same-bytes");
+    const h1 = try store.put(a);
+    const h2 = try store.put(b);
+    try std.testing.expect(h1.eql(h2));
+    try std.testing.expect(store.map.get(h1).? == b);
+
+    // Same-pointer re-put: must keep the live object (no double free).
+    const h3 = try store.put(b);
+    try std.testing.expect(h3.eql(h1));
+    try std.testing.expect(store.map.get(h1).? == b);
+    try std.testing.expectEqualStrings("same-bytes", b.readerBytes());
+}
+
+test "many getDelta and ObjectsToPack then deinitPools has zero leaks" {
+    // End-to-end ownership under testing.allocator:
+    // 1. getDelta creates owned OFS delta MemoryObjects
+    // 2. ObjectsToPack creates more deltas via getDeltaWithIndex
+    // 3. freeObjectsToPack frees only delta bodies (not store originals)
+    // 4. deinitPools drains BytesBuffer free-list nodes
+    // Any missed free fails this test via GPA leak detection.
     const allocator = std.testing.allocator;
     defer sync.deinitPools(allocator);
 
     var store: MapStore = .{ .allocator = allocator };
     defer store.deinit();
 
-    // Related content so DiffDelta finds a win under the size budget.
-    var base_buf: [2000]u8 = undefined;
-    @memset(base_buf[0..1000], 'a');
-    @memset(base_buf[1000..2000], 'b');
-    var tgt_buf: [3000]u8 = undefined;
-    @memcpy(tgt_buf[0..2000], &base_buf);
-    @memset(tgt_buf[2000..3000], 'c');
+    // Shared prefix so windowed delta search finds profitable matches.
+    var shared: [1500]u8 = undefined;
+    @memset(shared[0..1000], 'x');
+    @memset(shared[1000..1500], 'y');
 
-    const base = try newObject(allocator, .blob, &base_buf);
-    const target = try newObject(allocator, .blob, &tgt_buf);
-    const hb = try store.put(base);
-    const ht = try store.put(target);
+    var hashes_buf: [24]Hash = undefined;
+    var n_hashes: usize = 0;
 
+    var i: usize = 0;
+    while (i < 12) : (i += 1) {
+        var content: [2000]u8 = undefined;
+        @memcpy(content[0..1500], &shared);
+        // Distinct suffix so each object has a unique hash.
+        @memset(content[1500..2000], @as(u8, '0') +% @as(u8, @intCast(i % 10)));
+        content[1999] = @intCast(i);
+
+        const obj = try newObject(allocator, .blob, &content);
+        hashes_buf[n_hashes] = try store.put(obj);
+        n_hashes += 1;
+    }
+
+    // --- getDelta path (owned deltas, freed here) ---
+    {
+        const base_obj = store.map.get(hashes_buf[0]).?;
+        var d: usize = 1;
+        while (d < n_hashes) : (d += 1) {
+            const tgt_obj = store.map.get(hashes_buf[d]).?;
+            const delta = try diff_delta.getDelta(allocator, base_obj, tgt_obj);
+            defer {
+                delta.deinit();
+                allocator.destroy(delta);
+            }
+            try std.testing.expectEqual(ObjectType.ofs_delta, delta.object_type);
+        }
+    }
+
+    // --- ObjectsToPack path (deltas freed by freeObjectsToPack) ---
     var ds = DeltaSelector.init(allocator, Store.from(MapStore, &store));
-    const hashes = [_]Hash{ hb, ht };
-    const otp = try ds.objectsToPack(&hashes, 10);
+    const otp = try ds.objectsToPack(hashes_buf[0..n_hashes], 10);
     defer freeObjectsToPack(allocator, otp);
 
-    try std.testing.expectEqual(@as(usize, 2), otp.len);
-    // Larger object first after sort; smaller becomes a delta of it.
-    try std.testing.expect(!otp[0].isDelta());
-    try std.testing.expect(otp[1].isDelta());
-    try std.testing.expectEqual(@as(i32, 1), otp[1].depth);
+    try std.testing.expectEqual(n_hashes, otp.len);
+
+    var n_deltas: usize = 0;
+    for (otp) |p| {
+        if (p.isDelta()) {
+            n_deltas += 1;
+            // Delta body must not alias the store original.
+            if (p.original) |orig| {
+                try std.testing.expect(p.object != orig);
+            }
+            try std.testing.expect(p.object != null);
+            try std.testing.expectEqual(ObjectType.ofs_delta, p.object.?.object_type);
+        } else {
+            // Non-delta: object is the store original (must survive freeObjectsToPack).
+            if (p.object) |obj| {
+                if (p.original) |orig| {
+                    try std.testing.expect(obj == orig);
+                }
+            }
+        }
+    }
+    // Related blobs in a window of 10 should yield at least one delta.
+    try std.testing.expect(n_deltas > 0);
+
+    // After freeObjectsToPack (via defer), every store object must still be live.
+    // Checked implicitly: store.deinit frees them without double-free.
 }

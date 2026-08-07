@@ -27,9 +27,12 @@ const EndOfIndexEntry = index.EndOfIndexEntry;
 const Time = index.Time;
 const Hash = plumbing.Hash;
 
-/// Supported index versions (go-git `DecodeVersionSupported`).
+/// Supported index version range (go-git `DecodeVersionSupported`).
+/// go-git: `struct{ Min, Max uint32 }{Min: 2, Max: 4}`.
 pub const DecodeVersionSupported = struct {
+    /// go-git `DecodeVersionSupported.Min`.
     pub const min: u32 = 2;
+    /// go-git `DecodeVersionSupported.Max`.
     pub const max: u32 = 4;
 };
 
@@ -636,7 +639,7 @@ fn decodeBytes(allocator: Allocator, raw: []const u8) !Index {
 
 // ---- TestDecode / TestDecodeEntries (minimal synthetic basic index) ----
 
-test "decode V2 single entry header and fields" {
+test "IndexSuite.TestDecode" {
     // go-git TestDecode / TestDecodeEntries (structure; synthetic fixture)
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -666,7 +669,7 @@ test "decode V2 single entry header and fields" {
     try std.testing.expectEqual(@as(u32, 0o100644), e.mode);
 }
 
-test "decode V2 multiple entries sorted names" {
+test "IndexSuite.TestDecodeEntries" {
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
@@ -689,7 +692,7 @@ test "decode V2 multiple entries sorted names" {
 
 // ---- TestDecodeCacheTree ----
 
-test "decode TREE extension" {
+test "IndexSuite.TestDecodeCacheTree" {
     // go-git TestDecodeCacheTree (synthetic TREE payload)
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -735,7 +738,7 @@ test "decode TREE extension" {
 
 // ---- TestTreeExtensionInvalidatedEntry ----
 
-test "TREE extension skips invalidated entry" {
+test "TestTreeExtensionInvalidatedEntry" {
     // go-git TestTreeExtensionInvalidatedEntry
     const allocator = std.testing.allocator;
 
@@ -779,7 +782,7 @@ test "TREE extension skips invalidated entry" {
 
 // ---- TestDecodeMergeConflict ----
 
-test "decode merge conflict stages" {
+test "IndexSuite.TestDecodeMergeConflict" {
     // go-git TestDecodeMergeConflict (stages on same path)
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -817,7 +820,7 @@ test "decode merge conflict stages" {
 
 // ---- TestDecodeExtendedV3 ----
 
-test "decode V3 extended flags intent-to-add" {
+test "IndexSuite.TestDecodeExtendedV3" {
     // go-git TestDecodeExtendedV3
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -842,7 +845,7 @@ test "decode V3 extended flags intent-to-add" {
 
 // ---- TestDecodeResolveUndo ----
 
-test "decode REUC resolve undo extension" {
+test "IndexSuite.TestDecodeResolveUndo" {
     // go-git TestDecodeResolveUndo (synthetic REUC payload)
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -909,7 +912,7 @@ test "decode REUC resolve undo extension" {
 
 // ---- TestDecodeV4 ----
 
-test "decode V4 path prefix compression" {
+test "IndexSuite.TestDecodeV4" {
     // go-git TestDecodeV4 (synthetic names with compression)
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -943,7 +946,7 @@ test "decode V4 path prefix compression" {
 
 // ---- TestDecodeEndOfIndexEntry ----
 
-test "decode EOIE extension" {
+test "IndexSuite.TestDecodeEndOfIndexEntry" {
     // go-git TestDecodeEndOfIndexEntry
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -974,7 +977,7 @@ test "decode EOIE extension" {
 
 // ---- TestDecodeUnknownOptionalExt / TestDecodeUnknownMandatoryExt ----
 
-test "decode unknown optional extension TEST" {
+test "IndexSuite.TestDecodeUnknownOptionalExt" {
     // go-git TestDecodeUnknownOptionalExt
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -994,7 +997,7 @@ test "decode unknown optional extension TEST" {
     try std.testing.expectEqual(@as(u32, 2), idx.version);
 }
 
-test "decode unknown mandatory extension test fails" {
+test "IndexSuite.TestDecodeUnknownMandatoryExt" {
     // go-git TestDecodeUnknownMandatoryExt
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -1018,7 +1021,7 @@ test "decode unknown mandatory extension test fails" {
 
 // ---- TestDecodeTruncatedExt ----
 
-test "decode truncated extension returns EndOfStream" {
+test "IndexSuite.TestDecodeTruncatedExt" {
     // go-git TestDecodeTruncatedExt
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -1042,7 +1045,7 @@ test "decode truncated extension returns EndOfStream" {
 
 // ---- TestDecodeInvalidHash ----
 
-test "decode invalid checksum" {
+test "IndexSuite.TestDecodeInvalidHash" {
     // go-git TestDecodeInvalidHash
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -1066,7 +1069,7 @@ test "decode invalid checksum" {
 
 // ---- malformed signature / unsupported version ----
 
-test "decode malformed signature" {
+test "IndexSuite.TestDecodeMalformedSignature" {
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
@@ -1082,7 +1085,7 @@ test "decode malformed signature" {
     try std.testing.expectError(Error.MalformedSignature, dec.decode(&idx));
 }
 
-test "decode unsupported version" {
+test "IndexSuite.TestDecodeUnsupportedVersion" {
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
@@ -1100,7 +1103,7 @@ test "decode unsupported version" {
 
 // ---- TestDecodeV4StripLength ----
 
-test "decode V4 strip length validation" {
+test "TestDecodeV4StripLength" {
     // go-git TestDecodeV4StripLength
     const allocator = std.testing.allocator;
 
@@ -1167,7 +1170,7 @@ test "decode V4 strip length validation" {
 
 // ---- TestDecodeNameLength0xFFF ----
 
-test "decode name length 0xFFF fixed and NUL scan" {
+test "TestDecodeNameLength0xFFF" {
     // go-git TestDecodeNameLength0xFFF (subset of lengths)
     const allocator = std.testing.allocator;
 
@@ -1194,7 +1197,7 @@ test "decode name length 0xFFF fixed and NUL scan" {
     }
 }
 
-test "decode long then short name V2" {
+test "TestDecodeNameLength0xFFF long then short" {
     // go-git TestDecodeNameLength0xFFF "long name then short name"
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -1220,7 +1223,7 @@ test "decode long then short name V2" {
 
 // ---- TestDecodeNameLength0xFFFPatchedFlags ----
 
-test "decode 0xFFF patched flags NUL scan short name" {
+test "TestDecodeNameLength0xFFFPatchedFlags" {
     // go-git TestDecodeNameLength0xFFFPatchedFlags
     const allocator = std.testing.allocator;
     var buf: std.ArrayList(u8) = .empty;
@@ -1443,3 +1446,79 @@ test "round-trip mandatory extension fails" {
     defer out.deinit();
     try std.testing.expectError(Error.UnknownExtension, dec.decode(&out));
 }
+
+// ---- TestDecodeAllIndexFixtures (local fixtures; no go-git-fixtures network) ----
+
+const fixtures_mod = @import("fixtures.zig");
+
+test "TestDecodeAllIndexFixtures" {
+    // go-git TestDecodeAllIndexFixtures — want versions {2,3,4} from fixture set.
+    // Uses package-local embedded fixtures instead of fixtures.ByTag(".git") network.
+    const allocator = std.testing.allocator;
+
+    var want: [5]bool = .{false} ** 5;
+    want[2] = true;
+    want[3] = true;
+    want[4] = true;
+    var got: [5]bool = .{false} ** 5;
+
+    for (fixtures_mod.all) |fx| {
+        var idx = try decodeBytes(allocator, fx.data);
+        defer idx.deinit();
+
+        try std.testing.expectEqual(fx.version, idx.version);
+        try std.testing.expect(idx.version >= DecodeVersionSupported.min);
+        try std.testing.expect(idx.version <= DecodeVersionSupported.max);
+        try std.testing.expect(idx.entries.items.len > 0);
+        got[idx.version] = true;
+
+        // Spot-check fixture-specific expectations.
+        if (std.mem.eql(u8, fx.name, "v2_simple")) {
+            try std.testing.expectEqual(@as(usize, 3), idx.entries.items.len);
+            try std.testing.expectEqualStrings(".gitignore", idx.entries.items[0].name);
+            try std.testing.expectEqualStrings("CHANGELOG", idx.entries.items[1].name);
+            try std.testing.expectEqualStrings("README.md", idx.entries.items[2].name);
+            try std.testing.expect(!idx.entries.items[0].intent_to_add);
+            try std.testing.expect(!idx.entries.items[0].skip_worktree);
+        } else if (std.mem.eql(u8, fx.name, "v3_intent")) {
+            try std.testing.expectEqual(@as(usize, 4), idx.entries.items.len);
+            // Sorted: a.txt, intent-to-add, skip-me, z-both
+            try std.testing.expectEqualStrings("intent-to-add", idx.entries.items[1].name);
+            try std.testing.expect(idx.entries.items[1].intent_to_add);
+            try std.testing.expect(!idx.entries.items[1].skip_worktree);
+            try std.testing.expectEqualStrings("skip-me", idx.entries.items[2].name);
+            try std.testing.expect(idx.entries.items[2].skip_worktree);
+            try std.testing.expect(idx.entries.items[3].intent_to_add);
+            try std.testing.expect(idx.entries.items[3].skip_worktree);
+        } else if (std.mem.eql(u8, fx.name, "v4_prefix")) {
+            try std.testing.expectEqual(@as(usize, 7), idx.entries.items.len);
+            try std.testing.expectEqualStrings(".gitignore", idx.entries.items[0].name);
+            try std.testing.expectEqualStrings("src/bar.go", idx.entries.items[1].name);
+            try std.testing.expectEqualStrings("src/bar/baz.go", idx.entries.items[2].name);
+            try std.testing.expectEqualStrings("vendor/foo/bar.go", idx.entries.items[6].name);
+        }
+    }
+
+    // Every of versions {2,3,4} appears (mirrors go-git want map).
+    try std.testing.expectEqualSlices(bool, &want, &got);
+}
+
+test "TestDecodeAllIndexFixtures data accessors" {
+    // Same fixture set via packfile-style data() helpers.
+    const allocator = std.testing.allocator;
+    const cases = [_]struct { name: []const u8, version: u32, data: *const fn () []const u8 }{
+        .{ .name = "v2_simple", .version = 2, .data = fixtures_mod.v2_simple },
+        .{ .name = "v3_intent", .version = 3, .data = fixtures_mod.v3_intent },
+        .{ .name = "v4_prefix", .version = 4, .data = fixtures_mod.v4_prefix },
+    };
+    var got: [5]bool = .{false} ** 5;
+    for (cases) |c| {
+        const raw = c.data();
+        var idx = try decodeBytes(allocator, raw);
+        defer idx.deinit();
+        try std.testing.expectEqual(c.version, idx.version);
+        got[idx.version] = true;
+    }
+    try std.testing.expect(got[2] and got[3] and got[4]);
+}
+

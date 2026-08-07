@@ -1,0 +1,4 @@
+name: pack_encode_one_empty_commit
+type: file_equals
+actual: actual.txt
+expected: expected.txt
