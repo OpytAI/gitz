@@ -1,0 +1,5 @@
+name: submodule_status_clean
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "SubmoduleStatus clean marker space."

@@ -1,0 +1,32 @@
+# API inventory: plumbing/transport/file (phase 13)
+package: plumbing/transport/file
+phase: 13
+require:
+  types:
+    - FileClient
+    - Runner
+    - LocalCommand
+    - HostCommand
+  functions:
+    - newClient
+    - defaultClient
+    - lookPath
+    - serveUploadPack
+    - serveReceivePack
+  semantic:
+    - newClient
+    - defaultClient
+    - FileClient
+    - Runner
+    - LocalCommand
+    - HostCommand
+    - lookPath
+    - use_host_spawn
+    - setUseHostSpawn
+zig_map:
+  DefaultClient: defaultClient
+  NewClient: newClient
+  FileClient: FileClient
+  lookPath: lookPath
+  HostCommand: HostCommand
+  LocalCommand: LocalCommand

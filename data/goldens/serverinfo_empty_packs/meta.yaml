@@ -1,0 +1,5 @@
+name: serverinfo_empty_packs
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "UpdateServerInfo empty packs file ends with newline."

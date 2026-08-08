@@ -1,0 +1,10 @@
+package: plumbing/serverinfo
+phase: 13
+require:
+  functions:
+    - updateServerInfo
+  semantic:
+    - updateServerInfo
+    - PackedObjectsNotSupported
+zig_map:
+  UpdateServerInfo: updateServerInfo

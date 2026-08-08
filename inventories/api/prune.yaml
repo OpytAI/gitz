@@ -1,0 +1,20 @@
+package: git/prune
+phase: 13
+require:
+  types:
+    - ObjectWalker
+    - PruneOptions
+  functions:
+    - prune
+    - deleteObject
+    - newObjectWalker
+  semantic:
+    - ObjectWalker
+    - prune
+    - deleteObject
+    - LooseObjectsNotSupported
+zig_map:
+  ObjectWalker: ObjectWalker
+  Prune: prune
+  DeleteObject: deleteObject
+  PruneOptions: PruneOptions

@@ -1,0 +1,50 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/transport/http — HTTP smart protocol client.
+_SRCS = [
+    "common.zig",
+    "os_round_tripper.zig",
+    "upload_pack.zig",
+    "receive_pack.zig",
+]
+
+zig_library(
+    name = "http",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "transport_http",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/transport",
+        "//src/plumbing/transport/internal/common",
+        "//src/plumbing/protocol/packp",
+        "//src/plumbing/protocol/packp/capability",
+        "//src/plumbing/protocol/packp/sideband",
+        "//src/plumbing/format/pktline",
+        "//src/utils/ioutil",
+    ],
+)
+
+zig_test(
+    name = "http_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/transport",
+        "//src/plumbing/transport/internal/common",
+        "//src/plumbing/protocol/packp",
+        "//src/plumbing/protocol/packp/capability",
+        "//src/plumbing/protocol/packp/sideband",
+        "//src/plumbing/format/pktline",
+        "//src/utils/ioutil",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

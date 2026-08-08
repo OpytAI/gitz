@@ -1,0 +1,5 @@
+name: prune_loose_not_supported
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "memory DeleteLooseObject NotSupported."

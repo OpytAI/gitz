@@ -1,0 +1,39 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git root package `Blame` — line authorship via parent walk + utils/diff.
+_SRCS = [
+    "root.zig",
+]
+
+_DEPS = [
+    "//src/plumbing",
+    "//src/plumbing/filemode",
+    "//src/plumbing/object",
+    "//src/plumbing/storer",
+    "//src/storage/memory",
+    "//src/utils/diff",
+]
+
+zig_library(
+    name = "blame",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "blame",
+    visibility = ["//visibility:public"],
+    deps = _DEPS,
+)
+
+zig_test(
+    name = "blame_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = _DEPS,
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

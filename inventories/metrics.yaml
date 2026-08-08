@@ -21,7 +21,8 @@ api:
   # Phase 10 adds: config (gitconfig), repo.
   # Phase 11 adds: remote.
   # Phase 12 adds: worktree, porcelain (+2 → 54).
-  min_files: 54
+  # Phase 13 adds: file/git/http/ssh, serverinfo, submodule, blame, prune (+8 → 62).
+  min_files: 62
   # For due API files (phase ≤ current): zig_map coverage of require names.
   # Phase 1: due API packages should map zig_map names into sources.
   min_mapped_ratio: 0.5
@@ -48,12 +49,13 @@ goldens:
   # remote_list_ref_names (58).
   # Phase 12: worktree status/add/commit/checkout + pull FF + porcelain
   # PlainClone/clone options (+8 → 66).
+  # Phase 12 Class C (+7 → 73). Phase 13 transports/extras (+8 → 81).
   # Phase 12 residuals: true Class C scenario goldens (+7 → 73):
   # worktree_class_c_lifecycle, worktree_class_c_reset_soft,
   # worktree_class_c_pull_ff, worktree_class_c_checkout_force,
   # worktree_class_c_sparse, worktree_class_c_move,
   # porcelain_class_c_plain_clone.
-  min_count: 73
+  min_count: 81
 
 
 allowlists:

@@ -1,0 +1,59 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git root submodule.go — Init / Status / list / Update (with remote fetch).
+_SRCS = [
+    "error.zig",
+    "options.zig",
+    "status.zig",
+    "host.zig",
+    "relative_url.zig",
+    "submodule.zig",
+]
+
+_DEPS = [
+    "//src/plumbing",
+    "//src/plumbing/filemode",
+    "//src/plumbing/object",
+    "//src/plumbing/storer",
+    "//src/plumbing/format/index",
+    "//src/plumbing/transport",
+    "//src/plumbing/transport/server",
+    "//src/storage/memory",
+    "//src/fs",
+    "//src/config",
+    "//src/worktree",
+    "//src/remote",
+    "//src/internal/url",
+]
+
+_TEST_DEPS = [
+    "//src/plumbing/transport/test:fixtures",
+    "//src/utils/sync",
+]
+
+zig_library(
+    name = "submodule",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "submodule",
+    visibility = ["//visibility:public"],
+    deps = _DEPS,
+)
+
+zig_test(
+    name = "submodule_test",
+    size = "small",
+    main = "test_root.zig",
+    srcs = _SRCS + [
+        "root.zig",
+        "tests.zig",
+        "test_root.zig",
+    ],
+    deps = _DEPS + _TEST_DEPS,
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

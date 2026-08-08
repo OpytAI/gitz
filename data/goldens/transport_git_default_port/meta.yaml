@@ -1,0 +1,5 @@
+name: transport_git_default_port
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "git protocol DefaultPort."

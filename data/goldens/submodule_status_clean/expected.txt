@@ -1,0 +1,3 @@
+# go-git SubmoduleStatus clean
+status_char=space
+is_clean=true

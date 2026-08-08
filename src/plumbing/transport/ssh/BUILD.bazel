@@ -1,0 +1,41 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/transport/ssh — auth methods + Commander-based client surface.
+_SRCS = [
+    "auth_method.zig",
+    "agent.zig",
+    "known_hosts.zig",
+    "common.zig",
+    "ssh_wire.zig",
+    "native_ssh.zig",
+]
+
+zig_library(
+    name = "ssh",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "transport_ssh",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing/transport",
+        "//src/plumbing/transport/internal/common",
+    ],
+)
+
+zig_test(
+    name = "ssh_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing/transport",
+        "//src/plumbing/transport/internal/common",
+    ],
+)
+
+# Sources for //check file/API inventory (parent globs do not cross package borders).
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

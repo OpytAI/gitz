@@ -1,0 +1,5 @@
+name: transport_http_basic_auth
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "HTTP BasicAuth name."

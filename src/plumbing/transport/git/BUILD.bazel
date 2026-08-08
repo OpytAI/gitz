@@ -1,0 +1,38 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/transport/git — git:// TCP transport.
+_SRCS = [
+    "common.zig",
+    "common_test.zig",
+]
+
+zig_library(
+    name = "git",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "transport_git",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing/transport",
+        "//src/plumbing/transport/internal/common",
+        "//src/plumbing/protocol/packp",
+    ],
+)
+
+zig_test(
+    name = "git_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing/transport",
+        "//src/plumbing/transport/internal/common",
+        "//src/plumbing/protocol/packp",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

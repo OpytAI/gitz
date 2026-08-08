@@ -1,0 +1,37 @@
+package: git/submodule
+phase: 13
+require:
+  types:
+    - Submodule
+    - Submodules
+    - Host
+    - SubmoduleStatus
+    - SubmoduleUpdateOptions
+  functions:
+    - listSubmodules
+    - getSubmodule
+  semantic:
+    - Submodule
+    - Submodule.init
+    - Submodule.status
+    - SubmoduleAlreadyInitialized
+    - Host
+    - SubmoduleUpdateOptions
+    - SubmoduleEmptyURL
+    - fetchModule
+    - remote_url
+    - embedded
+    - resolveSubmoduleURL
+    - isRelativeSubmoduleURL
+    - defaultRemote
+    - ParentRemoteNotFound
+    - checkoutModuleWorktree
+    - checkout
+zig_map:
+  Submodule: Submodule
+  Submodules: Submodules
+  Host: Host
+  SubmoduleUpdateOptions: SubmoduleUpdateOptions
+  SubmoduleEmptyURL: SubmoduleEmptyURL
+  resolveSubmoduleURL: resolveSubmoduleURL
+  defaultRemote: defaultRemote

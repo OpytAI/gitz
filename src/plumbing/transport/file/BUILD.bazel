@@ -1,0 +1,51 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git plumbing/transport/file — local path / file:// transport.
+_SRCS = [
+    "client.zig",
+    "server.zig",
+    "client_test.zig",
+]
+
+zig_library(
+    name = "file",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "transport_file",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/transport",
+        "//src/plumbing/transport/internal/common",
+        "//src/plumbing/transport/server",
+        "//src/plumbing/protocol/packp",
+        "//src/plumbing/protocol/packp/capability",
+        "//src/storage/memory",
+        "//src/fs",
+        "//src/utils/sync",
+    ],
+)
+
+zig_test(
+    name = "file_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/transport",
+        "//src/plumbing/transport/internal/common",
+        "//src/plumbing/transport/server",
+        "//src/plumbing/protocol/packp",
+        "//src/plumbing/protocol/packp/capability",
+        "//src/storage/memory",
+        "//src/fs",
+        "//src/utils/sync",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

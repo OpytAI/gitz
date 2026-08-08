@@ -1,0 +1,2 @@
+# go-git memory DeleteLooseObject
+deleteObject=NotSupported

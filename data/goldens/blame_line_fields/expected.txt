@@ -1,0 +1,2 @@
+# go-git blame.Line
+fields=author,author_name,text,date,hash

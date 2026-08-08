@@ -1,0 +1,35 @@
+package: plumbing/transport/http
+phase: 13
+require:
+  types:
+    - BasicAuth
+    - TokenAuth
+    - Client
+    - ClientOptions
+    - OsRoundTripper
+    - RoundTripper
+    - MockRoundTripper
+  functions:
+    - newClient
+    - defaultClient
+    - newClientWithOptions
+    - infoRefsURL
+    - serviceURL
+  semantic:
+    - BasicAuth
+    - TokenAuth
+    - defaultClient
+    - newClient
+    - AuthenticationRequired
+    - asTransport
+    - OsRoundTripper
+    - RoundTripper
+    - insecure_skip_tls
+    - roundTripInsecureHttps
+zig_map:
+  BasicAuth: BasicAuth
+  TokenAuth: TokenAuth
+  DefaultClient: defaultClient
+  NewClient: newClient
+  OsRoundTripper: OsRoundTripper
+  RoundTripper: RoundTripper

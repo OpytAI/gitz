@@ -358,13 +358,33 @@ test_suite(
     ],
 )
 
+# Phase 13: transports + submodule/blame/prune/serverinfo.
 test_suite(
-    name = "phase_13",
-    tests = [":phase_12"],
+    name = "phase_13_packages",
+    tests = [
+        "//src/plumbing/transport/file:file_test",
+        "//src/plumbing/transport/git:git_test",
+        "//src/plumbing/transport/http:http_test",
+        "//src/plumbing/transport/ssh:ssh_test",
+        "//src/plumbing/serverinfo:serverinfo_test",
+        "//src/submodule:submodule_test",
+        "//src/blame:blame_test",
+        "//src/prune:prune_test",
+        "//tools/golden:recompute_test",
+    ],
 )
 
-# All completed phases so far (grows as phases land).
+test_suite(
+    name = "phase_13",
+    tests = [
+        ":phase_12",
+        ":phase_13_packages",
+    ],
+)
+
+# All completed phases.
 test_suite(
     name = "all",
-    tests = [":phase_g"],
+    tests = [":phase_13"],
 )
+

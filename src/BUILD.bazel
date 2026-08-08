@@ -61,6 +61,15 @@ zig_library(
         # Phase 12
         "//src/worktree",
         "//src/porcelain",
+        # Phase 13
+        "//src/plumbing/transport/file",
+        "//src/plumbing/transport/git",
+        "//src/plumbing/transport/http",
+        "//src/plumbing/transport/ssh",
+        "//src/plumbing/serverinfo",
+        "//src/submodule",
+        "//src/blame",
+        "//src/prune",
     ],
 )
 
@@ -123,6 +132,15 @@ zig_test(
         # Phase 12
         "//src/worktree",
         "//src/porcelain",
+        # Phase 13
+        "//src/plumbing/transport/file",
+        "//src/plumbing/transport/git",
+        "//src/plumbing/transport/http",
+        "//src/plumbing/transport/ssh",
+        "//src/plumbing/serverinfo",
+        "//src/submodule",
+        "//src/blame",
+        "//src/prune",
     ],
 )
 
@@ -192,6 +210,15 @@ filegroup(
         # Phase 12
         "//src/worktree:package_srcs",
         "//src/porcelain:package_srcs",
+        # Phase 13
+        "//src/plumbing/transport/file:package_srcs",
+        "//src/plumbing/transport/git:package_srcs",
+        "//src/plumbing/transport/http:package_srcs",
+        "//src/plumbing/transport/ssh:package_srcs",
+        "//src/plumbing/serverinfo:package_srcs",
+        "//src/submodule:package_srcs",
+        "//src/blame:package_srcs",
+        "//src/prune:package_srcs",
     ],
     visibility = ["//visibility:public"],
 )

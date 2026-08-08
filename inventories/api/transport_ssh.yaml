@@ -1,0 +1,49 @@
+package: plumbing/transport/ssh
+phase: 13
+require:
+  types:
+    - Password
+    - PublicKeys
+    - Client
+    - Runner
+    - HostCommand
+    - AgentClient
+    - CommandPlan
+    - DialMode
+    - NativeCommand
+  functions:
+    - newClient
+    - defaultClient
+    - newPublicKeys
+    - newSSHAgentAuth
+    - writeShellQuote
+    - buildSshArgv
+    - newClientSystemSsh
+  constants:
+    - DefaultPort
+  semantic:
+    - Password
+    - PublicKeys
+    - DefaultPort
+    - newClient
+    - writeShellQuote
+    - HostCommand
+    - AgentClient
+    - buildSshArgv
+    - use_system_ssh
+    - DialMode
+    - native
+    - system_ssh
+    - plan_only
+    - entryHostMatches
+    - hash_salt
+zig_map:
+  Password: Password
+  PublicKeys: PublicKeys
+  DefaultPort: DefaultPort
+  DefaultClient: defaultClient
+  NewClient: newClient
+  HostCommand: HostCommand
+  AgentClient: AgentClient
+  DialMode: DialMode
+  NativeCommand: NativeCommand

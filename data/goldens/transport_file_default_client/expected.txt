@@ -1,0 +1,3 @@
+# go-git file.DefaultClient
+upload_pack_bin=git-upload-pack
+receive_pack_bin=git-receive-pack

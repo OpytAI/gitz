@@ -75,6 +75,16 @@ pub const remote = @import("remote");
 pub const worktree = @import("worktree");
 pub const porcelain = @import("porcelain");
 
+// Phase 13 transports + extras.
+pub const transport_file = @import("transport_file");
+pub const transport_git = @import("transport_git");
+pub const transport_http = @import("transport_http");
+pub const transport_ssh = @import("transport_ssh");
+pub const serverinfo = @import("serverinfo");
+pub const submodule = @import("submodule");
+pub const blame = @import("blame");
+pub const prune = @import("prune");
+
 test "identity" {
     try std.testing.expectEqualStrings("gitz", name);
     try std.testing.expectEqualStrings("v5.19.2", go_git_pin);
@@ -240,4 +250,15 @@ test "phase12 worktree porcelain surface" {
     _ = repo.Repository.worktreeEmbedded;
     _ = repo.worktreeOf;
     _ = repo.worktreeEmbedded;
+}
+
+test "phase13 transports extras surface" {
+    _ = transport_file.defaultClient;
+    _ = transport_git.DefaultPort;
+    _ = transport_http.BasicAuth;
+    _ = transport_ssh.DefaultPort;
+    _ = serverinfo.updateServerInfo;
+    _ = submodule.Submodule;
+    _ = blame.blame;
+    _ = prune.prune;
 }

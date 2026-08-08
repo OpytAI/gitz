@@ -1,0 +1,21 @@
+package: plumbing/transport/git
+phase: 13
+require:
+  types:
+    - Runner
+    - GitCommand
+  functions:
+    - newClient
+    - defaultClient
+  constants:
+    - DefaultPort
+  semantic:
+    - DefaultPort
+    - newClient
+    - defaultClient
+    - Runner
+    - InvalidAuthMethod
+zig_map:
+  DefaultPort: DefaultPort
+  DefaultClient: defaultClient
+  NewClient: newClient
