@@ -13,7 +13,10 @@ pub const VersionSupported: u32 = 2;
 pub const idxHeader: *const [4]u8 = &[_]u8{ 255, 't', 'O', 'c' };
 
 pub const fanout: usize = 256;
-pub const objectIdLength: usize = plumbing.Size;
+/// OID wire length for pack indexes — follows active object format (SHA-1/SHA-256).
+pub fn objectIdLength() usize {
+    return plumbing.digestSize();
+}
 /// Sparse bucket sentinel (internal layout; exported for decoder/encoder/writer).
 pub const noMapping: i32 = -1;
 
@@ -94,8 +97,9 @@ pub const MemoryIndex = struct {
         var low: u64 = 0;
         while (true) {
             const mid = (low + high) >> 1;
-            const offset = mid * objectIdLength;
-            const cmp = std.mem.order(u8, h.bytes[0..], data[offset .. offset + objectIdLength]);
+            const oid_len = objectIdLength();
+            const offset = mid * oid_len;
+            const cmp = std.mem.order(u8, h.slice(), data[offset .. offset + oid_len]);
             if (cmp == .lt) {
                 high = mid;
             } else if (cmp == .eq) {
@@ -175,9 +179,10 @@ pub const MemoryIndex = struct {
             var second_level: u32 = 0;
             while (i < fanout_value) {
                 const mi: usize = @intCast(mapped);
-                var hash: plumbing.Hash = undefined;
-                const name_off = @as(usize, second_level) * objectIdLength;
-                @memcpy(hash.bytes[0..], self.names.items[mi][name_off .. name_off + objectIdLength]);
+                var hash: plumbing.Hash = .{};
+                const oid_len = objectIdLength();
+                const name_off = @as(usize, second_level) * oid_len;
+                @memcpy(hash.bytes[0..oid_len], self.names.items[mi][name_off .. name_off + oid_len]);
                 const off = try self.getOffset(mi, second_level);
                 try map.put(@intCast(off), hash);
                 i += 1;
@@ -244,9 +249,10 @@ pub const EntryIterator = struct {
             }
 
             const mapped: usize = @intCast(self.idx.fanout_mapping[self.first_level]);
-            var entry: Entry = undefined;
-            const name_off = self.second_level * objectIdLength;
-            @memcpy(entry.hash.bytes[0..], self.idx.names.items[mapped][name_off .. name_off + objectIdLength]);
+            var entry: Entry = .{ .hash = .{}, .crc32 = 0, .offset = 0 };
+            const oid_len = objectIdLength();
+            const name_off = self.second_level * oid_len;
+            @memcpy(entry.hash.bytes[0..oid_len], self.idx.names.items[mapped][name_off .. name_off + oid_len]);
             entry.offset = try self.idx.getOffset(mapped, self.second_level);
             entry.crc32 = self.idx.getCRC32(mapped, self.second_level);
 

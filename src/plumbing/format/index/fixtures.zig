@@ -152,15 +152,17 @@ test "fixtures cover versions 2 3 4" {
 }
 
 test "fixture images have DIRC header matching version and valid trailer" {
+    // Embedded fixtures are SHA-1 indexes (default object format).
+    const n = hash_pkg.digestSize();
     for (all) |fx| {
         const raw = fx.data;
-        try std.testing.expect(raw.len >= 12 + hash_pkg.Size);
+        try std.testing.expect(raw.len >= 12 + n);
         try std.testing.expectEqualSlices(u8, "DIRC", raw[0..4]);
         try std.testing.expectEqual(fx.version, std.mem.readInt(u32, raw[4..8], .big));
-        var h = hash_pkg.new(.sha1);
-        h.update(raw[0 .. raw.len - hash_pkg.Size]);
-        var sum: [hash_pkg.Size]u8 = undefined;
-        h.final(&sum);
-        try std.testing.expectEqualSlices(u8, &sum, raw[raw.len - hash_pkg.Size ..]);
+        var h = hash_pkg.new(hash_pkg.objectFormat());
+        h.update(raw[0 .. raw.len - n]);
+        var sum: [hash_pkg.MaxSize]u8 = undefined;
+        h.final(sum[0..n]);
+        try std.testing.expectEqualSlices(u8, sum[0..n], raw[raw.len - n ..]);
     }
 }

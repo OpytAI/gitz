@@ -157,19 +157,16 @@ pub const Tree = struct {
             const base_name = data[pos..nul];
             pos = nul + 1;
 
-            if (pos + plumbing.Size > data.len) return error.MalformedTree;
-            var hash_bytes: [plumbing.Size]u8 = undefined;
-            @memcpy(&hash_bytes, data[pos .. pos + plumbing.Size]);
-            pos += plumbing.Size;
-
+            const oid_len = plumbing.digestSize();
+            if (pos + oid_len > data.len) return error.MalformedTree;
             const owned_name = try self.allocator.dupe(u8, base_name);
             errdefer self.allocator.free(owned_name);
-
             const te = TreeEntry{
                 .name = owned_name,
                 .mode = mode,
-                .hash = Hash.fromBytes(hash_bytes),
+                .hash = Hash.fromBytes(data[pos .. pos + oid_len]),
             };
+            pos += oid_len;
 
             const sort_name = try sortNameAlloc(self.allocator, &te);
             defer self.allocator.free(sort_name);
@@ -205,7 +202,7 @@ pub const Tree = struct {
             try buf.append(self.allocator, ' ');
             try buf.appendSlice(self.allocator, ent.name);
             try buf.append(self.allocator, 0);
-            try buf.appendSlice(self.allocator, ent.hash.bytes[0..]);
+            try buf.appendSlice(self.allocator, ent.hash.slice());
         }
 
         o.setType(.tree);
@@ -809,6 +806,29 @@ fn simpleJoinAlloc(allocator: Allocator, parent: []const u8, child: []const u8) 
 // Tests
 // ---------------------------------------------------------------------------
 
+test "SHA-256 tree entry encode decode round-trip" {
+    const gpa = std.testing.allocator;
+    defer plumbing.setObjectFormat(.sha1);
+    plumbing.setObjectFormat(.sha256);
+
+    var tree = Tree.init(gpa, null);
+    defer tree.deinit();
+    const blob_h = plumbing.computeHash(.blob, "x");
+    try tree.appendEntry("f", filemode.Regular, blob_h);
+    tree.sortEntries();
+
+    var obj = MemoryObject.init(gpa);
+    defer obj.deinit();
+    try tree.encode(&obj);
+
+    var again = Tree.init(gpa, null);
+    defer again.deinit();
+    try again.decode(&obj);
+    try std.testing.expectEqual(@as(usize, 1), again.entries.items.len);
+    try std.testing.expect(again.entries.items[0].hash.eql(blob_h));
+    try std.testing.expectEqual(@as(usize, 32), again.entries.items[0].hash.slice().len);
+}
+
 test "empty tree encode decode round-trip" {
     const gpa = std.testing.allocator;
 
@@ -893,10 +913,10 @@ test "decode detects unsorted entries" {
     defer body.deinit(gpa);
     try body.appendSlice(gpa, "100644 z");
     try body.append(gpa, 0);
-    try body.appendSlice(gpa, &h1.bytes);
+    try body.appendSlice(gpa, h1.slice());
     try body.appendSlice(gpa, "100644 a");
     try body.append(gpa, 0);
-    try body.appendSlice(gpa, &h2.bytes);
+    try body.appendSlice(gpa, h2.slice());
 
     var obj = MemoryObject.init(gpa);
     defer obj.deinit();

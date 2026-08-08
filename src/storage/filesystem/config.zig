@@ -123,13 +123,29 @@ fn sortedMapKeys(allocator: Allocator, map: anytype) Allocator.Error![][]const u
     return try names.toOwnedSlice(allocator);
 }
 
-/// Encode `memory.Config` as git-config bytes (bare + remotes + branches).
+/// Encode `memory.Config` as git-config bytes (bare + format + remotes + branches).
 fn encodeMemoryConfig(allocator: Allocator, cfg: *const Config) Error![]u8 {
     var raw = format_config.Config.init(allocator);
     defer raw.deinit();
 
     const bare = if (cfg.is_bare) "true" else "false";
     _ = try raw.setOption("core", format_config.NoSubsection, "bare", bare);
+    if (cfg.repository_format_version.len > 0) {
+        _ = try raw.setOption(
+            "core",
+            format_config.NoSubsection,
+            "repositoryformatversion",
+            cfg.repository_format_version,
+        );
+    }
+    if (cfg.object_format.len > 0) {
+        _ = try raw.setOption(
+            "extensions",
+            format_config.NoSubsection,
+            "objectformat",
+            cfg.object_format,
+        );
+    }
 
     // Stable remote order for deterministic on-disk output (sorted by name).
     const remote_names = try sortedMapKeys(allocator, cfg.remotes);
@@ -192,6 +208,14 @@ fn decodeMemoryConfig(allocator: Allocator, data: []const u8) Error!*Config {
         const core = try raw.section("core");
         const bare = core.option("bare");
         c.is_bare = std.mem.eql(u8, bare, "true");
+        const rfv = core.option("repositoryformatversion");
+        if (rfv.len > 0) try c.setRepositoryFormatVersion(rfv);
+    }
+
+    if (raw.hasSection("extensions")) {
+        const ext = try raw.section("extensions");
+        const ofmt = ext.option("objectformat");
+        if (ofmt.len > 0) try c.setObjectFormat(ofmt);
     }
 
     if (raw.hasSection("remote")) {
@@ -324,6 +348,36 @@ test "encode/decode remote fetch mirror and branch" {
     const dev_b = got.branches.get("dev") orelse return error.TestExpectedEqual;
     try std.testing.expectEqualStrings("upstream", dev_b.remote);
     try std.testing.expectEqualStrings("refs/heads/develop", dev_b.merge);
+}
+
+test "encode/decode repositoryformatversion and objectformat" {
+    const gpa = std.testing.allocator;
+
+    const cfg = try gpa.create(Config);
+    defer {
+        cfg.deinit();
+        gpa.destroy(cfg);
+    }
+    cfg.* = Config.init(gpa);
+    cfg.is_bare = true;
+    try cfg.setRepositoryFormatVersion(format_config.Version1);
+    try cfg.setObjectFormat(format_config.SHA256);
+
+    const bytes = try encodeMemoryConfig(gpa, cfg);
+    defer gpa.free(bytes);
+
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "repositoryformatversion = 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "[extensions]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "objectformat = sha256") != null);
+
+    const got = try decodeMemoryConfig(gpa, bytes);
+    defer {
+        got.deinit();
+        gpa.destroy(got);
+    }
+    try std.testing.expect(got.is_bare);
+    try std.testing.expectEqualStrings(format_config.Version1, got.repository_format_version);
+    try std.testing.expectEqualStrings(format_config.SHA256, got.object_format);
 }
 
 test "ConfigStorage setConfig writes git-config and reloads from disk" {

@@ -31,7 +31,7 @@ const max_objects_prealloc = common.max_objects_prealloc;
 const max_object_prealloc_bytes = common.max_object_prealloc_bytes;
 const max_delta_chain_depth = common.max_delta_chain_depth;
 
-const HashKey = [Size]u8;
+const HashKey = Hash;
 
 // ---------------------------------------------------------------------------
 // Security prealloc hints (go-git parser.go growHint / objectsHint)
@@ -141,13 +141,13 @@ pub const ObjectStore = struct {
 
     /// go-git `EncodedObject(AnyObject, hash)`.
     pub fn get(self: *ObjectStore, h: Hash) error{ObjectNotFound}!*MemoryObject {
-        return self.map.get(h.bytes) orelse error.ObjectNotFound;
+        return self.map.get(h) orelse error.ObjectNotFound;
     }
 
     /// Store a fully populated memory object (takes ownership of `obj` heap node).
     pub fn set(self: *ObjectStore, obj: *MemoryObject) (Allocator.Error)!Hash {
         const h = obj.hash();
-        const gop = try self.map.getOrPut(self.allocator, h.bytes);
+        const gop = try self.map.getOrPut(self.allocator, h);
         // Overwrite frees the previous owned object; same pointer is a no-op free.
         if (gop.found_existing) {
             if (gop.value_ptr.* != obj) {
@@ -357,7 +357,7 @@ pub const Parser = struct {
                 .ref_delta => {
                     delta = true;
                     var parent: *ObjectInfo = undefined;
-                    if (self.oi_by_hash.get(oh.reference.bytes)) |p| {
+                    if (self.oi_by_hash.get(oh.reference)) |p| {
                         parent = p;
                     } else {
                         // Thin pack: placeholder external reference.
@@ -370,7 +370,7 @@ pub const Parser = struct {
                             .object_type = .any,
                             .disk_type = .any,
                         };
-                        try self.oi_by_hash.put(self.allocator, oh.reference.bytes, parent);
+                        try self.oi_by_hash.put(self.allocator, oh.reference, parent);
                     }
                     ota = try newDeltaObject(self.allocator, oh.offset, oh.length, oh.object_type, parent);
                     try parent.children.append(self.allocator, ota);
@@ -419,7 +419,7 @@ pub const Parser = struct {
                 const sha1 = hasher.sum();
 
                 // Move children of placeholder parent into actual parent.
-                if (self.oi_by_hash.get(sha1.bytes)) |placeholder| {
+                if (self.oi_by_hash.get(sha1)) |placeholder| {
                     if (placeholder != ota) {
                         ota.children = placeholder.children;
                         placeholder.children = .empty;
@@ -434,7 +434,7 @@ pub const Parser = struct {
                 }
 
                 ota.sha1 = sha1;
-                try self.oi_by_hash.put(self.allocator, ota.sha1.bytes, ota);
+                try self.oi_by_hash.put(self.allocator, ota.sha1, ota);
             }
 
             if (delta and !self.scanner.is_seekable) {
@@ -484,9 +484,9 @@ pub const Parser = struct {
     }
 
     fn resolveExternalRef(self: *Parser, o: *ObjectInfo) void {
-        if (self.oi_by_hash.get(o.sha1.bytes)) |ref| {
+        if (self.oi_by_hash.get(o.sha1)) |ref| {
             if (ref.external_ref) {
-                self.oi_by_hash.put(self.allocator, o.sha1.bytes, o) catch return;
+                self.oi_by_hash.put(self.allocator, o.sha1, o) catch return;
                 o.children = ref.children;
                 ref.children = .empty;
                 for (o.children.items) |c| {
@@ -735,7 +735,7 @@ test "parse basic.pack seekable: checksum and 31 objects" {
 
     const checksum = try parser.parse();
 
-    var hex: [plumbing.HexSize]u8 = undefined;
+    var hex: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(basic_pack_checksum_hex, checksum.string(&hex));
     try std.testing.expectEqualStrings(basic_pack_checksum_hex, obs.checksum.string(&hex));
     try std.testing.expectEqual(basic_pack_object_count, obs.count);
@@ -999,7 +999,7 @@ fn buildTestPack(allocator: Allocator, objects: []const TestPackObject) ![]u8 {
 
         switch (obj.typ) {
             .ref_delta => {
-                try body.appendSlice(allocator, &obj.reference.bytes);
+                try body.appendSlice(allocator, obj.reference.slice());
             },
             .ofs_delta => {
                 var distance = obj.offset_delta_distance;

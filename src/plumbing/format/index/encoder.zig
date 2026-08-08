@@ -36,8 +36,11 @@ pub const encode_version_supported: u32 = 4;
 /// go-git exported name for `encode_version_supported`.
 pub const EncodeVersionSupported = encode_version_supported;
 
-/// Fixed-size entry header before the path name (go-git `entryHeaderLength`).
-const entry_header_length: usize = 62;
+/// Fixed entry header before path: 10×u32 + OID + flags (go-git `entryHeaderLength`).
+/// OID width follows the active object format (20 SHA-1 / 32 SHA-256).
+fn entryHeaderLength() usize {
+    return 40 + plumbing.digestSize() + 2;
+}
 /// Flags bit: extended 16-bit flags follow (go-git `entryExtended`).
 const entry_extended: u16 = 0x4000;
 /// 12-bit name-length field mask; 0xFFF means “scan for NUL” (go-git `nameMask`).
@@ -64,7 +67,7 @@ pub const Encoder = struct {
     pub fn init(writer: *Writer) Encoder {
         return .{
             .writer = writer,
-            .hasher = hash_pkg.new(.sha1),
+            .hasher = hash_pkg.new(hash_pkg.objectFormat()),
         };
     }
 
@@ -110,7 +113,7 @@ pub const Encoder = struct {
         for (idx.entries.items) |*entry| {
             try self.encodeEntry(idx, entry);
 
-            var entry_length: usize = entry_header_length;
+            var entry_length: usize = entryHeaderLength();
             if (entry.intent_to_add or entry.skip_worktree) {
                 entry_length += 2;
             }
@@ -140,7 +143,7 @@ pub const Encoder = struct {
         try self.writeUint32(entry.uid);
         try self.writeUint32(entry.gid);
         try self.writeUint32(entry.size);
-        try self.writeAll(entry.hash.bytes[0..]);
+        try self.writeAll(entry.hash.slice());
 
         if (entry.intent_to_add or entry.skip_worktree) {
             var extended_flags: u16 = 0;
@@ -199,7 +202,7 @@ pub const Encoder = struct {
 
         // EOIE hash covers extension types + sizes (not payloads) of extensions
         // that precede EOIE.
-        var eoie_hasher = hash_pkg.new(.sha1);
+        var eoie_hasher = hash_pkg.new(hash_pkg.objectFormat());
 
         if (idx.cache) |cache| {
             try self.encodeTreeExtension(cache, &eoie_hasher);
@@ -212,9 +215,10 @@ pub const Encoder = struct {
             const offset: u32 = if (eoie.offset != 0) eoie.offset else entries_end;
             var hash = eoie.hash;
             if (hash.isZero()) {
-                var sum: [hash_pkg.Size]u8 = undefined;
-                eoie_hasher.final(&sum);
-                hash = plumbing.Hash.fromBytes(sum);
+                var sum: [hash_pkg.MaxSize]u8 = .{0} ** hash_pkg.MaxSize;
+                const n = eoie_hasher.digestSize();
+                eoie_hasher.final(sum[0..n]);
+                hash = plumbing.Hash.fromBytes(sum[0..n]);
             }
             try self.encodeEndOfIndexEntry(offset, hash);
         }
@@ -240,7 +244,7 @@ pub const Encoder = struct {
 
             // Invalidated entry (negative entry count): no object name.
             if (te.entries >= 0) {
-                try self.writeAll(te.hash.bytes[0..]);
+                try self.writeAll(te.hash.slice());
             }
         }
     }
@@ -270,7 +274,7 @@ pub const Encoder = struct {
             s = 1;
             while (s <= 3) : (s += 1) {
                 if (e.getStage(s)) |h| {
-                    try self.writeAll(h.bytes[0..]);
+                    try self.writeAll(h.slice());
                 }
             }
         }
@@ -279,10 +283,10 @@ pub const Encoder = struct {
     fn encodeEndOfIndexEntry(self: *Encoder, offset: u32, hash: plumbing.Hash) Writer.Error!void {
         // EOIE is last; its type/size are not included in its own hash.
         try self.writeAll(&index_mod.end_of_index_entry_ext_signature);
-        // payload = offset (4) + hash (20)
-        try self.writeUint32(4 + plumbing.Size);
+        // payload = offset (4) + active OID
+        try self.writeUint32(@intCast(4 + plumbing.digestSize()));
         try self.writeUint32(offset);
-        try self.writeAll(hash.bytes[0..]);
+        try self.writeAll(hash.slice());
     }
 
     fn writeExtensionHeader(
@@ -301,12 +305,13 @@ pub const Encoder = struct {
         eoie_hasher.update(&size_be);
     }
 
-    /// Trailing SHA-1 over all bytes written so far (go-git `encodeFooter`).
+    /// Trailing digest over all bytes written so far (go-git `encodeFooter`).
     pub fn encodeFooter(self: *Encoder) Writer.Error!void {
-        var sum: [hash_pkg.Size]u8 = undefined;
-        self.hasher.final(&sum);
+        var sum: [hash_pkg.MaxSize]u8 = undefined;
+        const n = self.hasher.digestSize();
+        self.hasher.final(sum[0..n]);
         // Footer itself is not hashed.
-        try self.writer.writeAll(sum[0..]);
+        try self.writer.writeAll(sum[0..n]);
     }
 
     fn padEntry(self: *Encoder, idx: *const Index, wrote: usize) Writer.Error!void {
@@ -372,13 +377,14 @@ fn treePayloadSize(tree: *const Tree) u32 {
         n += te.path.len + 1; // path + NUL
         n += decimalLen(te.entries) + 1; // count + space
         n += decimalLen(te.trees) + 1; // trees + newline
-        if (te.entries >= 0) n += plumbing.Size;
+        if (te.entries >= 0) n += plumbing.digestSize();
     }
     return @intCast(n);
 }
 
 fn resolveUndoPayloadSize(ru: *const ResolveUndo) u32 {
     var n: usize = 0;
+    const oid_len = plumbing.digestSize();
     for (ru.entries.items) |*e| {
         n += e.path.len + 1;
         var s: Stage = 1;
@@ -391,7 +397,7 @@ fn resolveUndoPayloadSize(ru: *const ResolveUndo) u32 {
         }
         s = 1;
         while (s <= 3) : (s += 1) {
-            if (e.getStage(s) != null) n += plumbing.Size;
+            if (e.getStage(s) != null) n += oid_len;
         }
     }
     return @intCast(n);
@@ -471,14 +477,14 @@ test "IndexSuite.TestEncode" {
     try std.testing.expectEqualSlices(u8, "DIRC", out[0..4]);
     try std.testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, out[4..8], .big));
     try std.testing.expectEqual(@as(u32, 3), std.mem.readInt(u32, out[8..12], .big));
-    // Trailer present
-    try std.testing.expect(out.len >= 12 + 20);
-    // Checksum is last 20 bytes; body hashes to it
-    var h = hash_pkg.new(.sha1);
-    h.update(out[0 .. out.len - 20]);
-    var sum: [20]u8 = undefined;
-    h.final(&sum);
-    try std.testing.expectEqualSlices(u8, &sum, out[out.len - 20 ..]);
+    // Trailer present (active digest size; default SHA-1 → 20)
+    const n = plumbing.digestSize();
+    try std.testing.expect(out.len >= 12 + n);
+    var h = hash_pkg.new(hash_pkg.objectFormat());
+    h.update(out[0 .. out.len - n]);
+    var sum: [hash_pkg.MaxSize]u8 = undefined;
+    h.final(sum[0..n]);
+    try std.testing.expectEqualSlices(u8, sum[0..n], out[out.len - n ..]);
 }
 
 test "TestEncodeLongName" {
@@ -515,8 +521,8 @@ test "TestEncodeLongName" {
     try std.testing.expectEqual(@as(u32, 2), std.mem.readInt(u32, out[8..12], .big));
 
     // First entry after sort is the long name ("a"*5000 < "short").
-    // Flags sit at offset 12 + 60 = 72 within the first entry (hash ends at 60, flags at 60-62).
-    const flags_off = 12 + 60;
+    // Flags sit at end of fixed header (after 10×u32 + OID).
+    const flags_off = 12 + entryHeaderLength() - 2;
     const flags = std.mem.readInt(u16, out[flags_off..][0..2], .big);
     try std.testing.expectEqual(@as(u16, name_mask), flags & name_mask);
 
@@ -557,9 +563,9 @@ test "TestEncodeV4" {
     try std.testing.expectEqual(@as(u32, 4), std.mem.readInt(u32, out[4..8], .big));
     try std.testing.expectEqual(@as(u32, 4), std.mem.readInt(u32, out[8..12], .big));
 
-    // First v4 entry name starts after header(12) + fixed fields(62) = 74:
+    // First v4 entry name starts after header(12) + fixed fields(entryHeaderLength):
     // strip_len varint 0, then "bar\0"
-    const name0 = out[74..];
+    const name0 = out[12 + entryHeaderLength() ..];
     try std.testing.expectEqual(@as(u8, 0), name0[0]); // strip 0
     try std.testing.expectEqualSlices(u8, "bar\x00", name0[1..5]);
 }
@@ -586,11 +592,12 @@ test "IndexSuite.TestEncodeWithIntentToAdd" {
     try enc.encode(&idx);
 
     const out = w.buffered();
-    // flags at 12+60, extended bit + name len 1
-    const flags = std.mem.readInt(u16, out[12 + 60 ..][0..2], .big);
+    // flags at end of fixed header (before name)
+    const flags_off = 12 + entryHeaderLength() - 2;
+    const flags = std.mem.readInt(u16, out[flags_off..][0..2], .big);
     try std.testing.expect((flags & entry_extended) != 0);
     try std.testing.expectEqual(@as(u16, 1), flags & name_mask);
-    const ext = std.mem.readInt(u16, out[12 + 62 ..][0..2], .big);
+    const ext = std.mem.readInt(u16, out[flags_off + 2 ..][0..2], .big);
     try std.testing.expect((ext & intent_to_add_mask) != 0);
     try std.testing.expect((ext & skip_work_tree_mask) == 0);
 
@@ -627,9 +634,10 @@ test "IndexSuite.TestEncodeWithSkipWorktree" {
     try enc.encode(&idx);
 
     const out = w.buffered();
-    const flags = std.mem.readInt(u16, out[12 + 60 ..][0..2], .big);
+    const flags_off = 12 + entryHeaderLength() - 2;
+    const flags = std.mem.readInt(u16, out[flags_off..][0..2], .big);
     try std.testing.expect((flags & entry_extended) != 0);
-    const ext = std.mem.readInt(u16, out[12 + 62 ..][0..2], .big);
+    const ext = std.mem.readInt(u16, out[flags_off + 2 ..][0..2], .big);
     try std.testing.expect((ext & skip_work_tree_mask) != 0);
     try std.testing.expect((ext & intent_to_add_mask) == 0);
 
@@ -706,11 +714,12 @@ test "IndexSuite.TestEncodeTREEAndEOIE" {
     try std.testing.expectEqual(@as(u32, 12), offset);
 
     // Footer checksum
-    var h = hash_pkg.new(.sha1);
-    h.update(out[0 .. out.len - 20]);
-    var sum: [20]u8 = undefined;
-    h.final(&sum);
-    try std.testing.expectEqualSlices(u8, &sum, out[out.len - 20 ..]);
+    const n = plumbing.digestSize();
+    var h = hash_pkg.new(hash_pkg.objectFormat());
+    h.update(out[0 .. out.len - n]);
+    var sum: [hash_pkg.MaxSize]u8 = undefined;
+    h.final(sum[0..n]);
+    try std.testing.expectEqualSlices(u8, sum[0..n], out[out.len - n ..]);
 }
 
 test "IndexSuite.TestEncodeWithoutFooterRawExt" {
@@ -732,11 +741,12 @@ test "IndexSuite.TestEncodeWithoutFooterRawExt" {
     try std.testing.expect(std.mem.indexOf(u8, out, "TEST") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "testdata") != null);
 
-    var h = hash_pkg.new(.sha1);
-    h.update(out[0 .. out.len - 20]);
-    var sum: [20]u8 = undefined;
-    h.final(&sum);
-    try std.testing.expectEqualSlices(u8, &sum, out[out.len - 20 ..]);
+    const digest_n = plumbing.digestSize();
+    var h = hash_pkg.new(hash_pkg.objectFormat());
+    h.update(out[0 .. out.len - digest_n]);
+    var sum: [hash_pkg.MaxSize]u8 = undefined;
+    h.final(sum[0..digest_n]);
+    try std.testing.expectEqualSlices(u8, sum[0..digest_n], out[out.len - digest_n ..]);
 }
 
 test "IndexSuite.TestEncodeV2Padding" {
@@ -745,8 +755,8 @@ test "IndexSuite.TestEncodeV2Padding" {
     defer idx.deinit();
     idx.version = 2;
 
-    const n = try allocator.dupe(u8, "ab"); // len 2 → wrote 64, pad 8
-    try idx.entries.append(allocator, .{ .name = n });
+    const name = try allocator.dupe(u8, "ab"); // len 2 → wrote multiple of 8 after pad
+    try idx.entries.append(allocator, .{ .name = name });
 
     var storage: [256]u8 = undefined;
     var w: Writer = .fixed(&storage);
@@ -755,7 +765,7 @@ test "IndexSuite.TestEncodeV2Padding" {
 
     const out = w.buffered();
     // body without footer must be 12 + multiple-of-8 entry
-    const body_len = out.len - 20;
+    const body_len = out.len - plumbing.digestSize();
     try std.testing.expectEqual(@as(usize, 0), (body_len - 12) % 8);
 }
 

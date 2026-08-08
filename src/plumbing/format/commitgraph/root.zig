@@ -40,7 +40,7 @@ pub const sz_signature = commitgraph_mod.sz_signature;
 pub const sz_header = commitgraph_mod.sz_header;
 pub const sz_commit_data = commitgraph_mod.sz_commit_data;
 pub const len_fanout = commitgraph_mod.len_fanout;
-pub const hash_size = commitgraph_mod.hash_size;
+pub const hashSize = commitgraph_mod.hashSize;
 
 pub const CommitData = commitgraph_mod.CommitData;
 

@@ -41,7 +41,7 @@ pub const UploadHaves = struct {
         var have_last = false;
         for (self.haves.items) |have| {
             if (have_last and last.eql(have)) continue;
-            var hex: [plumbing.HexSize]u8 = undefined;
+            var hex: [plumbing.MaxHexSize]u8 = undefined;
             const h = have.string(&hex);
             try pe.encodef("have {s}\n", .{h});
             last = have;

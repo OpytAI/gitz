@@ -133,7 +133,7 @@ test "Blob decode FOO hash and size" {
     try blob.decode(&o);
 
     try std.testing.expectEqual(@as(i64, 3), blob.size);
-    var hex: [plumbing.HexSize]u8 = undefined;
+    var hex: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(
         "d96c7efbfec2814ae0301ad054dc8d9fc416c9b5",
         blob.hash.string(&hex),

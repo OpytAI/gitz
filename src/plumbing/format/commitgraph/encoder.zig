@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const plumbing = @import("plumbing");
+const hash_pkg = @import("hash");
 
 const commitgraph = @import("commitgraph.zig");
 const chunk_mod = @import("chunk.zig");
@@ -18,21 +19,23 @@ const CommitData = commitgraph.CommitData;
 const ChunkType = chunk_mod.ChunkType;
 const Error = commitgraph.Error;
 const MemoryIndex = memory_mod.MemoryIndex;
-const Sha1 = std.crypto.hash.Sha1;
 
 const EncodeError = Error || Writer.Error || Allocator.Error;
 
 /// Writes MemoryIndex / Index structs to an output stream (go-git `Encoder`).
+///
+/// Trailer checksum and OID width follow the active object format
+/// (`hash.objectFormat` / go-git `hash.CryptoType`).
 pub const Encoder = struct {
     writer: *Writer,
-    hasher: Sha1,
+    hasher: hash_pkg.Hasher,
     allocator: Allocator,
 
     /// go-git `NewEncoder`. `allocator` is used for temporary sort maps.
     pub fn init(allocator: Allocator, writer: *Writer) Encoder {
         return .{
             .writer = writer,
-            .hasher = Sha1.init(.{}),
+            .hasher = hash_pkg.new(hash_pkg.objectFormat()),
             .allocator = allocator,
         };
     }
@@ -61,12 +64,12 @@ pub const Encoder = struct {
         try chunk_sizes.append(self.allocator, commitgraph.sz_uint32 * commitgraph.len_fanout);
 
         try chunk_sigs.append(self.allocator, ChunkType.oid_lookup.signature());
-        try chunk_sizes.append(self.allocator, @as(u64, @intCast(hashes.len)) * commitgraph.hash_size);
+        try chunk_sizes.append(self.allocator, @as(u64, @intCast(hashes.len)) * commitgraph.hashSize());
 
         try chunk_sigs.append(self.allocator, ChunkType.commit_data.signature());
         try chunk_sizes.append(
             self.allocator,
-            @as(u64, @intCast(hashes.len)) * (commitgraph.hash_size + commitgraph.sz_commit_data),
+            @as(u64, @intCast(hashes.len)) * (commitgraph.hashSize() + commitgraph.sz_commit_data),
         );
 
         if (prep.extra_edges_count > 0) {
@@ -164,8 +167,9 @@ pub const Encoder = struct {
 
     fn encodeFileHeader(self: *Encoder, chunk_count: u8) EncodeError!void {
         try self.writeAll(commitgraph.commit_file_signature);
-        // version 1, hash version 1 (SHA-1), chunk count, reserved 0
-        try self.writeAll(&[_]u8{ 1, 1, chunk_count, 0 });
+        // version 1; hash version 1 = SHA-1, 2 = SHA-256 (go-git / git)
+        const hash_ver: u8 = if (hash_pkg.objectFormat() == .sha256) 2 else 1;
+        try self.writeAll(&[_]u8{ 1, hash_ver, chunk_count, 0 });
     }
 
     fn encodeChunkHeaders(self: *Encoder, sigs: []const []const u8, sizes: []const u64) EncodeError!void {
@@ -188,7 +192,7 @@ pub const Encoder = struct {
 
     fn encodeOidLookup(self: *Encoder, hashes: []const Hash) EncodeError!void {
         for (hashes) |h| {
-            try self.writeAll(&h.bytes);
+            try self.writeAll(h.slice());
         }
     }
 
@@ -206,7 +210,7 @@ pub const Encoder = struct {
             const cd = try getCommitData(idx, orig_index);
             defer releaseCommitData(idx, cd);
 
-            try self.writeAll(&cd.tree_hash.bytes);
+            try self.writeAll(cd.tree_hash.slice());
 
             var parent1: u32 = undefined;
             var parent2: u32 = undefined;
@@ -273,10 +277,11 @@ pub const Encoder = struct {
     }
 
     fn encodeChecksum(self: *Encoder) EncodeError!void {
-        var sum: [Sha1.digest_length]u8 = undefined;
+        var sum: [hash_pkg.MaxSize]u8 = undefined;
         self.hasher.final(&sum);
-        // Trailer is the SHA-1 of all preceding bytes (not including the trailer).
-        try self.writer.writeAll(&sum);
+        const n = hash_pkg.digestSize();
+        // Trailer is the hash of all preceding bytes (not including the trailer).
+        try self.writer.writeAll(sum[0..n]);
     }
 
     fn writeAll(self: *Encoder, data: []const u8) EncodeError!void {
@@ -448,4 +453,64 @@ test "Encoder octopus merge three parents" {
     try std.testing.expect(cd.parent_hashes[0].eql(ha));
     try std.testing.expect(cd.parent_hashes[1].eql(hb));
     try std.testing.expect(cd.parent_hashes[2].eql(hc));
+}
+
+test "Encoder SHA-256 object format round-trip" {
+    const gpa = std.testing.allocator;
+    const file_mod = @import("file.zig");
+    defer plumbing.setObjectFormat(.sha1);
+    plumbing.setObjectFormat(.sha256);
+
+    var mi = MemoryIndex.init(gpa);
+    defer mi.deinit();
+
+    // 64-char hex OIDs for SHA-256.
+    const h0 = plumbing.parseHash("1111111111111111111111111111111111111111111111111111111111111111") catch unreachable;
+    const h1 = plumbing.parseHash("2222222222222222222222222222222222222222222222222222222222222222") catch unreachable;
+    const t0 = plumbing.parseHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") catch unreachable;
+    const t1 = plumbing.parseHash("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") catch unreachable;
+
+    var d0: CommitData = .{
+        .tree_hash = t0,
+        .generation = 1,
+        .generation_v2 = 100 + 1,
+        .when = 100,
+    };
+    try mi.add(h0, &d0);
+
+    var p1 = [_]Hash{h0};
+    var d1: CommitData = .{
+        .tree_hash = t1,
+        .parent_hashes = &p1,
+        .generation = 2,
+        .generation_v2 = 200 + 2,
+        .when = 200,
+    };
+    try mi.add(h1, &d1);
+
+    var aw: Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    var enc = Encoder.init(gpa, &aw.writer);
+    try enc.encode(&mi);
+
+    const written = aw.written();
+    try std.testing.expectEqual(@as(u8, 2), written[5]); // hash version 2
+    try std.testing.expectEqual(@as(usize, 32), hash_pkg.digestSize());
+    // Trailer is 32-byte SHA-256 of body.
+    try std.testing.expect(written.len >= 32);
+
+    var fi = try file_mod.FileIndex.open(gpa, written);
+    defer fi.deinit();
+
+    try std.testing.expectEqual(@as(u32, 2), fi.maximumNumberOfHashes());
+    const idx0 = try fi.getIndexByHash(h0);
+    const idx1 = try fi.getIndexByHash(h1);
+    try std.testing.expectEqual(@as(u32, 0), idx0);
+    try std.testing.expectEqual(@as(u32, 1), idx1);
+
+    const cd1 = try fi.getCommitDataByIndex(1);
+    try std.testing.expect(cd1.tree_hash.eql(t1));
+    try std.testing.expectEqual(@as(usize, 1), cd1.parent_hashes.len);
+    try std.testing.expect(cd1.parent_hashes[0].eql(h0));
+    try std.testing.expectEqual(@as(usize, 32), cd1.tree_hash.slice().len);
 }

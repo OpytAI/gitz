@@ -12,6 +12,7 @@ const Writer = std.Io.Writer;
 const Hash = plumbing.Hash;
 const ZeroHash = plumbing.ZeroHash;
 const HexSize = plumbing.HexSize;
+const MaxHexSize = plumbing.MaxHexSize;
 const MemoryObject = plumbing.MemoryObject;
 const ObjectType = plumbing.ObjectType;
 const ObjectGetter = storer.ObjectGetter;
@@ -275,7 +276,7 @@ pub const Commit = struct {
     /// go-git `Commit.String` — pretty-print like `git log` one-line summary block.
     /// Caller frees the returned slice with `allocator`.
     pub fn format(self: *const Commit, allocator: Allocator) (Allocator.Error || Writer.Error || error{NoSpaceLeft})![]u8 {
-        var hex: [HexSize]u8 = undefined;
+        var hex: [MaxHexSize]u8 = undefined;
         var date_buf: [40]u8 = undefined;
         const date = try self.author.formatWhen(&date_buf);
 
@@ -334,11 +335,11 @@ pub const Commit = struct {
         defer aw.deinit();
         const w = &aw.writer;
 
-        var hex: [HexSize]u8 = undefined;
+        var hex: [MaxHexSize]u8 = undefined;
         try w.print("tree {s}\n", .{self.tree_hash.string(&hex)});
 
         for (self.parent_hashes) |ph| {
-            var phex: [HexSize]u8 = undefined;
+            var phex: [MaxHexSize]u8 = undefined;
             try w.print("parent {s}\n", .{ph.string(&phex)});
         }
 
@@ -1063,8 +1064,8 @@ test "commit with parent hashes and storage getCommit" {
     try root_obj.setContent(empty_tree_commit_raw);
     const root_hash = try store.setEncodedObject(root_obj);
 
-    var root_hex: [HexSize]u8 = undefined;
-    _ = root_hash.string(&root_hex);
+    var root_hex_buf: [MaxHexSize]u8 = undefined;
+    const root_hex = root_hash.string(&root_hex_buf);
 
     // Build child commit text with parent = root.
     var child_body: Writer.Allocating = .init(gpa);
@@ -1185,7 +1186,7 @@ test "commit.file via memory store with tree" {
     try tree.encode(tree_obj);
     const tree_h = try store.setEncodedObject(tree_obj);
 
-    var hex: [HexSize]u8 = undefined;
+    var hex: [MaxHexSize]u8 = undefined;
     var body: Writer.Allocating = .init(gpa);
     defer body.deinit();
     try body.writer.print(
@@ -1230,7 +1231,7 @@ test "commit.patch insert between empty and file tree" {
     try empty_tree.encode(empty_tree_obj);
     const empty_tree_h = try store.setEncodedObject(empty_tree_obj);
 
-    var empty_hex: [HexSize]u8 = undefined;
+    var empty_hex: [MaxHexSize]u8 = undefined;
     var empty_body: Writer.Allocating = .init(gpa);
     defer empty_body.deinit();
     try empty_body.writer.print(
@@ -1259,7 +1260,7 @@ test "commit.patch insert between empty and file tree" {
     try file_tree.encode(file_tree_obj);
     const file_tree_h = try store.setEncodedObject(file_tree_obj);
 
-    var file_hex: [HexSize]u8 = undefined;
+    var file_hex: [MaxHexSize]u8 = undefined;
     var file_body: Writer.Allocating = .init(gpa);
     defer file_body.deinit();
     try file_body.writer.print(

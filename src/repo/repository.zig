@@ -677,7 +677,7 @@ test "facade commitObject and resolveRevision after Init" {
 
     var commit_body: std.ArrayList(u8) = .empty;
     defer commit_body.deinit(allocator);
-    var tree_hex: [plumbing.HexSize]u8 = undefined;
+    var tree_hex: [plumbing.MaxHexSize]u8 = undefined;
     try commit_body.appendSlice(allocator, "tree ");
     try commit_body.appendSlice(allocator, tree_h.string(&tree_hex));
     try commit_body.appendSlice(allocator, "\nauthor A <a@b> 1 +0000\ncommitter A <a@b> 1 +0000\n\nmsg\n");

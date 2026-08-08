@@ -76,7 +76,7 @@ test "newStorage empty object round-trip" {
     const obj = try s.newEncodedObject();
     obj.setType(.blob);
     const h = try s.setEncodedObject(obj);
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(
         "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
         h.string(&buf),

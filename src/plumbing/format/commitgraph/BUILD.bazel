@@ -19,6 +19,7 @@ zig_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/plumbing",
+        "//src/plumbing/hash",
     ],
 )
 
@@ -29,6 +30,7 @@ zig_test(
     srcs = _SRCS,
     deps = [
         "//src/plumbing",
+        "//src/plumbing/hash",
     ],
 )
 

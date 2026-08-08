@@ -28,7 +28,7 @@ pub fn storeTree(s: *memory.Storage, allocator: Allocator, blob: Hash, name: []c
     try buf.appendSlice(allocator, "100644 ");
     try buf.appendSlice(allocator, name);
     try buf.append(allocator, 0);
-    try buf.appendSlice(allocator, blob.bytes[0..]);
+    try buf.appendSlice(allocator, blob.slice());
     const obj = try s.newEncodedObject();
     obj.setType(.tree);
     _ = try obj.write(buf.items);
@@ -38,7 +38,7 @@ pub fn storeTree(s: *memory.Storage, allocator: Allocator, blob: Hash, name: []c
 pub fn storeCommit(s: *memory.Storage, allocator: Allocator, tree: Hash, msg: []const u8) !Hash {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
-    var tree_hex: [plumbing.HexSize]u8 = undefined;
+    var tree_hex: [plumbing.MaxHexSize]u8 = undefined;
     try buf.appendSlice(allocator, "tree ");
     try buf.appendSlice(allocator, tree.string(&tree_hex));
     try buf.append(allocator, '\n');
@@ -72,7 +72,7 @@ pub fn storeAnnotatedTag(
 ) !Hash {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
-    var hex: [plumbing.HexSize]u8 = undefined;
+    var hex: [plumbing.MaxHexSize]u8 = undefined;
     try buf.appendSlice(allocator, "object ");
     try buf.appendSlice(allocator, target.string(&hex));
     try buf.append(allocator, '\n');

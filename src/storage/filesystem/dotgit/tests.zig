@@ -90,7 +90,7 @@ test "setRef and ref round-trip" {
 
     const got = try dg.ref(plumbing.ReferenceName.init("refs/heads/foo"));
     defer freeRef(gpa, got);
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(hash_hex, got.hash.string(&buf));
 
     const sym = plumbing.Reference.fromStrings("refs/heads/symbolic", "ref: refs/heads/foo");
@@ -197,7 +197,7 @@ test "packRefs round-trip" {
 
     const got = try dg.ref(plumbing.ReferenceName.init("refs/heads/foo"));
     defer freeRef(gpa, got);
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(hash_hex, got.hash.string(&buf));
 
     // packed-refs file exists and is non-empty
@@ -340,7 +340,7 @@ test "packed-refs manual round-trip" {
 
     const master = try dg.ref(plumbing.ReferenceName.init("refs/heads/master"));
     defer freeRef(gpa, master);
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(
         "e8d3ffab552895c19b9fcf7aa264d277cde33881",
         master.hash.string(&buf),
@@ -737,7 +737,7 @@ test "Os DotGit initialize setRef and read back" {
 
     const got = try dg.ref(plumbing.ReferenceName.init("refs/heads/main"));
     defer freeRef(gpa, got);
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(hash_hex, got.hash.string(&buf));
 
     // Pure Os open of the loose ref path proves bytes hit disk.
@@ -878,7 +878,7 @@ test "Os open minimal hand-written .git structure" {
 
     const master = try dg.ref(plumbing.ReferenceName.init("refs/heads/master"));
     defer freeRef(gpa, master);
-    var hex_buf: [plumbing.HexSize]u8 = undefined;
+    var hex_buf: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(empty_blob, master.hash.string(&hex_buf));
 
     // Loose object path is openable.

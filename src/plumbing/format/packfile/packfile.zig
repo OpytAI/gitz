@@ -31,7 +31,7 @@ const Error = pack_error.Error;
 const MemoryIndex = idxfile.MemoryIndex;
 const OffsetEntryIterator = idxfile.OffsetEntryIterator;
 
-const HashKey = [Size]u8;
+const HashKey = Hash;
 
 /// Explicit error set for Get (avoids inferred-error dependency cycles).
 const GetError = Error || idxfile.Error || Allocator.Error || std.Io.Reader.Error || std.Io.Writer.Error || error{ IntegerOverflow, InvalidType };
@@ -125,13 +125,11 @@ pub const Packfile = struct {
         }
     }
 
-    /// go-git `ID` — pack checksum (last 20 bytes of the pack image).
+    /// go-git `ID` — pack checksum (last `Size` bytes of the pack image).
     pub fn id(self: *const Packfile) Error!Hash {
         if (self.pack_data.len < Size) return error.MalformedPackFile;
         const start = self.pack_data.len - Size;
-        var h: Hash = undefined;
-        @memcpy(h.bytes[0..], self.pack_data[start..][0..Size]);
-        return h;
+        return Hash.fromBytes(self.pack_data[start .. start + Size]);
     }
 
     fn objectAtOffset(self: *Packfile, offset: i64, hash: Hash) GetError!*MemoryObject {
@@ -253,7 +251,7 @@ pub const Packfile = struct {
     }
 
     fn cacheGet(self: *Packfile, h: Hash) ?*MemoryObject {
-        return self.cache.get(h.bytes);
+        return self.cache.get(h);
     }
 
     /// Insert `obj` into the cache. Propagates OOM so callers never return
@@ -261,7 +259,7 @@ pub const Packfile = struct {
     fn cachePut(self: *Packfile, obj: *MemoryObject) GetError!void {
         const h = obj.hash();
         if (h.isZero()) return;
-        const gop = try self.cache.getOrPut(self.allocator, h.bytes);
+        const gop = try self.cache.getOrPut(self.allocator, h);
         if (gop.found_existing) return;
         gop.value_ptr.* = obj;
     }
@@ -395,7 +393,7 @@ test "Packfile.id matches basic pack trailer" {
     defer pf.close();
 
     const pack_id = try pf.id();
-    var hex: [plumbing.HexSize]u8 = undefined;
+    var hex: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(basic_pack_checksum_hex, pack_id.string(&hex));
 }
 

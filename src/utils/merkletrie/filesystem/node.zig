@@ -135,10 +135,13 @@ pub const Root = struct {
     }
 };
 
+/// Composite hash capacity: MaxSize OID + 4-byte mode (go-git 20+4, dual 32+4).
+const composite_hash_cap = plumbing.MaxSize + 4;
+
 pub const Node = struct {
     root: *Root,
     path: []u8,
-    hash_buf: ?[24]u8 = null,
+    hash_buf: ?[composite_hash_cap]u8 = null,
     children_list: std.ArrayList(*Node) = .empty,
     children_ready: bool = false,
     is_dir: bool = false,
@@ -158,7 +161,7 @@ pub const Node = struct {
 
     pub fn hash(self: *Node) []const u8 {
         if (self.hash_buf == null) self.calculateHash();
-        return &self.hash_buf.?;
+        return self.hash_buf.?[0 .. plumbing.digestSize() + 4];
     }
 
     pub fn name(self: *Node) []const u8 {
@@ -262,19 +265,20 @@ pub const Node = struct {
     }
 
     fn calculateHash(self: *Node) void {
+        const n = plumbing.digestSize();
         if (self.is_dir) {
-            self.hash_buf = .{0} ** 24;
+            self.hash_buf = .{0} ** composite_hash_cap;
             return;
         }
         const mode = gitModeFromUnix(self.mode) catch {
-            self.hash_buf = .{0} ** 24;
+            self.hash_buf = .{0} ** composite_hash_cap;
             return;
         };
         if (self.root.submodules.get(self.path)) |sub_hash| {
-            var buf: [24]u8 = undefined;
-            @memcpy(buf[0..plumbing.Size], sub_hash.bytes[0..]);
+            var buf: [composite_hash_cap]u8 = .{0} ** composite_hash_cap;
+            @memcpy(buf[0..n], sub_hash.slice());
             const mb = filemode.bytes(filemode.Submodule);
-            @memcpy(buf[plumbing.Size..][0..4], &mb);
+            @memcpy(buf[n..][0..4], &mb);
             self.hash_buf = buf;
             return;
         }
@@ -282,10 +286,10 @@ pub const Node = struct {
         if (self.root.idx_map.count() > 0) {
             if (self.root.idx_map.get(self.path)) |entry| {
                 if (self.metadataMatches(entry, mode)) {
-                    var buf: [24]u8 = undefined;
-                    @memcpy(buf[0..plumbing.Size], entry.hash.bytes[0..]);
+                    var buf: [composite_hash_cap]u8 = .{0} ** composite_hash_cap;
+                    @memcpy(buf[0..n], entry.hash.slice());
                     const mb = filemode.bytes(mode);
-                    @memcpy(buf[plumbing.Size..][0..4], &mb);
+                    @memcpy(buf[n..][0..4], &mb);
                     self.hash_buf = buf;
                     return;
                 }
@@ -297,10 +301,10 @@ pub const Node = struct {
         else
             self.hashRegular();
 
-        var buf: [24]u8 = undefined;
-        @memcpy(buf[0..plumbing.Size], content_hash.bytes[0..]);
+        var buf: [composite_hash_cap]u8 = .{0} ** composite_hash_cap;
+        @memcpy(buf[0..n], content_hash.slice());
         const mb = filemode.bytes(mode);
-        @memcpy(buf[plumbing.Size..][0..4], &mb);
+        @memcpy(buf[n..][0..4], &mb);
         self.hash_buf = buf;
     }
 
@@ -451,13 +455,16 @@ pub fn newRootNodeMemWithOptions(
 
 const merkletrie = @import("merkletrie");
 
-const empty24 = [_]u8{0} ** 24;
+fn isEmptyComposite(h: []const u8) bool {
+    const want = plumbing.digestSize() + 4;
+    return h.len == want and std.mem.allEqual(u8, h, 0);
+}
 
 fn isEquals(a: Noder, b: Noder) bool {
     const ah = a.hash();
     const bh = b.hash();
-    if (ah.len >= 24 and std.mem.eql(u8, ah[0..24], &empty24)) return false;
-    if (bh.len >= 24 and std.mem.eql(u8, bh[0..24], &empty24)) return false;
+    if (isEmptyComposite(ah)) return false;
+    if (isEmptyComposite(bh)) return false;
     return std.mem.eql(u8, ah, bh);
 }
 
@@ -773,12 +780,13 @@ test "filesystem zero index modtime forces rehash" {
     var hasher = plumbing.Hasher.init(.blob, 3);
     hasher.update("foo");
     const real = hasher.sum();
-    var expected: [24]u8 = undefined;
-    @memcpy(expected[0..20], real.bytes[0..]);
+    const n = plumbing.digestSize();
+    var expected: [composite_hash_cap]u8 = undefined;
+    @memcpy(expected[0..n], real.slice());
     const mb = filemode.bytes(filemode.Regular);
-    @memcpy(expected[20..24], &mb);
+    @memcpy(expected[n..][0..4], &mb);
 
-    try std.testing.expectEqualSlices(u8, &expected, kids[0].hash());
+    try std.testing.expectEqualSlices(u8, expected[0 .. n + 4], kids[0].hash());
 }
 
 // go-git NoderSuite.TestRacyGit (node_test.go).
@@ -820,7 +828,7 @@ test "filesystem racy git rehashes when mtime in racy window" {
     var bar_hasher = plumbing.Hasher.init(.blob, @intCast(new_content.len));
     bar_hasher.update(new_content);
     const bar_hash = bar_hasher.sum();
-    try std.testing.expect(!std.mem.eql(u8, foo_hash.bytes[0..], bar_hash.bytes[0..]));
+    try std.testing.expect(!std.mem.eql(u8, foo_hash.slice(), bar_hash.slice()));
 
     const root = try newRootNodeMemWithOptions(a, &mem, null, .{ .index = &idx });
     defer root.deinit();
@@ -838,12 +846,13 @@ test "filesystem racy git rehashes when mtime in racy window" {
     file_node.hash_buf = null;
 
     const file_hash = file_node.hash();
-    var expected: [24]u8 = undefined;
-    @memcpy(expected[0..20], bar_hash.bytes[0..]);
+    const n = plumbing.digestSize();
+    var expected: [composite_hash_cap]u8 = undefined;
+    @memcpy(expected[0..n], bar_hash.slice());
     const mb = filemode.bytes(filemode.Regular);
-    @memcpy(expected[20..24], &mb);
+    @memcpy(expected[n..][0..4], &mb);
 
-    try std.testing.expectEqualSlices(u8, &expected, file_hash);
+    try std.testing.expectEqualSlices(u8, expected[0 .. n + 4], file_hash);
 }
 
 // Complementary case: when mtime is older than index ModTime and metadata
@@ -880,9 +889,10 @@ test "filesystem index hash trusted when mtime before index modtime" {
     file_node.mtime_sec = file_mtime;
     file_node.hash_buf = null;
 
-    var expected: [24]u8 = undefined;
-    @memcpy(expected[0..20], foo_hash.bytes[0..]);
+    const n = plumbing.digestSize();
+    var expected: [composite_hash_cap]u8 = undefined;
+    @memcpy(expected[0..n], foo_hash.slice());
     const mb = filemode.bytes(filemode.Regular);
-    @memcpy(expected[20..24], &mb);
-    try std.testing.expectEqualSlices(u8, &expected, file_node.hash());
+    @memcpy(expected[n..][0..4], &mb);
+    try std.testing.expectEqualSlices(u8, expected[0 .. n + 4], file_node.hash());
 }

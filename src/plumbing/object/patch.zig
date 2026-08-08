@@ -567,7 +567,7 @@ test "filePatch insert text full unified" {
     try std.testing.expectEqual(@as(usize, 1), p.file_patches.len);
     try std.testing.expect(!p.file_patches[0].binary);
 
-    var hex: [plumbing.HexSize]u8 = undefined;
+    var hex: [plumbing.MaxHexSize]u8 = undefined;
     const hash_s = bh.string(&hex);
     const expected = try std.fmt.allocPrint(gpa,
         \\diff --git a/hello.txt b/hello.txt
@@ -624,7 +624,7 @@ test "filePatch binary encode line" {
     try std.testing.expectEqual(@as(usize, 1), p.file_patches.len);
     try std.testing.expect(p.file_patches[0].binary);
 
-    var hex: [plumbing.HexSize]u8 = undefined;
+    var hex: [plumbing.MaxHexSize]u8 = undefined;
     const hash_s = bh.string(&hex);
     const expected = try std.fmt.allocPrint(gpa,
         \\diff --git a/data.bin b/data.bin

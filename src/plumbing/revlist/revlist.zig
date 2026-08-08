@@ -465,7 +465,7 @@ test "parseCommit tree and parents" {
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
     const c = try parseCommit(arena.allocator(), &obj);
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(
         "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
         c.tree.string(&buf),

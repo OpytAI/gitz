@@ -61,7 +61,7 @@ fn appendTreeEntry(
     try buf.append(allocator, ' ');
     try buf.appendSlice(allocator, name);
     try buf.append(allocator, 0);
-    try buf.appendSlice(allocator, hash.bytes[0..]);
+    try buf.appendSlice(allocator, hash.slice());
 }
 
 fn storeTree(s: *Storage, allocator: Allocator, entries: []const struct {
@@ -90,13 +90,13 @@ fn storeCommit(
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
-    var tree_hex: [plumbing.HexSize]u8 = undefined;
+    var tree_hex: [plumbing.MaxHexSize]u8 = undefined;
     try buf.appendSlice(allocator, "tree ");
     try buf.appendSlice(allocator, tree.string(&tree_hex));
     try buf.append(allocator, '\n');
 
     for (parents) |p| {
-        var p_hex: [plumbing.HexSize]u8 = undefined;
+        var p_hex: [plumbing.MaxHexSize]u8 = undefined;
         try buf.appendSlice(allocator, "parent ");
         try buf.appendSlice(allocator, p.string(&p_hex));
         try buf.append(allocator, '\n');
@@ -123,7 +123,7 @@ fn storeTag(
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
-    var hex: [plumbing.HexSize]u8 = undefined;
+    var hex: [plumbing.MaxHexSize]u8 = undefined;
     try buf.appendSlice(allocator, "object ");
     try buf.appendSlice(allocator, target.string(&hex));
     try buf.append(allocator, '\n');

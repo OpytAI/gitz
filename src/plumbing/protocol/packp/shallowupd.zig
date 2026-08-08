@@ -13,6 +13,7 @@ const common = @import("common.zig");
 
 const Hash = plumbing.Hash;
 const HexSize = plumbing.HexSize;
+const MaxHexSize = plumbing.MaxHexSize;
 
 const shallow_line_len: usize = 48;
 const unshallow_line_len: usize = 50;
@@ -67,7 +68,7 @@ pub const ShallowUpdate = struct {
     /// Encodes shallow then unshallow lines and a flush (go-git `Encode`).
     pub fn encode(self: *const ShallowUpdate, w: *Writer) (pktline.Error || Writer.Error)!void {
         var enc = pktline.Encoder.init(w);
-        var hex: [HexSize]u8 = undefined;
+        var hex: [MaxHexSize]u8 = undefined;
         for (self.shallows.items) |h| {
             try enc.encodef("{s}{s}\n", .{ common.shallow, h.string(&hex) });
         }

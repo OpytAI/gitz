@@ -104,7 +104,7 @@ const AdvRefsEncoder = struct {
         const caps = try formatCaps(self.allocator, &self.data.capabilities);
         defer self.allocator.free(caps);
 
-        var hash_buf: [plumbing.HexSize]u8 = undefined;
+        var hash_buf: [plumbing.MaxHexSize]u8 = undefined;
         if (self.first_ref_name.len == 0) {
             const zh = plumbing.ZeroHash.string(&hash_buf);
             try self.pe.encodef("{s} {s}\x00{s}\n", .{ zh, common.no_head, caps });
@@ -119,12 +119,12 @@ const AdvRefsEncoder = struct {
             if (std.mem.eql(u8, r, self.first_ref_name)) continue;
 
             const hash = self.data.references.get(r).?;
-            var hash_buf: [plumbing.HexSize]u8 = undefined;
+            var hash_buf: [plumbing.MaxHexSize]u8 = undefined;
             const hs = hash.string(&hash_buf);
             try self.pe.encodef("{s} {s}\n", .{ hs, r });
 
             if (self.data.peeled.get(r)) |ph| {
-                var pbuf: [plumbing.HexSize]u8 = undefined;
+                var pbuf: [plumbing.MaxHexSize]u8 = undefined;
                 const ps = ph.string(&pbuf);
                 try self.pe.encodef("{s} {s}{s}\n", .{ ps, r, common.peeled });
             }
@@ -136,7 +136,7 @@ const AdvRefsEncoder = struct {
         defer self.allocator.free(sorted);
 
         for (sorted) |hash| {
-            var hash_buf: [plumbing.HexSize]u8 = undefined;
+            var hash_buf: [plumbing.MaxHexSize]u8 = undefined;
             const hs = hash.string(&hash_buf);
             try self.pe.encodef("shallow {s}\n", .{hs});
         }

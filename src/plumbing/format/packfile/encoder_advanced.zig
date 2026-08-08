@@ -48,7 +48,7 @@ const Encoder = encoder_mod.Encoder;
 // ---------------------------------------------------------------------------
 
 const MapStore = struct {
-    map: std.AutoHashMapUnmanaged([Size]u8, *MemoryObject) = .empty,
+    map: std.AutoHashMapUnmanaged(Hash, *MemoryObject) = .empty,
     allocator: Allocator,
 
     fn init(allocator: Allocator) MapStore {
@@ -67,7 +67,7 @@ const MapStore = struct {
 
     fn put(self: *MapStore, obj: *MemoryObject) !Hash {
         const h = obj.hash();
-        const gop = try self.map.getOrPut(self.allocator, h.bytes);
+        const gop = try self.map.getOrPut(self.allocator, h);
         // Overwrite frees the previous store-owned object; same pointer is a no-op
         // free (matches ObjectStorage / delta_selector MapStore).
         if (gop.found_existing) {
@@ -82,7 +82,7 @@ const MapStore = struct {
 
     pub fn encodedObject(self: *MapStore, t: ObjectType, h: Hash) error{ObjectNotFound}!*MemoryObject {
         _ = t;
-        return self.map.get(h.bytes) orelse error.ObjectNotFound;
+        return self.map.get(h) orelse error.ObjectNotFound;
     }
 };
 
@@ -142,7 +142,7 @@ fn populateMapStore(
     collected: []const Hash,
     store: *MapStore,
     hashes: *std.ArrayList(Hash),
-    expected: *std.AutoHashMapUnmanaged([Size]u8, void),
+    expected: *std.AutoHashMapUnmanaged(Hash, void),
 ) !void {
     for (collected) |want| {
         const src = try os.get(want);
@@ -158,7 +158,7 @@ fn populateMapStore(
         const h = try store.put(o);
         transferred = true;
         try std.testing.expect(h.eql(want));
-        try expected.put(allocator, h.bytes, {});
+        try expected.put(allocator, h, {});
         try hashes.append(allocator, h);
     }
 }
@@ -180,7 +180,7 @@ fn testEncodeDecode(pack_window: u32, pack_data: []const u8) !void {
     var store = MapStore.init(allocator);
     defer store.deinit();
 
-    var expected: std.AutoHashMapUnmanaged([Size]u8, void) = .empty;
+    var expected: std.AutoHashMapUnmanaged(Hash, void) = .empty;
     defer expected.deinit(allocator);
 
     var hashes: std.ArrayList(Hash) = .empty;
@@ -200,7 +200,7 @@ fn testEncodeDecode(pack_window: u32, pack_data: []const u8) !void {
     const encode_hash = try enc.encode(hashes.items, pack_window);
     const pack_out = aw.written();
     try std.testing.expect(pack_out.len >= 12 + Size);
-    try std.testing.expectEqualSlices(u8, encode_hash.bytes[0..], pack_out[pack_out.len - Size ..][0..Size]);
+    try std.testing.expectEqualSlices(u8, encode_hash.slice(), pack_out[pack_out.len - Size ..][0..Size]);
 
     // Parser + idx Writer (go-git: NewParser(NewScanner(f), w)).
     var w = idxfile.Writer.init(allocator);
@@ -221,13 +221,13 @@ fn testEncodeDecode(pack_window: u32, pack_data: []const u8) !void {
     const decode_hash = try pf.id();
     try std.testing.expect(encode_hash.eql(decode_hash));
 
-    var obtained: std.AutoHashMapUnmanaged([Size]u8, void) = .empty;
+    var obtained: std.AutoHashMapUnmanaged(Hash, void) = .empty;
     defer obtained.deinit(allocator);
 
     var iter = try pf.getAll();
     defer iter.deinit();
     while (try iter.next()) |obj| {
-        try obtained.put(allocator, obj.hash().bytes, {});
+        try obtained.put(allocator, obj.hash(), {});
     }
 
     try std.testing.expectEqual(expected.count(), obtained.count());

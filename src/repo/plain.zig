@@ -11,8 +11,10 @@ const memory = @import("memory");
 const filesystem = @import("filesystem");
 const fs_pkg = @import("fs");
 const format_config = @import("config");
+const hash_algo = @import("hash");
 const storer = @import("storer");
 const dotgit = @import("dotgit");
+const utils_sync = @import("utils/sync");
 
 const repository = @import("repository.zig");
 const error_mod = @import("error.zig");
@@ -33,7 +35,7 @@ pub const PlainInitOptions = struct {
     init_options: InitOptions = .{},
     /// Bare repository (no worktree).
     bare: bool = false,
-    /// Object hash format (`""` / `"sha1"` default; `"sha256"` → `SHA256NotSupported`).
+    /// Object hash format (`""` / `"sha1"` default; `"sha256"` enables SHA-256 OIDs).
     object_format: []const u8 = "",
 };
 
@@ -118,8 +120,17 @@ pub fn plainInit(allocator: Allocator, path_fs: *Mem, is_bare: bool) !PlainRepos
 
 /// go-git `PlainInitWithOptions` over `fs.Mem`.
 pub fn plainInitWithOptions(allocator: Allocator, path_fs: *Mem, opts: PlainInitOptions) !PlainRepository {
+    // go-git: SHA-256 requires hash.CryptoType == SHA256; gitz always supports both.
     if (opts.object_format.len > 0 and std.mem.eql(u8, opts.object_format, format_config.SHA256)) {
-        return error.SHA256NotSupported;
+        if (!hash_algo.supportsObjectFormat(.sha256)) return error.SHA256NotSupported;
+        hash_algo.setObjectFormat(.sha256);
+    } else {
+        // Explicit sha1 / empty: keep process default (callers with sha256 must
+        // reset via setObjectFormat; we do not force-reset here so concurrent
+        // tests can own the format — but init of non-sha256 uses sha1 digests).
+        if (opts.object_format.len == 0 or std.mem.eql(u8, opts.object_format, format_config.SHA1)) {
+            hash_algo.setObjectFormat(.sha1);
+        }
     }
 
     var owned_dot: ?*Mem = null;
@@ -163,14 +174,15 @@ pub fn plainInitWithOptions(allocator: Allocator, path_fs: *Mem, opts: PlainInit
     const head_ref = Reference.newSymbolicReference(plumbing.HEAD, default_branch);
     try s.setReference(head_ref);
 
-    if (worktree == null) {
-        const cfg = try s.config();
-        cfg.is_bare = true;
-        try s.setConfig(cfg);
+    // Config: bare flag + object format (go-git always SetConfig after init).
+    const cfg = try s.config();
+    if (worktree == null) cfg.is_bare = true;
+    if (opts.object_format.len > 0) {
+        // go-git: RepositoryFormatVersion = Version_1 + Extensions.ObjectFormat
+        try cfg.setRepositoryFormatVersion(format_config.Version1);
+        try cfg.setObjectFormat(opts.object_format);
     }
-
-    // ObjectFormat: only SHA-256 is rejected above; SHA-1 is the default.
-    _ = opts.object_format;
+    try s.setConfig(cfg);
 
     // Transfer owned_dot / s to the result; success return cancels errdefers.
     const result = PlainRepository{
@@ -214,7 +226,8 @@ pub fn plainOpenWithOptions(allocator: Allocator, path_fs: *Mem, o: PlainOpenOpt
         else => |e| return e,
     }
 
-    _ = try s.config();
+    const cfg = try s.config();
+    applyObjectFormatFromConfig(cfg);
 
     const r = PlainRepository{
         .allocator = allocator,
@@ -226,6 +239,22 @@ pub fn plainOpenWithOptions(allocator: Allocator, path_fs: *Mem, o: PlainOpenOpt
     resolved.owned_dot = null;
     resolved.owned_worktree = null;
     return r;
+}
+
+/// Activate process-wide object format from stored config (open path).
+fn applyObjectFormatFromConfig(cfg: *const Config) void {
+    if (cfg.object_format.len == 0) {
+        hash_algo.setObjectFormat(.sha1);
+        return;
+    }
+    if (std.mem.eql(u8, cfg.object_format, format_config.SHA256)) {
+        if (hash_algo.supportsObjectFormat(.sha256)) {
+            hash_algo.setObjectFormat(.sha256);
+        }
+        return;
+    }
+    // sha1 or unknown → default SHA-1 digests
+    hash_algo.setObjectFormat(.sha1);
 }
 
 const ResolvedDot = struct {
@@ -464,18 +493,81 @@ test "PlainInitWithOptions custom default branch" {
     try std.testing.expectEqualStrings("refs/heads/main", head_ref.target.raw);
 }
 
-test "PlainInitWithOptions SHA256 not supported" {
+test "PlainInitWithOptions SHA256 succeeds" {
     const gpa = std.testing.allocator;
+    defer hash_algo.setObjectFormat(.sha1);
+
     var root = try Mem.init(gpa);
     defer root.deinit();
 
-    try std.testing.expectError(
-        error.SHA256NotSupported,
-        plainInitWithOptions(gpa, &root, .{
+    var r = try plainInitWithOptions(gpa, &root, .{
+        .bare = true,
+        .object_format = format_config.SHA256,
+    });
+    defer r.deinit();
+
+    try std.testing.expect(hash_algo.objectFormat() == .sha256);
+    try std.testing.expectEqual(@as(usize, 32), hash_algo.digestSize());
+
+    const cfg = try r.config();
+    try std.testing.expectEqualStrings(format_config.Version1, cfg.repository_format_version);
+    try std.testing.expectEqualStrings(format_config.SHA256, cfg.object_format);
+
+    // On-disk config contains extensions.objectformat
+    var f = try root.open("config");
+    defer f.close() catch {};
+    const data = try readAll(gpa, &f);
+    defer gpa.free(data);
+    try std.testing.expect(std.mem.indexOf(u8, data, "objectformat = sha256") != null);
+    try std.testing.expect(std.mem.indexOf(u8, data, "repositoryformatversion = 1") != null);
+
+    // Empty blob OID is SHA-256 of "blob 0\0"
+    const empty_blob = plumbing.computeHash(.blob, "");
+    try std.testing.expectEqual(@as(usize, 32), empty_blob.slice().len);
+    var hex_buf: [plumbing.MaxHexSize]u8 = undefined;
+    const hex = empty_blob.string(&hex_buf);
+    try std.testing.expectEqualStrings(
+        "473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813",
+        hex,
+    );
+
+    // Store via filesystem storage (ObjectWriter uses utils/sync zlib pool).
+    const obj = try r.storer.newEncodedObject();
+    obj.setType(.blob);
+    _ = try obj.write("");
+    const h = try r.storer.setEncodedObject(obj);
+    try std.testing.expect(h.eql(empty_blob));
+    try std.testing.expectEqual(@as(usize, 32), h.slice().len);
+
+    const path = try r.storer.dir.objectPath(h);
+    defer gpa.free(path);
+    try std.testing.expect(std.mem.indexOf(u8, path, "objects/47/") != null);
+    _ = try root.stat(path);
+
+    // Drain free-lists so testing.allocator does not report retained pool nodes.
+    utils_sync.deinitPools(gpa);
+}
+
+test "PlainOpen applies SHA256 object format from config" {
+    const gpa = std.testing.allocator;
+    defer hash_algo.setObjectFormat(.sha1);
+
+    var root = try Mem.init(gpa);
+    defer root.deinit();
+
+    {
+        var r = try plainInitWithOptions(gpa, &root, .{
             .bare = true,
             .object_format = format_config.SHA256,
-        }),
-    );
+        });
+        r.deinit();
+    }
+
+    // Reset to sha1 then open must re-activate sha256 from config.
+    hash_algo.setObjectFormat(.sha1);
+    var r = try plainOpen(gpa, &root);
+    defer r.deinit();
+    try std.testing.expect(hash_algo.objectFormat() == .sha256);
 }
 
 test "PlainOpen bare after PlainInit bare" {

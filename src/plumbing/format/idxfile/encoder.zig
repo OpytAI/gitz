@@ -11,6 +11,7 @@ const MemoryIndex = idxfile.MemoryIndex;
 const fanout = idxfile.fanout;
 const noMapping = idxfile.noMapping;
 const idxHeader = idxfile.idxHeader;
+const objectIdLength = idxfile.objectIdLength;
 
 /// Writes `MemoryIndex` structs to an output stream (go-git `Encoder`).
 pub const Encoder = struct {
@@ -101,13 +102,14 @@ pub const Encoder = struct {
     }
 
     fn encodeChecksums(self: *Encoder, idx: *MemoryIndex) Writer.Error!usize {
-        _ = try self.writeAll(idx.packfile_checksum.bytes[0..]);
+        const oid_len = objectIdLength();
+        _ = try self.writeAll(idx.packfile_checksum.bytes[0..oid_len]);
 
-        var sum: [hash_pkg.Size]u8 = undefined;
+        var sum: [hash_pkg.MaxSize]u8 = undefined;
         self.hasher.final(&sum);
-        @memcpy(idx.idx_checksum.bytes[0..], sum[0..]);
+        @memcpy(idx.idx_checksum.bytes[0..oid_len], sum[0..oid_len]);
         // Trailer checksum is not hashed (already finalized).
-        try self.writer.writeAll(idx.idx_checksum.bytes[0..]);
-        return hash_pkg.Size * 2;
+        try self.writer.writeAll(idx.idx_checksum.bytes[0..oid_len]);
+        return oid_len * 2;
     }
 };

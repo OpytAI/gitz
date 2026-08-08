@@ -76,7 +76,7 @@ pub const TreeNoder = struct {
 
     pub fn hash(self: *TreeNoder) []const u8 {
         if (!self.hash_ready) {
-            @memcpy(self.hash_buf[0..plumbing.Size], self.oid.bytes[0..]);
+            @memcpy(self.hash_buf[0..plumbing.Size], self.oid.slice());
             const mode_for_hash: FileMode = if (self.mode == filemode.Deprecated)
                 filemode.Regular
             else

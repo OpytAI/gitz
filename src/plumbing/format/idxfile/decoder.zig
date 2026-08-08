@@ -12,7 +12,7 @@ const Reader = std.Io.Reader;
 const Error = idxfile.Error;
 const MemoryIndex = idxfile.MemoryIndex;
 const fanout = idxfile.fanout;
-const objectIdLength = idxfile.objectIdLength;
+const objectIdLength = idxfile.objectIdLength; // fn() usize
 const noMapping = idxfile.noMapping;
 const VersionSupported = idxfile.VersionSupported;
 const idxHeader = idxfile.idxHeader;
@@ -72,7 +72,7 @@ pub const Decoder = struct {
 
         try self.readIdxChecksum(idx);
 
-        if (!std.mem.eql(u8, &actual, idx.idx_checksum.bytes[0..])) {
+        if (!std.mem.eql(u8, &actual, idx.idx_checksum.slice())) {
             return Error.MalformedIdxFile;
         }
     }
@@ -126,7 +126,7 @@ pub const Decoder = struct {
             try idx.offset32.ensureUnusedCapacity(idx.allocator, 1);
             try idx.crc32.ensureUnusedCapacity(idx.allocator, 1);
 
-            const name_len: usize = @as(usize, buckets) * objectIdLength;
+            const name_len: usize = @as(usize, buckets) * objectIdLength();
             const bin = try idx.allocator.alloc(u8, name_len);
             errdefer idx.allocator.free(bin);
             try self.readHashed(bin);
@@ -181,18 +181,18 @@ pub const Decoder = struct {
     }
 
     fn readPackChecksum(self: *Decoder, idx: *MemoryIndex) Reader.Error!void {
-        try self.readHashed(idx.packfile_checksum.bytes[0..]);
+        try self.readHashed(idx.packfile_checksum.bytes[0..objectIdLength()]);
     }
 
     fn readIdxChecksum(self: *Decoder, idx: *MemoryIndex) Reader.Error!void {
         // Not hashed: go-git takes Sum before reading the trailer checksum.
-        try self.reader.readSliceAll(idx.idx_checksum.bytes[0..]);
+        try self.reader.readSliceAll(idx.idx_checksum.bytes[0..objectIdLength()]);
     }
 };
 
 fn validateIdxV2Size(idx: *const MemoryIndex, idx_size: i64) Error!void {
     const nr: i64 = idx.fanout[fanout - 1];
-    const hashsz: i64 = objectIdLength;
+    const hashsz: i64 = @intCast(objectIdLength());
 
     const min_size = minIdxV2Size(nr, hashsz);
     const max_size = maxIdxV2Size(nr, hashsz);

@@ -62,6 +62,10 @@ pub const BranchConfig = struct {
 pub const Config = struct {
     allocator: Allocator,
     is_bare: bool = false,
+    /// `core.repositoryformatversion` (owned; empty means unset / "0").
+    repository_format_version: []u8 = &.{},
+    /// `extensions.objectformat` (owned; empty / "sha1" / "sha256").
+    object_format: []u8 = &.{},
     remotes: std.StringHashMapUnmanaged(RemoteConfig) = .empty,
     branches: std.StringHashMapUnmanaged(BranchConfig) = .empty,
 
@@ -70,6 +74,9 @@ pub const Config = struct {
     }
 
     pub fn deinit(self: *Config) void {
+        freeOwned(self.allocator, self.repository_format_version);
+        freeOwned(self.allocator, self.object_format);
+
         var rit = self.remotes.iterator();
         while (rit.next()) |e| {
             var rc = e.value_ptr.*;
@@ -87,6 +94,18 @@ pub const Config = struct {
         self.branches.deinit(self.allocator);
 
         self.* = undefined;
+    }
+
+    /// Set `core.repositoryformatversion` (copies `version`).
+    pub fn setRepositoryFormatVersion(self: *Config, version: []const u8) Allocator.Error!void {
+        freeOwned(self.allocator, self.repository_format_version);
+        self.repository_format_version = try dupeOrEmpty(self.allocator, version);
+    }
+
+    /// Set `extensions.objectformat` (copies `format`).
+    pub fn setObjectFormat(self: *Config, format: []const u8) Allocator.Error!void {
+        freeOwned(self.allocator, self.object_format);
+        self.object_format = try dupeOrEmpty(self.allocator, format);
     }
 
     /// go-git `Config.Validate` subset: remotes/branches key/name match, then remote Validate.

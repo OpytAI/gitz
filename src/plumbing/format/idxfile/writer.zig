@@ -28,7 +28,7 @@ pub const Writer = struct {
     owned_index: ?MemoryIndex = null,
     added: std.AutoHashMapUnmanaged(HashKey, void) = .empty,
 
-    const HashKey = [plumbing.Size]u8;
+    const HashKey = [plumbing.MaxSize]u8;
 
     pub fn init(allocator: Allocator) Writer {
         return .{ .allocator = allocator };
@@ -134,7 +134,7 @@ pub const Writer = struct {
 
         std.mem.sort(Entry, self.objects.items, {}, struct {
             fn less(_: void, a: Entry, b: Entry) bool {
-                return std.mem.order(u8, a.hash.bytes[0..], b.hash.bytes[0..]) == .lt;
+                return std.mem.order(u8, a.hash.slice(), b.hash.slice()) == .lt;
             }
         }.less);
 
@@ -164,7 +164,7 @@ pub const Writer = struct {
             }
 
             const b: usize = @intCast(bucket);
-            idx.names.items[b] = try appendBytes(idx.allocator, idx.names.items[b], o.hash.bytes[0..]);
+            idx.names.items[b] = try appendBytes(idx.allocator, idx.names.items[b], o.hash.slice());
 
             var offset = o.offset;
             if (offset > std.math.maxInt(i32)) {

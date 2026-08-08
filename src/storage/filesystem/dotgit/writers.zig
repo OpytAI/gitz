@@ -18,6 +18,7 @@ const idxfile = @import("idxfile");
 
 const Hash = plumbing.Hash;
 const HexSize = plumbing.HexSize;
+const MaxHexSize = plumbing.MaxHexSize;
 const ObjectType = plumbing.ObjectType;
 
 const objects_path = "objects";
@@ -139,7 +140,7 @@ pub fn ObjectWriter(comptime Fs: type) type {
         }
 
         fn save(self: *Self) !void {
-            var hex_buf: [HexSize]u8 = undefined;
+            var hex_buf: [MaxHexSize]u8 = undefined;
             const hex = self.hash().string(&hex_buf);
 
             const dir2 = hex[0..2];
@@ -323,7 +324,7 @@ pub fn PackWriter(comptime Fs: type) type {
         }
 
         fn save(self: *Self, idx_writer: *idxfile.Writer) !void {
-            var hex_buf: [HexSize]u8 = undefined;
+            var hex_buf: [MaxHexSize]u8 = undefined;
             const hex = self.checksum.string(&hex_buf);
 
             const idx_rel = try std.fmt.allocPrint(self.allocator, "objects/pack/pack-{s}.idx", .{hex});
@@ -393,7 +394,7 @@ test "ObjectWriter empty blob path" {
     try w.close();
 
     const want = plumbing.newHash("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
-    var hex_buf: [HexSize]u8 = undefined;
+    var hex_buf: [MaxHexSize]u8 = undefined;
     const hex = want.string(&hex_buf);
     const path = try mem.joinPath(&.{ "objects", hex[0..2], hex[2..] });
     defer allocator.free(path);
@@ -425,7 +426,7 @@ test "ObjectWriter content blob" {
     const expect = plumbing.computeHash(.blob, content);
     try std.testing.expect(h.eql(expect));
 
-    var hex_buf: [HexSize]u8 = undefined;
+    var hex_buf: [MaxHexSize]u8 = undefined;
     const hex = h.string(&hex_buf);
     const path = try mem.joinPath(&.{ "objects", hex[0..2], hex[2..] });
     defer allocator.free(path);
@@ -475,7 +476,7 @@ test "PackWriter writes pack and idx" {
     const checksum = w.packChecksum();
     try std.testing.expect(!checksum.isZero());
 
-    var hex_buf: [HexSize]u8 = undefined;
+    var hex_buf: [MaxHexSize]u8 = undefined;
     const hex = checksum.string(&hex_buf);
 
     const pack_path = try std.fmt.allocPrint(allocator, "objects/pack/pack-{s}.pack", .{hex});

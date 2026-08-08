@@ -141,8 +141,11 @@ pub const FileIndex = struct {
         }
         const header = self.data[4..8];
         if (header[0] != 1) return Error.UnsupportedVersion;
-        // Hash version 1 = SHA-1 only for this port.
-        if (header[1] != 1) return Error.UnsupportedHash;
+        // Hash version 1 = SHA-1, 2 = SHA-256 (go-git verifies against CryptoType).
+        const hv = header[1];
+        const fmt = plumbing.objectFormat();
+        const ok = (fmt == .sha1 and hv == 1) or (fmt == .sha256 and hv == 2);
+        if (!ok) return Error.UnsupportedHash;
     }
 
     fn readChunkHeaders(self: *FileIndex) Error!void {
@@ -183,10 +186,11 @@ pub const FileIndex = struct {
     }
 
     fn readHashAt(self: *const FileIndex, offset: usize) Error!Hash {
-        if (offset + commitgraph.hash_size > self.data.len) return Error.MalformedCommitGraphFile;
-        var bytes: [commitgraph.hash_size]u8 = undefined;
-        @memcpy(&bytes, self.data[offset .. offset + commitgraph.hash_size]);
-        return Hash.fromBytes(bytes);
+        const hs = commitgraph.hashSize();
+        if (offset + hs > self.data.len) return Error.MalformedCommitGraphFile;
+        var bytes: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
+        @memcpy(bytes[0..hs], self.data[offset .. offset + hs]);
+        return Hash.fromBytes(bytes[0..hs]);
     }
 
     /// go-git `GetIndexByHash`.
@@ -197,7 +201,7 @@ pub const FileIndex = struct {
 
         while (low < high) {
             const mid = (low + high) >> 1;
-            const offset = oid_off + @as(usize, mid) * commitgraph.hash_size;
+            const offset = oid_off + @as(usize, mid) * commitgraph.hashSize();
             const oid = try self.readHashAt(offset);
             const cmp = std.mem.order(u8, &h.bytes, &oid.bytes);
             if (cmp == .lt) {
@@ -226,7 +230,7 @@ pub const FileIndex = struct {
         const local = idx - self.minimum_number_of_hashes;
         if (local >= self.fanout[0xff]) return Error.MalformedCommitGraphFile;
         const oid_off: usize = @intCast(self.offsets[@intFromEnum(ChunkType.oid_lookup)]);
-        return self.readHashAt(oid_off + @as(usize, local) * commitgraph.hash_size);
+        return self.readHashAt(oid_off + @as(usize, local) * commitgraph.hashSize());
     }
 
     /// go-git `GetCommitDataByIndex`.
@@ -248,16 +252,17 @@ pub const FileIndex = struct {
         self.clearCache();
 
         const cdat_off: usize = @intCast(self.offsets[@intFromEnum(ChunkType.commit_data)]);
-        const entry_size = commitgraph.hash_size + commitgraph.sz_commit_data;
+        const hs = commitgraph.hashSize();
+        const entry_size = hs + commitgraph.sz_commit_data;
         const offset = cdat_off + @as(usize, local) * entry_size;
         if (offset + entry_size > self.data.len) return Error.MalformedCommitGraphFile;
 
         const tree_hash = try self.readHashAt(offset);
-        const parent1 = std.mem.readInt(u32, self.data[offset + commitgraph.hash_size ..][0..4], .big);
-        const parent2 = std.mem.readInt(u32, self.data[offset + commitgraph.hash_size + 4 ..][0..4], .big);
+        const parent1 = std.mem.readInt(u32, self.data[offset + hs ..][0..4], .big);
+        const parent2 = std.mem.readInt(u32, self.data[offset + hs + 4 ..][0..4], .big);
         const gen_and_time = std.mem.readInt(
             u64,
-            self.data[offset + commitgraph.hash_size + 8 ..][0..8],
+            self.data[offset + hs + 8 ..][0..8],
             .big,
         );
 
@@ -354,7 +359,7 @@ pub const FileIndex = struct {
             }
             const local = pi - self.minimum_number_of_hashes;
             if (local >= self.fanout[0xff]) return Error.MalformedCommitGraphFile;
-            parent_hashes[i] = try self.readHashAt(oid_off + @as(usize, local) * commitgraph.hash_size);
+            parent_hashes[i] = try self.readHashAt(oid_off + @as(usize, local) * commitgraph.hashSize());
         }
         return parent_hashes;
     }
@@ -372,10 +377,11 @@ pub const FileIndex = struct {
 
         const oid_off: usize = @intCast(self.offsets[@intFromEnum(ChunkType.oid_lookup)]);
         const local_n = self.fanout[0xff];
+        const hs = commitgraph.hashSize();
         var j: u32 = 0;
         while (j < local_n) : (j += 1) {
             out[self.minimum_number_of_hashes + j] =
-                try self.readHashAt(oid_off + @as(usize, j) * commitgraph.hash_size);
+                try self.readHashAt(oid_off + @as(usize, j) * hs);
         }
         return out;
     }

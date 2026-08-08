@@ -15,6 +15,7 @@ const log_mod = @import("log.zig");
 const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
 const HexSize = plumbing.HexSize;
+const MaxHexSize = plumbing.MaxHexSize;
 const ObjectType = plumbing.ObjectType;
 const Reference = plumbing.Reference;
 const ReferenceName = plumbing.ReferenceName;
@@ -547,7 +548,7 @@ fn expandPartialHash(
             error.EndOfStream => break,
         };
         const h = enc.hash();
-        if (prefix.len == 0 or std.mem.startsWith(u8, h.bytes[0..], prefix)) {
+        if (prefix.len == 0 or std.mem.startsWith(u8, h.slice(), prefix)) {
             try list.append(allocator, h);
         }
     }
@@ -569,7 +570,7 @@ fn appendHashPrefix(s: *memory.Storage, hash_str: []const u8, out: *std.ArrayLis
         const candidates = try expandPartialHash(s, gpa, &.{});
         defer gpa.free(candidates);
         for (candidates) |h| {
-            var hex: [HexSize]u8 = undefined;
+            var hex: [MaxHexSize]u8 = undefined;
             const str = h.string(&hex);
             if (std.mem.startsWith(u8, str, hash_str)) {
                 try out.append(gpa, h);
@@ -589,7 +590,7 @@ fn appendHashPrefix(s: *memory.Storage, hash_str: []const u8, out: *std.ArrayLis
         return;
     }
     for (candidates) |h| {
-        var hex: [HexSize]u8 = undefined;
+        var hex: [MaxHexSize]u8 = undefined;
         const str = h.string(&hex);
         if (std.mem.startsWith(u8, str, hash_str)) {
             try out.append(gpa, h);
@@ -629,7 +630,7 @@ fn storeTree(s: *memory.Storage, allocator: Allocator, blob: Hash, name: []const
     try buf.appendSlice(allocator, "100644 ");
     try buf.appendSlice(allocator, name);
     try buf.append(allocator, 0);
-    try buf.appendSlice(allocator, blob.bytes[0..]);
+    try buf.appendSlice(allocator, blob.slice());
     const obj = try s.newEncodedObject();
     obj.setType(.tree);
     _ = try obj.write(buf.items);
@@ -645,12 +646,12 @@ fn storeCommit(
 ) !Hash {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
-    var tree_hex: [HexSize]u8 = undefined;
+    var tree_hex: [MaxHexSize]u8 = undefined;
     try buf.appendSlice(allocator, "tree ");
     try buf.appendSlice(allocator, tree.string(&tree_hex));
     try buf.append(allocator, '\n');
     for (parents) |p| {
-        var ph: [HexSize]u8 = undefined;
+        var ph: [MaxHexSize]u8 = undefined;
         try buf.appendSlice(allocator, "parent ");
         try buf.appendSlice(allocator, p.string(&ph));
         try buf.append(allocator, '\n');
@@ -769,7 +770,7 @@ test "resolveRevision HEAD and simple refs" {
     const tag_h = try resolveRevision(r, "v1");
     try std.testing.expect(tag_h.eql(c1));
 
-    var hex: [HexSize]u8 = undefined;
+    var hex: [MaxHexSize]u8 = undefined;
     const full = c0.string(&hex);
     const by_hash = try resolveRevision(r, full);
     try std.testing.expect(by_hash.eql(c0));

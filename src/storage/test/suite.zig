@@ -82,7 +82,7 @@ fn objectEquals(a: *MemoryObject, b: *MemoryObject) !void {
     if (!std.mem.eql(u8, a.readerBytes(), b.readerBytes())) return error.TestExpectedEqual;
 }
 
-fn hexOf(h: Hash, buf: *[plumbing.HexSize]u8) []const u8 {
+fn hexOf(h: Hash, buf: *[plumbing.MaxHexSize]u8) []const u8 {
     return h.string(buf);
 }
 
@@ -135,7 +135,7 @@ pub fn testSetEncodedObjectAndEncodedObject(s: anytype) !void {
     for (test_object_meta) |meta| {
         const obj = try s.newTypedObject(meta.typ);
         const h = try s.storer.setEncodedObject(obj);
-        var buf: [plumbing.HexSize]u8 = undefined;
+        var buf: [plumbing.MaxHexSize]u8 = undefined;
         try testing.expectEqualStrings(meta.hash_hex, hexOf(h, &buf));
 
         const o = try s.storer.encodedObject(meta.typ, h);
@@ -259,7 +259,7 @@ pub fn testObjectStorerTxSetEncodedObjectAndCommit(s: anytype) !void {
     for (test_object_meta) |meta| {
         const obj = try s.newTypedObject(meta.typ);
         const h = try tx.setEncodedObject(obj);
-        var buf: [plumbing.HexSize]u8 = undefined;
+        var buf: [plumbing.MaxHexSize]u8 = undefined;
         try testing.expectEqualStrings(meta.hash_hex, hexOf(h, &buf));
     }
 
@@ -293,7 +293,7 @@ pub fn testObjectStorerTxSetObjectAndGetObject(s: anytype) !void {
     for (test_object_meta) |meta| {
         const obj = try s.newTypedObject(meta.typ);
         const h = try tx.setEncodedObject(obj);
-        var buf: [plumbing.HexSize]u8 = undefined;
+        var buf: [plumbing.MaxHexSize]u8 = undefined;
         try testing.expectEqualStrings(meta.hash_hex, hexOf(h, &buf));
 
         const o = try tx.encodedObject(meta.typ, plumbing.newHash(meta.hash_hex));
@@ -323,7 +323,7 @@ pub fn testObjectStorerTxSetObjectAndRollback(s: anytype) !void {
     for (test_object_meta) |meta| {
         const obj = try s.newTypedObject(meta.typ);
         const h = try tx.setEncodedObject(obj);
-        var buf: [plumbing.HexSize]u8 = undefined;
+        var buf: [plumbing.MaxHexSize]u8 = undefined;
         try testing.expectEqualStrings(meta.hash_hex, hexOf(h, &buf));
     }
 
@@ -346,7 +346,7 @@ pub fn testSetReferenceAndGetReference(s: anytype) !void {
 
     const e = try s.storer.reference(ReferenceName.init("refs/foo"));
     defer releaseRef(s, e);
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try testing.expectEqualStrings(
         "bc9968d75e48de59f0870ffb71f5e160bbbdcf52",
         hexOf(e.hash, &buf),
@@ -364,7 +364,7 @@ pub fn testCheckAndSetReference(s: anytype) !void {
     );
     const e = try s.storer.reference(ReferenceName.init("refs/foo"));
     defer releaseRef(s, e);
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try testing.expectEqualStrings(
         "bc9968d75e48de59f0870ffb71f5e160bbbdcf52",
         hexOf(e.hash, &buf),
@@ -382,7 +382,7 @@ pub fn testCheckAndSetReferenceNil(s: anytype) !void {
     );
     const e = try s.storer.reference(ReferenceName.init("refs/foo"));
     defer releaseRef(s, e);
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try testing.expectEqualStrings(
         "bc9968d75e48de59f0870ffb71f5e160bbbdcf52",
         hexOf(e.hash, &buf),
@@ -403,7 +403,7 @@ pub fn testCheckAndSetReferenceError(s: anytype) !void {
     );
     const e = try s.storer.reference(ReferenceName.init("refs/foo"));
     defer releaseRef(s, e);
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try testing.expectEqualStrings(
         "c3f4688a08fd86f1bf8e055724c84b7a40a09733",
         hexOf(e.hash, &buf),
@@ -430,7 +430,7 @@ pub fn testRemoveReferenceNonExistent(s: anytype) !void {
     try callMaybeError(s.storer.removeReference(ReferenceName.init("refs/nonexistent")));
     const e = try s.storer.reference(ReferenceName.init("refs/foo"));
     defer releaseRef(s, e);
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try testing.expectEqualStrings(
         "bc9968d75e48de59f0870ffb71f5e160bbbdcf52",
         hexOf(e.hash, &buf),
@@ -452,7 +452,7 @@ pub fn testIterReferences(s: anytype) !void {
     var i = try s.storer.iterReferences();
     defer i.deinit();
     const e = try i.next();
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try testing.expectEqualStrings(
         "bc9968d75e48de59f0870ffb71f5e160bbbdcf52",
         hexOf(e.hash, &buf),

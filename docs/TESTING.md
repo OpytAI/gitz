@@ -178,6 +178,32 @@ root repository Init/Open (memory + PlainInit/PlainOpen on `fs.Mem`), object/ref
 facades, Log, CreateTag, and configScoped. No full Worktree engine, PlainClone,
 or Remote fetch/push (phases 11–12).
 
+### SHA-256 object format (runtime dual)
+
+gitz supports **both** SHA-1 and SHA-256 object formats in one binary (go-git uses
+compile tags). Process-wide format lives in `//src/plumbing/hash`:
+
+| API | Role |
+|-----|------|
+| `setObjectFormat(.sha1 \| .sha256)` | Activate format for digests / `Hash` wire length |
+| `objectFormat()` / `digestSize()` / `hexSize()` | Query active format |
+| `supportsObjectFormat` | Always true for both algorithms in gitz |
+| `Size` / `HexSize` | Default-tag docs constants (20 / 40) |
+| `MaxSize` / `MaxHexSize` | Storage capacity (32 / 64) |
+
+`plumbing.Hash` stores `[MaxSize]u8` (zero-padded). Active OID length is
+`digestSize()`. `Hasher` / `computeHash` use the active format.
+
+**Wire formats that follow active OID width:** trees, loose objects, pack trailers /
+idx OID names, dircache index entry hashes + trailer, commit-graph OID chunks +
+hash version (1=SHA-1, 2=SHA-256) + trailer checksum, merkletrie composites.
+
+**PlainInit:** `object_format = "sha256"` sets `core.repositoryformatversion = 1`
+and `extensions.objectformat = sha256`, activates SHA-256, and does **not** return
+`SHA256NotSupported` (gitz dual). **PlainOpen** re-applies the format from config.
+
+**Tests that call `setObjectFormat(.sha256)` must `defer setObjectFormat(.sha1)`.**
+
 ### Packages (go-git → gitz)
 
 | go-git | gitz | Role |
@@ -200,7 +226,8 @@ High-level config is `@import("gitconfig")`.
 | Remotes (config) | `remote`, `remotes`, `createRemote`, `createRemoteFull`, `createRemoteAnonymous`, `deleteRemote` | No Fetch/List/Push |
 | Branches (config) | `branch`, `createBranch`, `deleteBranch` | Tracking config, not ref creation |
 | Tags | `tag`, `createTag`, `deleteTag` | Lightweight or annotated |
-| CreateTagOptions | `tagger`, `message`, `pgp_signature`, `validate` | No OpenPGP Entity; optional pre-formed armored block |
+| CreateTagOptions | `tagger`, `message`, `sign_key`, `pgp_signature`, `validate` | `sign_key` = decrypted `*Entity` → `ArmoredDetachSign` (RSA + Ed25519, subkey-aware); else pre-formed armored block |
+| OpenPGP | `Entity` + subkeys, `readArmoredKeyRing`, `decrypt`, `armoredDetachSign`, `encodeArmor` | S2K simple/salted/iterated; AES-128/192/256; SHA-1/256/512; signing prefers flagged subkeys |
 | Objects | `commitObject`, `blobObject`, `treeObject`, `tagObject`, `object` | Plus store iters (`commitObjects`, …) |
 | Log | `log` + `LogOptions` / `LogOrder` / `LogResult` | All orders; `all`; `file_name`; `path_filter` / `path_filter_ctx_fn`; `since`/`until` |
 | Revision | `resolveRevision` | Refs, hash, `~`/`^`, `^{/pattern}` (literal/simple) |

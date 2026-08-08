@@ -24,6 +24,16 @@ const openpgp_mod = @import("openpgp.zig");
 
 pub const Error = error_mod.Error;
 
+/// OpenPGP verify + sign (go-git / go-crypto subset used by Commit/Tag).
+pub const openpgp = openpgp_mod;
+pub const Entity = openpgp_mod.Entity;
+pub const readArmoredKeyRing = openpgp_mod.readArmoredKeyRing;
+pub const freeEntities = openpgp_mod.freeEntities;
+pub const armoredDetachSign = openpgp_mod.armoredDetachSign;
+pub const encodeArmor = openpgp_mod.encodeArmor;
+pub const checkArmoredDetachedSignature = openpgp_mod.checkArmoredDetachedSignature;
+pub const generateEd25519Entity = openpgp_mod.generateEd25519Entity;
+
 pub const Signature = signature_mod.Signature;
 pub const DateFormat = signature_mod.DateFormat;
 

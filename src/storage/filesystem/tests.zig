@@ -81,7 +81,7 @@ test "setEncodedObject empty blob round-trip" {
     const obj = try s.newEncodedObject();
     obj.setType(.blob);
     const h = try s.setEncodedObject(obj);
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(
         "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
         h.string(&buf),
@@ -412,7 +412,7 @@ test "encodedObject from planted pack after loose delete" {
     const idx_bytes = idx_aw.written();
 
     // Plant pack + idx under objects/pack/.
-    var hex_buf: [plumbing.HexSize]u8 = undefined;
+    var hex_buf: [plumbing.MaxHexSize]u8 = undefined;
     const hex = checksum.string(&hex_buf);
     {
         const path = try std.fmt.allocPrint(gpa, "objects/pack/pack-{s}.pack", .{hex});
@@ -580,7 +580,7 @@ test "packfileWriter Notify injects idx without disk reload" {
     // Remove loose + on-disk idx so lookup cannot reload from disk.
     try s.deleteLooseObject(h1);
     {
-        var hex_buf: [plumbing.HexSize]u8 = undefined;
+        var hex_buf: [plumbing.MaxHexSize]u8 = undefined;
         const hex = pack_hash.string(&hex_buf);
         const idx_path = try std.fmt.allocPrint(gpa, "objects/pack/pack-{s}.idx", .{hex});
         defer gpa.free(idx_path);
@@ -1147,7 +1147,7 @@ test "deltaObject OFS delta from packfileWriter pack" {
 
 // Minimal map store for pack encode tests.
 const TestMapStore = struct {
-    map: std.AutoHashMapUnmanaged([plumbing.Size]u8, *plumbing.MemoryObject) = .empty,
+    map: std.AutoHashMapUnmanaged(plumbing.Hash, *plumbing.MemoryObject) = .empty,
     allocator: std.mem.Allocator,
 
     fn init(allocator: std.mem.Allocator) TestMapStore {
@@ -1161,11 +1161,11 @@ const TestMapStore = struct {
     }
 
     fn put(self: *TestMapStore, obj: *plumbing.MemoryObject) !void {
-        try self.map.put(self.allocator, obj.hash().bytes, obj);
+        try self.map.put(self.allocator, obj.hash(), obj);
     }
 
     pub fn encodedObject(self: *TestMapStore, t: plumbing.ObjectType, h: plumbing.Hash) error{ObjectNotFound}!*plumbing.MemoryObject {
         _ = t;
-        return self.map.get(h.bytes) orelse error.ObjectNotFound;
+        return self.map.get(h) orelse error.ObjectNotFound;
     }
 };

@@ -4,13 +4,22 @@
 //! - Factories produce streaming digesters used by `plumbing` object hashing.
 //! - Default SHA-1 is pure-Zig collision-detecting `sha1cd` (go-git / pjbgf).
 //! - Only SHA-1 and SHA-256 may be registered (go-git restriction).
+//! - gitz supports both formats in one binary via process-wide `objectFormat`
+//!   (go-git uses compile tags for SHA-256).
 //!
 //! Inventory tokens: `new`, `registerHash`.
 
 const std = @import("std");
 const sha1cd = @import("sha1cd");
 
+/// Maximum OID length (SHA-256). All Hash values use this storage size.
+pub const MaxSize: usize = 32;
+
+/// Maximum hex-encoded OID length (SHA-256).
+pub const MaxHexSize: usize = 64;
+
 /// Digest length for the default object format (SHA-1).
+/// Kept for go-git default-tag docs and SHA-1 wire formats.
 pub const Size: usize = 20;
 
 /// Hex length for the default object format (SHA-1).
@@ -31,6 +40,36 @@ pub const Algorithm = enum {
 
 /// Default algorithm for object IDs (go-git without `sha256` build tag).
 pub const CryptoType: Algorithm = .sha1;
+
+/// Process-wide active object format (gitz dual extension; go-git uses build tags).
+/// Tests that change this must restore `.sha1` in `defer`.
+var active_algo: Algorithm = .sha1;
+
+/// Set the process-wide object format (SHA-1 or SHA-256).
+pub fn setObjectFormat(algo: Algorithm) void {
+    active_algo = algo;
+}
+
+/// Current process-wide object format.
+pub fn objectFormat() Algorithm {
+    return active_algo;
+}
+
+/// Digest size of the active object format (20 or 32).
+pub fn digestSize() usize {
+    return active_algo.digestSize();
+}
+
+/// Hex size of the active object format (40 or 64).
+pub fn hexSize() usize {
+    return digestSize() * 2;
+}
+
+/// Whether this binary can use `algo` as an object format.
+/// gitz always supports both (dual runtime); go-git is compile-tag gated.
+pub fn supportsObjectFormat(algo: Algorithm) bool {
+    return algo == .sha1 or algo == .sha256;
+}
 
 pub const RegisterError = error{
     /// go-git rejects a nil factory.
@@ -118,10 +157,17 @@ pub fn new(algo: Algorithm) Hasher {
 // Tests
 // ---------------------------------------------------------------------------
 
-test "Size and HexSize are SHA-1" {
+test "Size and HexSize are SHA-1 defaults; MaxSize is SHA-256" {
     try std.testing.expectEqual(@as(usize, 20), Size);
     try std.testing.expectEqual(@as(usize, 40), HexSize);
+    try std.testing.expectEqual(@as(usize, 32), MaxSize);
+    try std.testing.expectEqual(@as(usize, 64), MaxHexSize);
     try std.testing.expect(CryptoType == .sha1);
+    try std.testing.expect(objectFormat() == .sha1);
+    try std.testing.expectEqual(@as(usize, 20), digestSize());
+    try std.testing.expectEqual(@as(usize, 40), hexSize());
+    try std.testing.expect(supportsObjectFormat(.sha1));
+    try std.testing.expect(supportsObjectFormat(.sha256));
 }
 
 test "registerHash rejects nil factory" {
@@ -162,6 +208,50 @@ test "new SHA-1 git empty blob header" {
         0x4b, 0x8b, 0x29, 0xae, 0x77, 0x5a, 0xd8, 0xc2,
         0xe4, 0x8c, 0x53, 0x91,
     }, &out);
+}
+
+test "new SHA-256 empty and hello digests" {
+    defer resetRegistry();
+    var h = new(.sha256);
+    var empty: [MaxSize]u8 = undefined;
+    h.final(empty[0..]);
+    try std.testing.expectEqualSlices(u8, &[_]u8{
+        0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14,
+        0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f, 0xb9, 0x24,
+        0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c,
+        0xa4, 0x95, 0x99, 0x1b, 0x78, 0x52, 0xb8, 0x55,
+    }, empty[0..32]);
+
+    h = new(.sha256);
+    h.update("hello");
+    var hello: [MaxSize]u8 = undefined;
+    h.final(hello[0..]);
+    try std.testing.expectEqualSlices(u8, &[_]u8{
+        0x2c, 0xf2, 0x4d, 0xba, 0x5f, 0xb0, 0xa3, 0x0e,
+        0x26, 0xe8, 0x3b, 0x2a, 0xc5, 0xb9, 0xe2, 0x9e,
+        0x1b, 0x16, 0x1e, 0x5c, 0x1f, 0xa7, 0x42, 0x5e,
+        0x73, 0x04, 0x33, 0x62, 0x93, 0x8b, 0x98, 0x24,
+    }, hello[0..32]);
+}
+
+test "setObjectFormat SHA-256 git empty blob header" {
+    defer setObjectFormat(.sha1);
+    defer resetRegistry();
+    setObjectFormat(.sha256);
+    try std.testing.expectEqual(@as(usize, 32), digestSize());
+    try std.testing.expectEqual(@as(usize, 64), hexSize());
+
+    var h = new(objectFormat());
+    h.update("blob 0\x00");
+    var out: [MaxSize]u8 = undefined;
+    h.final(out[0..]);
+    // SHA-256 of "blob 0\0" (git empty-blob object bytes).
+    try std.testing.expectEqualSlices(u8, &[_]u8{
+        0x47, 0x3a, 0x0f, 0x4c, 0x3b, 0xe8, 0xa9, 0x36,
+        0x81, 0xa2, 0x67, 0xe3, 0xb1, 0xe9, 0xa7, 0xdc,
+        0xda, 0x11, 0x85, 0x43, 0x6f, 0xe1, 0x41, 0xf7,
+        0x74, 0x91, 0x20, 0xa3, 0x03, 0x72, 0x18, 0x13,
+    }, out[0..32]);
 }
 
 test "reset reuses hasher" {

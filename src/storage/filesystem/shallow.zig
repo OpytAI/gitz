@@ -45,7 +45,7 @@ pub fn ShallowStorage(comptime Fs: type) type {
             defer f.close() catch {};
 
             for (commits) |h| {
-                var hex: [plumbing.HexSize]u8 = undefined;
+                var hex: [plumbing.MaxHexSize]u8 = undefined;
                 const s = h.string(&hex);
                 _ = try f.write(s);
                 _ = try f.write("\n");

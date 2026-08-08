@@ -31,6 +31,7 @@ const Writer = std.Io.Writer;
 const Hash = plumbing.Hash;
 const ZeroHash = plumbing.ZeroHash;
 const HexSize = plumbing.HexSize;
+const MaxHexSize = plumbing.MaxHexSize;
 const ObjectType = plumbing.ObjectType;
 const MemoryObject = plumbing.MemoryObject;
 const Signature = signature_mod.Signature;
@@ -214,7 +215,7 @@ pub const Tag = struct {
         defer aw.deinit();
         const w = &aw.writer;
 
-        var hex: [HexSize]u8 = undefined;
+        var hex: [MaxHexSize]u8 = undefined;
         try w.print("object {s}\n", .{self.target.string(&hex)});
         try w.print("type {s}\n", .{self.target_type.bytes()});
         try w.print("tag {s}\n", .{self.name});
@@ -594,7 +595,7 @@ test "Tag encode/decode round-trip" {
     try std.testing.expectEqualStrings("foo", tag.name);
     try std.testing.expectEqualStrings("Message\n\nFoo\nBar\nBaz\n\n", tag.message);
     try std.testing.expect(tag.target_type == .blob);
-    var hex: [HexSize]u8 = undefined;
+    var hex: [MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(
         "b029517f6300c2da0f4b651b8642506cd6aaf45d",
         tag.target.string(&hex),
@@ -878,7 +879,7 @@ test "Tag decode clears existing state" {
     try std.testing.expectEqualStrings("fresh message\n", tag.message);
     try std.testing.expectEqualStrings("", tag.pgp_signature);
     try std.testing.expect(tag.target_type == .commit);
-    var hex: [HexSize]u8 = undefined;
+    var hex: [MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(
         "c029517f6300c2da0f4b651b8642506cd6aaf45e",
         tag.target.string(&hex),

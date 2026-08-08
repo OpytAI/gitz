@@ -320,10 +320,11 @@ pub const Scanner = struct {
     }
 
     fn readHash(self: *Scanner) IoReader.Error!Hash {
-        var buf: [plumbing.Size]u8 = undefined;
-        try self.io().readSliceAll(&buf);
+        const n = plumbing.digestSize();
+        var buf: [plumbing.MaxSize]u8 = undefined;
+        try self.io().readSliceAll(buf[0..n]);
         if (self.mem != null) self.catchUpHashes();
-        return Hash.fromBytes(buf);
+        return Hash.fromBytes(buf[0..n]);
     }
 
     // -------------------------------------------------------------------------

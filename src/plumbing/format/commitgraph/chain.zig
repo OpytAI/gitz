@@ -59,8 +59,8 @@ test "openChainFile valid hashes" {
     const chain = try openChainFile(gpa, body);
     defer gpa.free(chain);
     try std.testing.expectEqual(@as(usize, 2), chain.len);
-    var hex0: [plumbing.HexSize]u8 = undefined;
-    var hex1: [plumbing.HexSize]u8 = undefined;
+    var hex0: [plumbing.MaxHexSize]u8 = undefined;
+    var hex1: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(
         "c336d16298a017486c4164c40f8acb28afe64e84",
         chain[0].formatHex(&hex0),

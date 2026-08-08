@@ -293,7 +293,7 @@ test "CheckAndSetReference in base" {
     );
 
     const e = try rs.reference(ReferenceName.init("foo"));
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(
         "bc9968d75e48de59f0870ffb71f5e160bbbdcf52",
         e.hash.string(&buf),
@@ -375,7 +375,7 @@ test "ReferenceStorage Commit with deletes" {
     try std.testing.expectEqual(@as(usize, 1), count);
 
     const ref = try rs.reference(ref_c.name);
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(
         "c3f4688a08fd86f1bf8e055724c84b7a40a09733",
         ref.hash.string(&buf),

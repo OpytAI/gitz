@@ -77,7 +77,7 @@ const OffsetWriter = struct {
 
     fn setup(self: *OffsetWriter, out: *IoWriter) void {
         self.out = out;
-        self.hasher = hash_pkg.new(.sha1);
+        self.hasher = hash_pkg.new(hash_pkg.objectFormat());
         self.offset_bytes = 0;
     }
 
@@ -249,7 +249,7 @@ pub const Encoder = struct {
     }
 
     fn writeRefDeltaHeader(self: *Encoder, base: Hash) IoWriter.Error!void {
-        try self.ow.writeAll(base.bytes[0..]);
+        try self.ow.writeAll(base.slice());
     }
 
     fn writeOfsDeltaHeader(self: *Encoder, o: *ObjectToPack) !void {
@@ -283,11 +283,12 @@ pub const Encoder = struct {
     }
 
     fn footer(self: *Encoder) IoWriter.Error!Hash {
-        var sum: [Size]u8 = undefined;
+        var sum: [plumbing.MaxSize]u8 = undefined;
         self.ow.hasher.final(&sum);
-        const h = Hash.fromBytes(sum);
+        const n = plumbing.digestSize();
+        const h = Hash.fromBytes(sum[0..n]);
         // Trailer is not part of the checksum (hasher already finalized).
-        try self.ow.writeTrailer(sum[0..]);
+        try self.ow.writeTrailer(sum[0..n]);
         return h;
     }
 };
@@ -297,7 +298,7 @@ pub const Encoder = struct {
 // ---------------------------------------------------------------------------
 
 const MapStore = struct {
-    map: std.AutoHashMapUnmanaged([Size]u8, *MemoryObject) = .empty,
+    map: std.AutoHashMapUnmanaged(Hash, *MemoryObject) = .empty,
     allocator: Allocator,
 
     fn init(allocator: Allocator) MapStore {
@@ -316,7 +317,7 @@ const MapStore = struct {
 
     fn put(self: *MapStore, obj: *MemoryObject) !Hash {
         const h = obj.hash();
-        const gop = try self.map.getOrPut(self.allocator, h.bytes);
+        const gop = try self.map.getOrPut(self.allocator, h);
         // Overwrite frees the previous store-owned object; same pointer is a no-op
         // free (matches ObjectStorage / delta_selector MapStore).
         if (gop.found_existing) {
@@ -331,7 +332,7 @@ const MapStore = struct {
 
     pub fn encodedObject(self: *MapStore, t: ObjectType, h: Hash) error{ObjectNotFound}!*MemoryObject {
         _ = t;
-        return self.map.get(h.bytes) orelse error.ObjectNotFound;
+        return self.map.get(h) orelse error.ObjectNotFound;
     }
 };
 
@@ -415,7 +416,7 @@ test "encoder_test.TestCorrectPackHeader" {
     try expected.appendSlice(allocator, &u32buf);
     std.mem.writeInt(u32, &u32buf, 0, .big);
     try expected.appendSlice(allocator, &u32buf);
-    try expected.appendSlice(allocator, h.bytes[0..]);
+    try expected.appendSlice(allocator, h.slice());
 
     try std.testing.expectEqualSlices(u8, expected.items, aw.written());
 }
@@ -444,7 +445,7 @@ test "encoder_test.TestCorrectPackWithOneEmptyObject" {
     try std.testing.expectEqual(@as(u32, 1), std.mem.readInt(u32, written[8..12], .big));
     try std.testing.expectEqual(@as(u8, 16), written[12]); // commit, size 0
 
-    try std.testing.expectEqualSlices(u8, h.bytes[0..], written[written.len - Size ..]);
+    try std.testing.expectEqualSlices(u8, h.slice(), written[written.len - Size ..]);
 
     // Exact go-git empty zlib when this compressor matches:
     // 120, 156, 1, 0, 0, 255, 255, 0, 0, 0, 1
@@ -472,7 +473,7 @@ test "encoder_test.TestMaxObjectSize" {
     o.setSize(9223372036854775807);
     // Content empty while declared size is max i64 (go-git). Key by hash().
     const oh = o.hash();
-    try store.map.put(allocator, oh.bytes, o);
+    try store.map.put(allocator, oh, o);
 
     var aw: IoWriter.Allocating = .init(allocator);
     defer aw.deinit();
@@ -530,7 +531,7 @@ fn simpleDeltaTest(use_ref_deltas: bool) !void {
 
     const pack = aw.written();
     try std.testing.expect(pack.len > 12 + Size);
-    try std.testing.expectEqualSlices(u8, enc_hash.bytes[0..], pack[pack.len - Size ..][0..Size]);
+    try std.testing.expectEqualSlices(u8, enc_hash.slice(), pack[pack.len - Size ..][0..Size]);
 
     // go-git packfileFromReader: Parser + idxfile.Writer → MemoryIndex → Packfile.
     var idx_writer = idxfile.Writer.init(allocator);
@@ -603,7 +604,7 @@ fn deltaOverDeltaTest(use_ref_deltas: bool) !void {
     });
 
     const pack = aw.written();
-    try std.testing.expectEqualSlices(u8, enc_hash.bytes[0..], pack[pack.len - Size ..][0..Size]);
+    try std.testing.expectEqualSlices(u8, enc_hash.slice(), pack[pack.len - Size ..][0..Size]);
 
     // go-git packfileFromReader: Parser + idxfile.Writer → MemoryIndex → Packfile.
     var idx_writer = idxfile.Writer.init(allocator);
@@ -701,7 +702,7 @@ fn deltaOverDeltaCyclicTest(use_ref_deltas: bool) !void {
     });
 
     const pack = aw.written();
-    try std.testing.expectEqualSlices(u8, enc_hash.bytes[0..], pack[pack.len - Size ..][0..Size]);
+    try std.testing.expectEqualSlices(u8, enc_hash.slice(), pack[pack.len - Size ..][0..Size]);
 
     // go-git packfileFromReader: Parser + idxfile.Writer → MemoryIndex → Packfile.
     var idx_writer = idxfile.Writer.init(allocator);

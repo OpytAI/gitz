@@ -11,7 +11,10 @@ const err_mod = @import("error.zig");
 
 pub const Error = err_mod.Error;
 pub const Hash = plumbing.Hash;
-pub const hash_size: usize = plumbing.Size;
+/// OID wire size for commit-graph chunks (active object format: 20 or 32).
+pub fn hashSize() usize {
+    return plumbing.digestSize();
+}
 
 // ---------------------------------------------------------------------------
 // Wire constants (go-git file.go)

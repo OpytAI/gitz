@@ -13,6 +13,7 @@ _SRCS = [
 
 _DEPS = [
     "//src/plumbing",
+    "//src/plumbing/hash",
     "//src/plumbing/object",
     "//src/plumbing/storer",
     "//src/plumbing/revlist",
@@ -23,6 +24,7 @@ _DEPS = [
     "//src/config",
     "//src/internal/revision",
     "//src/fs",
+    "//src/utils/sync",
 ]
 
 zig_library(

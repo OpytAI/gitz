@@ -36,7 +36,11 @@ pub const DecodeVersionSupported = struct {
     pub const max: u32 = 4;
 };
 
-const entry_header_length: usize = 62;
+/// Fixed entry header before path: 10×u32 + OID + flags (go-git `entryHeaderLength`).
+/// OID width follows the active object format (20 SHA-1 / 32 SHA-256).
+fn entryHeaderLength() usize {
+    return 40 + plumbing.digestSize() + 2;
+}
 const entry_extended: u16 = 0x4000;
 const name_mask: u16 = 0xfff;
 const intent_to_add_mask: u16 = 1 << 13;
@@ -54,7 +58,7 @@ pub const Decoder = struct {
     pub fn init(reader: *Reader) Decoder {
         return .{
             .reader = reader,
-            .hasher = hash_pkg.new(.sha1),
+            .hasher = hash_pkg.new(hash_pkg.objectFormat()),
             .last_entry_name = "",
         };
     }
@@ -106,12 +110,13 @@ pub const Decoder = struct {
         e.gid = try self.readHashedUint32();
         e.size = try self.readHashedUint32();
 
-        var hash_bytes: [plumbing.Size]u8 = undefined;
-        try self.readHashed(&hash_bytes);
-        e.hash = Hash.fromBytes(hash_bytes);
+        var hash_bytes: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
+        const oid_len = plumbing.digestSize();
+        try self.readHashed(hash_bytes[0..oid_len]);
+        e.hash = Hash.fromBytes(hash_bytes[0..oid_len]);
 
         const flags = try self.readHashedUint16();
-        var read: usize = entry_header_length;
+        var read: usize = entryHeaderLength();
 
         if (sec != 0 or nsec != 0) {
             e.created_at = Time.unix(@intCast(sec), @intCast(nsec));
@@ -208,8 +213,8 @@ pub const Decoder = struct {
     fn readExtensions(self: *Decoder, idx: *Index) DecodeError!void {
         // Peek for extension header (4) + length (4) + trailing hash.
         // If fewer bytes remain, only the checksum is left.
-        const peek_len = 4 + 4 + hash_pkg.Size;
-        var expected: [hash_pkg.Size]u8 = undefined;
+        const peek_len = 4 + 4 + plumbing.digestSize();
+        var expected: Hash = .{};
 
         while (true) {
             expected = hashSum(&self.hasher);
@@ -266,11 +271,12 @@ pub const Decoder = struct {
         }
     }
 
-    fn readChecksum(self: *Decoder, expected: [hash_pkg.Size]u8) DecodeError!void {
-        var h: [plumbing.Size]u8 = undefined;
+    fn readChecksum(self: *Decoder, expected: Hash) DecodeError!void {
+        var h: [plumbing.MaxSize]u8 = undefined;
+        const n = plumbing.digestSize();
         // Trailing checksum is not part of the hashed content for comparison.
-        try self.reader.readSliceAll(&h);
-        if (!std.mem.eql(u8, &h, &expected)) {
+        try self.reader.readSliceAll(h[0..n]);
+        if (!std.mem.eql(u8, h[0..n], expected.slice())) {
             return Error.InvalidChecksum;
         }
     }
@@ -351,11 +357,12 @@ fn mapReaderError(e: Reader.Error) DecodeError {
 }
 
 /// Clone hasher and finalise (go-git `hash.Sum` does not consume the stream hash).
-fn hashSum(hasher: *const hash_pkg.Hasher) [hash_pkg.Size]u8 {
+fn hashSum(hasher: *const hash_pkg.Hasher) Hash {
     var tmp = hasher.*;
-    var out: [hash_pkg.Size]u8 = undefined;
-    tmp.final(&out);
-    return out;
+    var out: [hash_pkg.MaxSize]u8 = .{0} ** hash_pkg.MaxSize;
+    const n = tmp.digestSize();
+    tmp.final(out[0..n]);
+    return Hash.fromBytes(out[0..n]);
 }
 
 // ---------------------------------------------------------------------------
@@ -392,14 +399,15 @@ fn readTreeEntry(r: *Reader, allocator: Allocator) DecodeError!?TreeEntry {
         return null;
     }
 
-    var hash_bytes: [plumbing.Size]u8 = undefined;
-    r.readSliceAll(&hash_bytes) catch |e| return mapReaderError(e);
+    var hash_bytes: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
+    const oid_len = plumbing.digestSize();
+    r.readSliceAll(hash_bytes[0..oid_len]) catch |e| return mapReaderError(e);
 
     return TreeEntry{
         .path = path,
         .entries = entry_count,
         .trees = subtrees,
-        .hash = Hash.fromBytes(hash_bytes),
+        .hash = Hash.fromBytes(hash_bytes[0..oid_len]),
     };
 }
 
@@ -435,10 +443,11 @@ fn readResolveUndoEntry(r: *Reader, allocator: Allocator) DecodeError!ResolveUnd
     }
 
     // Hashes written in stage order 1→2→3 for present stages only.
+    const oid_len = plumbing.digestSize();
     for (present[0..present_n]) |st| {
-        var hash_bytes: [plumbing.Size]u8 = undefined;
-        r.readSliceAll(&hash_bytes) catch |err| return mapReaderError(err);
-        e.setStage(st, Hash.fromBytes(hash_bytes));
+        var hash_bytes: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
+        r.readSliceAll(hash_bytes[0..oid_len]) catch |err| return mapReaderError(err);
+        e.setStage(st, Hash.fromBytes(hash_bytes[0..oid_len]));
     }
 
     return e;
@@ -446,11 +455,12 @@ fn readResolveUndoEntry(r: *Reader, allocator: Allocator) DecodeError!ResolveUnd
 
 fn decodeEndOfIndexEntry(r: *Reader) DecodeError!EndOfIndexEntry {
     const offset = r.takeInt(u32, .big) catch |e| return mapReaderError(e);
-    var hash_bytes: [plumbing.Size]u8 = undefined;
-    r.readSliceAll(&hash_bytes) catch |e| return mapReaderError(e);
+    var hash_bytes: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
+    const oid_len = plumbing.digestSize();
+    r.readSliceAll(hash_bytes[0..oid_len]) catch |e| return mapReaderError(e);
     return .{
         .offset = offset,
-        .hash = Hash.fromBytes(hash_bytes),
+        .hash = Hash.fromBytes(hash_bytes[0..oid_len]),
     };
 }
 
@@ -469,13 +479,14 @@ fn readUntilPlain(r: *Reader, allocator: Allocator, delim: u8) DecodeError![]u8 
 // Tests — major cases from go-git decoder_test.go (embedded fixtures)
 // ===========================================================================
 
-/// Build a V2/V3/V4 index footer: SHA-1 of `content`.
-fn sha1Footer(content: []const u8) [hash_pkg.Size]u8 {
-    var h = hash_pkg.new(.sha1);
+/// Build an index trailer: digest of `content` with the active object format.
+fn indexFooter(content: []const u8) Hash {
+    var h = hash_pkg.new(hash_pkg.objectFormat());
     h.update(content);
-    var out: [hash_pkg.Size]u8 = undefined;
-    h.final(&out);
-    return out;
+    var out: [hash_pkg.MaxSize]u8 = .{0} ** hash_pkg.MaxSize;
+    const n = h.digestSize();
+    h.final(out[0..n]);
+    return Hash.fromBytes(out[0..n]);
 }
 
 fn appendBe32(list: *std.ArrayList(u8), allocator: Allocator, v: u32) !void {
@@ -514,7 +525,7 @@ fn appendV2Entry(
     try appendBe32(list, allocator, 0); // uid
     try appendBe32(list, allocator, 0); // gid
     try appendBe32(list, allocator, size);
-    try list.appendSlice(allocator, hash.bytes[0..]);
+    try list.appendSlice(allocator, hash.slice());
 
     var flags: u16 = @as(u16, @intCast(stage & 0x3)) << 12;
     if (name.len < name_mask) {
@@ -526,7 +537,7 @@ fn appendV2Entry(
     try list.appendSlice(allocator, name);
 
     // Pad to multiple of 8 (encoder: padLen = 8 - wrote%8).
-    const wrote = entry_header_length + name.len;
+    const wrote = entryHeaderLength() + name.len;
     const pad = 8 - wrote % 8;
     try list.appendNTimes(allocator, 0, pad);
 }
@@ -551,7 +562,7 @@ fn appendV3EntryExtended(
     try appendBe32(list, allocator, 0);
     try appendBe32(list, allocator, 0);
     try appendBe32(list, allocator, size);
-    try list.appendSlice(allocator, hash.bytes[0..]);
+    try list.appendSlice(allocator, hash.slice());
 
     var flags: u16 = entry_extended;
     if (name.len < name_mask) {
@@ -567,7 +578,7 @@ fn appendV3EntryExtended(
     try appendBe16(list, allocator, ext);
     try list.appendSlice(allocator, name);
 
-    const wrote = entry_header_length + 2 + name.len;
+    const wrote = entryHeaderLength() + 2 + name.len;
     const pad = 8 - wrote % 8;
     try list.appendNTimes(allocator, 0, pad);
 }
@@ -592,7 +603,7 @@ fn appendV4Entry(
     try appendBe32(list, allocator, 0);
     try appendBe32(list, allocator, 0);
     try appendBe32(list, allocator, size);
-    try list.appendSlice(allocator, hash.bytes[0..]);
+    try list.appendSlice(allocator, hash.slice());
 
     var flags: u16 = 0;
     if (intent_to_add) flags |= entry_extended;
@@ -624,8 +635,8 @@ fn appendV4Entry(
 }
 
 fn finishIndex(list: *std.ArrayList(u8), allocator: Allocator) !void {
-    const sum = sha1Footer(list.items);
-    try list.appendSlice(allocator, &sum);
+    const sum = indexFooter(list.items);
+    try list.appendSlice(allocator, sum.slice());
 }
 
 fn decodeBytes(allocator: Allocator, raw: []const u8) !Index {
@@ -709,13 +720,13 @@ test "IndexSuite.TestDecodeCacheTree" {
     try tree_body.append(allocator, 0);
     try tree_body.appendSlice(allocator, "9 1\n");
     const root_hash = plumbing.newHash("a8d315b2b1c615d43042c3a62402b8a54288cf5c");
-    try tree_body.appendSlice(allocator, root_hash.bytes[0..]);
+    try tree_body.appendSlice(allocator, root_hash.slice());
     // path="go" entry_count=1 trees=0
     try tree_body.appendSlice(allocator, "go");
     try tree_body.append(allocator, 0);
     try tree_body.appendSlice(allocator, "1 0\n");
     const go_hash = plumbing.newHash("a39771a7651f97faf5c72e08224d857fc35133db");
-    try tree_body.appendSlice(allocator, go_hash.bytes[0..]);
+    try tree_body.appendSlice(allocator, go_hash.slice());
 
     try buf.appendSlice(allocator, &index.tree_ext_signature);
     try appendBe32(&buf, allocator, @intCast(tree_body.items.len));
@@ -745,12 +756,14 @@ test "TestTreeExtensionInvalidatedEntry" {
     var body: std.ArrayList(u8) = .empty;
     defer body.deinit(allocator);
 
+    const oid_len = plumbing.digestSize();
+
     // Entry 1 valid root
     try body.append(allocator, 0);
     try body.appendSlice(allocator, "5 2\n");
-    var root_hash: [20]u8 = .{0} ** 20;
+    var root_hash: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
     root_hash[0] = 0xaa;
-    try body.appendSlice(allocator, &root_hash);
+    try body.appendSlice(allocator, root_hash[0..oid_len]);
 
     // Entry 2 invalidated
     try body.appendSlice(allocator, "stale");
@@ -761,9 +774,9 @@ test "TestTreeExtensionInvalidatedEntry" {
     try body.appendSlice(allocator, "good");
     try body.append(allocator, 0);
     try body.appendSlice(allocator, "2 0\n");
-    var good_hash: [20]u8 = .{0} ** 20;
+    var good_hash: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
     good_hash[0] = 0xbb;
-    try body.appendSlice(allocator, &good_hash);
+    try body.appendSlice(allocator, good_hash[0..oid_len]);
 
     var r = Reader.fixed(body.items);
     var tree: Tree = .{};
@@ -774,10 +787,10 @@ test "TestTreeExtensionInvalidatedEntry" {
     try std.testing.expectEqualStrings("", tree.entries.items[0].path);
     try std.testing.expectEqual(@as(i32, 5), tree.entries.items[0].entries);
     try std.testing.expectEqual(@as(i32, 2), tree.entries.items[0].trees);
-    try std.testing.expectEqualSlices(u8, &root_hash, tree.entries.items[0].hash.bytes[0..]);
+    try std.testing.expectEqualSlices(u8, root_hash[0..oid_len], tree.entries.items[0].hash.slice());
     try std.testing.expectEqualStrings("good", tree.entries.items[1].path);
     try std.testing.expectEqual(@as(i32, 2), tree.entries.items[1].entries);
-    try std.testing.expectEqualSlices(u8, &good_hash, tree.entries.items[1].hash.bytes[0..]);
+    try std.testing.expectEqualSlices(u8, good_hash[0..oid_len], tree.entries.items[1].hash.slice());
 }
 
 // ---- TestDecodeMergeConflict ----
@@ -870,9 +883,9 @@ test "IndexSuite.TestDecodeResolveUndo" {
     const ha = plumbing.newHash("1111111111111111111111111111111111111111");
     const hb = plumbing.newHash("2222222222222222222222222222222222222222");
     const hc = plumbing.newHash("3333333333333333333333333333333333333333");
-    try reuc.appendSlice(allocator, ha.bytes[0..]);
-    try reuc.appendSlice(allocator, hb.bytes[0..]);
-    try reuc.appendSlice(allocator, hc.bytes[0..]);
+    try reuc.appendSlice(allocator, ha.slice());
+    try reuc.appendSlice(allocator, hb.slice());
+    try reuc.appendSlice(allocator, hc.slice());
 
     // path haskal/haskal.hs — stages 2 and 3 only
     try reuc.appendSlice(allocator, "haskal/haskal.hs");
@@ -883,8 +896,8 @@ test "IndexSuite.TestDecodeResolveUndo" {
     try reuc.append(allocator, 0);
     try reuc.appendSlice(allocator, "100644");
     try reuc.append(allocator, 0);
-    try reuc.appendSlice(allocator, hb.bytes[0..]);
-    try reuc.appendSlice(allocator, hc.bytes[0..]);
+    try reuc.appendSlice(allocator, hb.slice());
+    try reuc.appendSlice(allocator, hc.slice());
 
     try buf.appendSlice(allocator, &index.resolve_undo_ext_signature);
     try appendBe32(&buf, allocator, @intCast(reuc.items.len));
@@ -960,7 +973,7 @@ test "IndexSuite.TestDecodeEndOfIndexEntry" {
     defer eoie_body.deinit(allocator);
     try appendBe32(&eoie_body, allocator, 716);
     const eh = plumbing.newHash("922e89d9ffd7cefce93a211615b2053c0f42bd78");
-    try eoie_body.appendSlice(allocator, eh.bytes[0..]);
+    try eoie_body.appendSlice(allocator, eh.slice());
 
     try buf.appendSlice(allocator, &index.end_of_index_entry_ext_signature);
     try appendBe32(&buf, allocator, @intCast(eoie_body.items.len));
@@ -1131,7 +1144,7 @@ test "TestDecodeV4StripLength" {
         try appendV4Entry(&buf, allocator, "abd", "abc", plumbing.ZeroHash, 2, false);
 
         // Locate strip varint offsets (same layout as go-git test).
-        const hash_size = hash_pkg.Size;
+        const hash_size = plumbing.digestSize();
         const entry_fixed = 40 + hash_size + 2;
         const entry1_strip = 12 + entry_fixed;
         const entry1_len = entry_fixed + 1 + 4; // varint(0) + "abc\0"
@@ -1235,7 +1248,7 @@ test "TestDecodeNameLength0xFFFPatchedFlags" {
     try appendV2Entry(&buf, allocator, "hello", plumbing.ZeroHash, 42, 0, 1, 0, 1, 0, 0o100644);
 
     // Flags at: 12 + 40 + hashSize
-    const flags_off = 12 + 40 + hash_pkg.Size;
+    const flags_off = 12 + 40 + plumbing.digestSize();
     const orig_lo = buf.items[flags_off + 1];
     try std.testing.expectEqual(@as(u8, 5), orig_lo); // len("hello")
 
@@ -1394,12 +1407,13 @@ test "round-trip 0xFFF patched flags via encoder" {
     var raw = try allocator.dupe(u8, w.buffered());
     defer allocator.free(raw);
 
-    const flags_off = 12 + 40 + hash_pkg.Size;
+    const oid_len = plumbing.digestSize();
+    const flags_off = 12 + 40 + oid_len;
     raw[flags_off] = (raw[flags_off] & 0xF0) | 0x0F;
     raw[flags_off + 1] = 0xFF;
 
-    const sum = sha1Footer(raw[0 .. raw.len - hash_pkg.Size]);
-    @memcpy(raw[raw.len - hash_pkg.Size ..], &sum);
+    const sum = indexFooter(raw[0 .. raw.len - oid_len]);
+    @memcpy(raw[raw.len - oid_len ..], sum.slice());
 
     var out = try decodeBytes(allocator, raw);
     defer out.deinit();
@@ -1445,6 +1459,54 @@ test "round-trip mandatory extension fails" {
     var out = Index.init(allocator);
     defer out.deinit();
     try std.testing.expectError(Error.UnknownExtension, dec.decode(&out));
+}
+
+test "SHA-256 index encode decode round-trip one entry" {
+    // Dual object-format: 32-byte OIDs and trailer under setObjectFormat(.sha256).
+    defer plumbing.setObjectFormat(.sha1);
+    plumbing.setObjectFormat(.sha256);
+
+    const allocator = std.testing.allocator;
+    var idx = Index.init(allocator);
+    defer idx.deinit();
+    idx.version = 2;
+
+    var oid: [plumbing.MaxSize]u8 = undefined;
+    for (&oid, 0..) |*b, i| b.* = @intCast(i);
+    const h = Hash.fromBytes(oid[0..32]);
+
+    const name = try allocator.dupe(u8, "sha256-blob");
+    try idx.entries.append(allocator, .{
+        .name = name,
+        .size = 7,
+        .mode = 0o100644,
+        .hash = h,
+        .created_at = Time.unix(1, 0),
+        .modified_at = Time.unix(2, 0),
+    });
+
+    var storage: [1024]u8 = undefined;
+    var w: std.Io.Writer = .fixed(&storage);
+    var enc = encoder_mod.Encoder.init(&w);
+    try enc.encode(&idx);
+
+    const out_raw = w.buffered();
+    const n = plumbing.digestSize();
+    try std.testing.expectEqual(@as(usize, 32), n);
+    // Trailer is 32 bytes; body hashes to it with SHA-256.
+    try std.testing.expect(out_raw.len >= 12 + n);
+    var chk = hash_pkg.new(hash_pkg.objectFormat());
+    chk.update(out_raw[0 .. out_raw.len - n]);
+    var sum: [plumbing.MaxSize]u8 = undefined;
+    chk.final(sum[0..n]);
+    try std.testing.expectEqualSlices(u8, sum[0..n], out_raw[out_raw.len - n ..]);
+
+    var decoded = try decodeBytes(allocator, out_raw);
+    defer decoded.deinit();
+    try std.testing.expectEqual(@as(usize, 1), decoded.entries.items.len);
+    try std.testing.expectEqualStrings("sha256-blob", decoded.entries.items[0].name);
+    try std.testing.expect(decoded.entries.items[0].hash.eql(h));
+    try std.testing.expectEqual(@as(usize, 32), decoded.entries.items[0].hash.slice().len);
 }
 
 // ---- TestDecodeAllIndexFixtures (local fixtures; no go-git-fixtures network) ----

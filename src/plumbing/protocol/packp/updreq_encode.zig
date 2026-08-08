@@ -17,6 +17,7 @@ const Hash = plumbing.Hash;
 const ZeroHash = plumbing.ZeroHash;
 const ReferenceName = plumbing.ReferenceName;
 const HexSize = plumbing.HexSize;
+const MaxHexSize = plumbing.MaxHexSize;
 const Command = updreq.Command;
 const Option = updreq.Option;
 const ReferenceUpdateRequest = updreq.ReferenceUpdateRequest;
@@ -41,9 +42,9 @@ pub fn encode(req: *ReferenceUpdateRequest, w: *Writer) updreq.EncodeError!void 
 
 fn encodeShallow(e: *pktline.Encoder, h: ?Hash) (pktline.Error || Writer.Error)!void {
     const hash = h orelse return;
-    var hex: [HexSize]u8 = undefined;
-    _ = hash.string(&hex);
-    try e.encodef("{s}{s}", .{ common.shallow, hex[0..] });
+    var hex_buf: [MaxHexSize]u8 = undefined;
+    const hex = hash.string(&hex_buf);
+    try e.encodef("{s}{s}", .{ common.shallow, hex });
 }
 
 fn encodeCommands(
@@ -55,23 +56,23 @@ fn encodeCommands(
     const caps_str = try cap_list.string(allocator);
     defer allocator.free(caps_str);
 
-    var old_hex: [HexSize]u8 = undefined;
-    var new_hex: [HexSize]u8 = undefined;
-    _ = cmds[0].old.string(&old_hex);
-    _ = cmds[0].new.string(&new_hex);
+    var old_hex_buf: [MaxHexSize]u8 = undefined;
+    var new_hex_buf: [MaxHexSize]u8 = undefined;
+    const old0 = cmds[0].old.string(&old_hex_buf);
+    const new0 = cmds[0].new.string(&new_hex_buf);
     try e.encodef("{s} {s} {s}\x00{s}", .{
-        old_hex[0..],
-        new_hex[0..],
+        old0,
+        new0,
         cmds[0].name.string(),
         caps_str,
     });
 
     for (cmds[1..]) |cmd| {
-        _ = cmd.old.string(&old_hex);
-        _ = cmd.new.string(&new_hex);
+        const old_h = cmd.old.string(&old_hex_buf);
+        const new_h = cmd.new.string(&new_hex_buf);
         try e.encodef("{s} {s} {s}", .{
-            old_hex[0..],
-            new_hex[0..],
+            old_h,
+            new_h,
             cmd.name.string(),
         });
     }

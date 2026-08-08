@@ -81,9 +81,9 @@ test "TestDecode basic idx count contains offset crc checksums" {
     try std.testing.expectEqual(basic_probe_offset, try idx.findOffset(hash));
     try std.testing.expectEqual(basic_probe_crc32, try idx.findCRC32(hash));
 
-    var idx_hex: [plumbing.HexSize]u8 = undefined;
+    var idx_hex: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(basic_idx_checksum_hex, idx.idx_checksum.string(&idx_hex));
-    var pack_hex: [plumbing.HexSize]u8 = undefined;
+    var pack_hex: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(basic_packfile_checksum_hex, idx.packfile_checksum.string(&pack_hex));
 }
 
@@ -111,7 +111,7 @@ test "decode 64-bit offsets fixture" {
     var n: usize = 0;
     while (try iter.next()) |e| {
         var found = false;
-        var buf: [plumbing.HexSize]u8 = undefined;
+        var buf: [plumbing.MaxHexSize]u8 = undefined;
         const hs = e.hash.string(&buf);
         for (expected) |ex| {
             if (std.mem.eql(u8, hs, ex.hex)) {

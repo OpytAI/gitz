@@ -192,7 +192,7 @@ test "ReferenceStorage set get remove not found" {
         "c3f4688a08fd86f1bf8e055724c84b7a40a09733",
     ));
     const got = try store.reference(plumbing.ReferenceName.init("refs/heads/main"));
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(
         "c3f4688a08fd86f1bf8e055724c84b7a40a09733",
         got.hash.string(&buf),
@@ -230,7 +230,7 @@ test "ReferenceStorage checkAndSet success failure and nil old" {
         ),
     );
     const still = try store.reference(plumbing.ReferenceName.init("refs/foo"));
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(
         "bc9968d75e48de59f0870ffb71f5e160bbbdcf52",
         still.hash.string(&buf),

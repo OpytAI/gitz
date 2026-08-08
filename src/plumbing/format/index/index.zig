@@ -117,7 +117,7 @@ pub const Entry = struct {
     /// Debug string equivalent to `git ls-files --stage --debug` for one entry
     /// (go-git `Entry.String`). Caller frees the returned slice.
     pub fn string(self: *const Entry, allocator: Allocator) Allocator.Error![]u8 {
-        var hash_hex: [plumbing.HexSize]u8 = undefined;
+        var hash_hex: [plumbing.MaxHexSize]u8 = undefined;
         const hash_s = self.hash.string(&hash_hex);
 
         // go-git Entry.String: "%06o %s %d\t%s\n" + ctime/mtime/dev/uid/size lines.

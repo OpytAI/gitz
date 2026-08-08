@@ -20,6 +20,7 @@ const Mode = fs_mod.Mode;
 
 const Hash = plumbing.Hash;
 const HexSize = plumbing.HexSize;
+const MaxHexSize = plumbing.MaxHexSize;
 const Reference = plumbing.Reference;
 const ReferenceName = plumbing.ReferenceName;
 
@@ -276,7 +277,7 @@ pub fn DotGit(comptime Fs: type) type {
         }
 
         fn objectPackPath(self: *Self, h: Hash, extension: []const u8) Allocator.Error![]u8 {
-            var hex_buf: [HexSize]u8 = undefined;
+            var hex_buf: [MaxHexSize]u8 = undefined;
             const hex = h.string(&hex_buf);
             const name = try std.fmt.allocPrint(self.allocator(), "pack-{s}.{s}", .{ hex, extension });
             defer self.allocator().free(name);
@@ -293,7 +294,7 @@ pub fn DotGit(comptime Fs: type) type {
 
         /// Path of a loose object (go-git `objectPath`). Caller frees.
         pub fn objectPath(self: *Self, h: Hash) Allocator.Error![]u8 {
-            var hex_buf: [HexSize]u8 = undefined;
+            var hex_buf: [MaxHexSize]u8 = undefined;
             const hex = h.string(&hex_buf);
             return try self.fs.joinPath(&.{ objects_path, hex[0..2], hex[2..] });
         }
@@ -301,7 +302,7 @@ pub fn DotGit(comptime Fs: type) type {
         /// Path under the receive-pack quarantine / incoming dir (go-git `incomingObjectPath`).
         /// Caller frees. When no incoming dir is recorded, matches `objectPath`.
         fn incomingObjectPath(self: *Self, h: Hash) Allocator.Error![]u8 {
-            var hex_buf: [HexSize]u8 = undefined;
+            var hex_buf: [MaxHexSize]u8 = undefined;
             const hex = h.string(&hex_buf);
             if (self.incoming_dir_name) |dir| {
                 if (dir.len > 0) {
@@ -472,11 +473,12 @@ pub fn DotGit(comptime Fs: type) type {
                 const objs = self.fs.readDir(sub) catch continue;
                 defer self.fs.freeReadDir(objs);
                 for (objs) |o| {
-                    if (e.name.len + o.name.len != HexSize) continue;
-                    var hex_buf: [HexSize]u8 = undefined;
+                    const total = e.name.len + o.name.len;
+                    if (total != HexSize and total != MaxHexSize) continue;
+                    var hex_buf: [MaxHexSize]u8 = undefined;
                     @memcpy(hex_buf[0..2], e.name);
-                    @memcpy(hex_buf[2..], o.name);
-                    const h = plumbing.newHash(&hex_buf);
+                    @memcpy(hex_buf[2..total], o.name);
+                    const h = plumbing.newHash(hex_buf[0..total]);
                     if (h.isZero()) continue;
                     try list.append(self.allocator(), h);
                 }
@@ -1191,7 +1193,7 @@ fn formatRefContent(allocator: Allocator, r: Reference) Allocator.Error![]u8 {
     switch (r.type) {
         .symbolic => return try std.fmt.allocPrint(allocator, "ref: {s}\n", .{r.target.string()}),
         .hash => {
-            var hex_buf: [HexSize]u8 = undefined;
+            var hex_buf: [MaxHexSize]u8 = undefined;
             const hex = r.hash.string(&hex_buf);
             return try std.fmt.allocPrint(allocator, "{s}\n", .{hex});
         },
@@ -1203,7 +1205,7 @@ fn formatRefLineAlloc(allocator: Allocator, r: Reference) Allocator.Error![]u8 {
     // go-git Reference.String: "<target> <name>"
     switch (r.type) {
         .hash => {
-            var hex_buf: [HexSize]u8 = undefined;
+            var hex_buf: [MaxHexSize]u8 = undefined;
             const hex = r.hash.string(&hex_buf);
             return try std.fmt.allocPrint(allocator, "{s} {s}", .{ hex, r.name.string() });
         },

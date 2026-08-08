@@ -149,16 +149,16 @@ pub const UnifiedEncoder = struct {
             }
 
             if (f.mode != t.mode and !hash_equals) {
-                var fh: [plumbing.HexSize]u8 = undefined;
-                var th: [plumbing.HexSize]u8 = undefined;
+                var fh: [plumbing.MaxHexSize]u8 = undefined;
+                var th: [plumbing.MaxHexSize]u8 = undefined;
                 try lines.append(self.allocator, try std.fmt.allocPrint(
                     self.allocator,
                     "index {s}..{s}",
                     .{ f.hash.string(&fh), t.hash.string(&th) },
                 ));
             } else if (!hash_equals) {
-                var fh: [plumbing.HexSize]u8 = undefined;
-                var th: [plumbing.HexSize]u8 = undefined;
+                var fh: [plumbing.MaxHexSize]u8 = undefined;
+                var th: [plumbing.MaxHexSize]u8 = undefined;
                 try lines.append(self.allocator, try std.fmt.allocPrint(
                     self.allocator,
                     "index {s}..{s} {o}",
@@ -182,8 +182,8 @@ pub const UnifiedEncoder = struct {
             }
         } else if (from == null) {
             const t = to.?;
-            var th: [plumbing.HexSize]u8 = undefined;
-            var zh: [plumbing.HexSize]u8 = undefined;
+            var th: [plumbing.MaxHexSize]u8 = undefined;
+            var zh: [plumbing.MaxHexSize]u8 = undefined;
             try lines.append(self.allocator, try std.fmt.allocPrint(
                 self.allocator,
                 "diff --git {s}{s} {s}{s}",
@@ -210,8 +210,8 @@ pub const UnifiedEncoder = struct {
             try self.appendPathLines(&lines, s, d, is_binary);
         } else {
             const f = from.?;
-            var fh: [plumbing.HexSize]u8 = undefined;
-            var zh: [plumbing.HexSize]u8 = undefined;
+            var fh: [plumbing.MaxHexSize]u8 = undefined;
+            var zh: [plumbing.MaxHexSize]u8 = undefined;
             try lines.append(self.allocator, try std.fmt.allocPrint(
                 self.allocator,
                 "diff --git {s}{s} {s}{s}",

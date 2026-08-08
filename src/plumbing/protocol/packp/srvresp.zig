@@ -15,6 +15,7 @@ const common = @import("common.zig");
 
 const Hash = plumbing.Hash;
 const HexSize = plumbing.HexSize;
+const MaxHexSize = plumbing.MaxHexSize;
 
 const ack_line_len: usize = 44;
 
@@ -122,7 +123,7 @@ pub const ServerResponse = struct {
             return enc.encodef("{s}\n", .{common.nak});
         }
 
-        var hex: [HexSize]u8 = undefined;
+        var hex: [MaxHexSize]u8 = undefined;
         return enc.encodef("{s} {s}\n", .{ common.ack, self.acks.items[0].string(&hex) });
     }
 };

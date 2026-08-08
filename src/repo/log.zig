@@ -13,6 +13,7 @@ const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
 const ZeroHash = plumbing.ZeroHash;
 const HexSize = plumbing.HexSize;
+const MaxHexSize = plumbing.MaxHexSize;
 const Reference = plumbing.Reference;
 const ReferenceName = plumbing.ReferenceName;
 
@@ -390,7 +391,7 @@ fn storeTree(s: *memory.Storage, allocator: Allocator, blob: Hash, name: []const
     try buf.appendSlice(allocator, "100644 ");
     try buf.appendSlice(allocator, name);
     try buf.append(allocator, 0);
-    try buf.appendSlice(allocator, blob.bytes[0..]);
+    try buf.appendSlice(allocator, blob.slice());
     const obj = try s.newEncodedObject();
     obj.setType(.tree);
     _ = try obj.write(buf.items);
@@ -417,12 +418,12 @@ fn storeCommitWhen(
 ) !Hash {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
-    var tree_hex: [HexSize]u8 = undefined;
+    var tree_hex: [MaxHexSize]u8 = undefined;
     try buf.appendSlice(allocator, "tree ");
     try buf.appendSlice(allocator, tree.string(&tree_hex));
     try buf.append(allocator, '\n');
     for (parents) |p| {
-        var ph: [HexSize]u8 = undefined;
+        var ph: [MaxHexSize]u8 = undefined;
         try buf.appendSlice(allocator, "parent ");
         try buf.appendSlice(allocator, p.string(&ph));
         try buf.append(allocator, '\n');
@@ -492,10 +493,10 @@ fn buildPathFixture(s: *memory.Storage, gpa: Allocator) !PathFixture {
     defer final_buf.deinit(gpa);
     try final_buf.appendSlice(gpa, "100644 other.txt");
     try final_buf.append(gpa, 0);
-    try final_buf.appendSlice(gpa, blob_b.bytes[0..]);
+    try final_buf.appendSlice(gpa, blob_b.slice());
     try final_buf.appendSlice(gpa, "100644 tracked.txt");
     try final_buf.append(gpa, 0);
-    try final_buf.appendSlice(gpa, blob_a2.bytes[0..]);
+    try final_buf.appendSlice(gpa, blob_a2.slice());
     const t_final_obj = try s.newEncodedObject();
     t_final_obj.setType(.tree);
     _ = try t_final_obj.write(final_buf.items);

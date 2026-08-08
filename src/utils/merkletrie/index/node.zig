@@ -38,8 +38,8 @@ pub const Node = struct {
     children_list: std.ArrayList(*Node) = .empty,
     is_dir: bool = false,
     skip_worktree: bool = false,
-    /// Memoized 24-byte hash (oid + mode LE).
-    hash_buf: [24]u8 = .{0} ** 24,
+    /// Memoized OID + mode LE composite (MaxSize+4 capacity; active length is digestSize()+4).
+    hash_buf: [plumbing.MaxSize + 4]u8 = .{0} ** (plumbing.MaxSize + 4),
     hash_ready: bool = false,
     allocator: Allocator,
 
@@ -60,13 +60,14 @@ pub const Node = struct {
                 @memset(&self.hash_buf, 0);
             } else {
                 const e = self.entry.?;
-                @memcpy(self.hash_buf[0..plumbing.Size], e.hash.bytes[0..]);
+                const n = plumbing.digestSize();
+                @memcpy(self.hash_buf[0..n], e.hash.slice());
                 const mb = filemode.bytes(e.mode);
-                @memcpy(self.hash_buf[plumbing.Size..][0..4], &mb);
+                @memcpy(self.hash_buf[n..][0..4], &mb);
             }
             self.hash_ready = true;
         }
-        return self.hash_buf[0..];
+        return self.hash_buf[0 .. plumbing.digestSize() + 4];
     }
 
     pub fn name(self: *Node) []const u8 {
@@ -200,13 +201,16 @@ fn pathBase(p: []const u8) []const u8 {
 
 const merkletrie = @import("merkletrie");
 
-const empty_hash = [_]u8{0} ** 24;
+fn isEmptyComposite(h: []const u8) bool {
+    const want = plumbing.digestSize() + 4;
+    return h.len == want and std.mem.allEqual(u8, h, 0);
+}
 
 fn isEquals(a: Noder, b: Noder) bool {
     const ah = a.hash();
     const bh = b.hash();
-    if (ah.len == 24 and std.mem.eql(u8, ah, &empty_hash)) return false;
-    if (bh.len == 24 and std.mem.eql(u8, bh, &empty_hash)) return false;
+    if (isEmptyComposite(ah)) return false;
+    if (isEmptyComposite(bh)) return false;
     return std.mem.eql(u8, ah, bh);
 }
 

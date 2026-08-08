@@ -213,7 +213,7 @@ pub const Reference = struct {
         switch (self.type) {
             .hash => {
                 if (target_buf.len < hash_mod.HexSize) return error.NoSpaceLeft;
-                var hex_buf: [hash_mod.HexSize]u8 = undefined;
+                var hex_buf: [hash_mod.MaxHexSize]u8 = undefined;
                 const hex = self.hash.formatHex(&hex_buf);
                 @memcpy(target_buf[0..hex.len], hex);
                 return .{ name_s, target_buf[0..hex.len] };

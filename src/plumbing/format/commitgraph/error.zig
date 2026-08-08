@@ -7,7 +7,7 @@
 pub const Error = error{
     /// go-git `ErrUnsupportedVersion` — file version is not 1.
     UnsupportedVersion,
-    /// go-git `ErrUnsupportedHash` — hash algorithm is not SHA-1 (version 1).
+    /// go-git `ErrUnsupportedHash` — hash version does not match active object format.
     UnsupportedHash,
     /// go-git `ErrMalformedCommitGraphFile` — corrupt signature/chunks/payload.
     MalformedCommitGraphFile,

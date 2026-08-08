@@ -27,7 +27,7 @@ pub fn encode(req: *UploadRequest, w: *Writer) !void {
 
     // first want (+ optional capabilities)
     {
-        var hex: [plumbing.HexSize]u8 = undefined;
+        var hex: [plumbing.MaxHexSize]u8 = undefined;
         const h = req.wants.items[0].string(&hex);
         if (req.capabilities.isEmpty()) {
             try pe.encodef("want {s}\n", .{h});
@@ -43,7 +43,7 @@ pub fn encode(req: *UploadRequest, w: *Writer) !void {
         var last = req.wants.items[0];
         for (req.wants.items[1..]) |want| {
             if (last.eql(want)) continue;
-            var hex: [plumbing.HexSize]u8 = undefined;
+            var hex: [plumbing.MaxHexSize]u8 = undefined;
             const h = want.string(&hex);
             try pe.encodef("want {s}\n", .{h});
             last = want;
@@ -57,7 +57,7 @@ pub fn encode(req: *UploadRequest, w: *Writer) !void {
         var have_last = false;
         for (req.shallows.items) |s| {
             if (have_last and last.eql(s)) continue;
-            var hex: [plumbing.HexSize]u8 = undefined;
+            var hex: [plumbing.MaxHexSize]u8 = undefined;
             const h = s.string(&hex);
             try pe.encodef("shallow {s}\n", .{h});
             last = s;

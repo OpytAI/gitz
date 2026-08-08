@@ -18,12 +18,17 @@ pub const Error = error_mod.Error;
 pub const Hash = hash_mod.Hash;
 pub const Size = hash_mod.Size;
 pub const HexSize = hash_mod.HexSize;
+pub const MaxSize = hash_mod.MaxSize;
+pub const MaxHexSize = hash_mod.MaxHexSize;
 pub const ZeroHash = hash_mod.ZeroHash;
 pub const Hasher = hash_mod.Hasher;
 pub const parseHash = hash_mod.parseHash;
 pub const newHash = hash_mod.newHash;
 pub const isHash = hash_mod.isHash;
 pub const computeHash = hash_mod.computeHash;
+pub const digestSize = hash_mod.digestSize;
+pub const setObjectFormat = hash_mod.setObjectFormat;
+pub const objectFormat = hash_mod.objectFormat;
 
 // --- ObjectType ---
 pub const ObjectType = object_mod.ObjectType;
@@ -61,7 +66,7 @@ test "Hash zero and parse/string" {
 
     const h = try parseHash(hex);
     try std.testing.expect(!h.isZero());
-    var buf: [HexSize]u8 = undefined;
+    var buf: [MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(hex, h.string(&buf));
 
     const h2 = newHash(hex);
@@ -106,7 +111,7 @@ test "ObjectType string parse valid delta" {
 test "computeHash empty blob" {
     // echo -n 'blob 0\0' | sha1sum → e69de29bb2d1d6434b8b29ae775ad8c2e48c5391
     const h = computeHash(.blob, &[_]u8{});
-    var buf: [HexSize]u8 = undefined;
+    var buf: [MaxHexSize]u8 = undefined;
     try std.testing.expectEqualStrings(
         "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
         h.string(&buf),

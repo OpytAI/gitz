@@ -90,7 +90,7 @@ pub const AdvRefs = struct {
     fn addRefs(self: *const AdvRefs, s: *memory.ReferenceStorage) !void {
         var it = self.references.iterator();
         while (it.next()) |e| {
-            var hex_buf: [plumbing.HexSize]u8 = undefined;
+            var hex_buf: [plumbing.MaxHexSize]u8 = undefined;
             const hex = e.value_ptr.string(&hex_buf);
             const ref = Reference.fromStrings(e.key_ptr.*, hex);
             try s.setReference(ref);
@@ -269,7 +269,7 @@ test "advrefs.TestAddReferenceHash" {
 
     try testing.expectEqual(@as(usize, 1), a.references.count());
     const got = a.references.get("foo").?;
-    var buf: [plumbing.HexSize]u8 = undefined;
+    var buf: [plumbing.MaxHexSize]u8 = undefined;
     try testing.expectEqualStrings("5dc01c595e6c6ec9ccda4f6f69c131c0dd945f8c", got.string(&buf));
 }
 
