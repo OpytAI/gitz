@@ -17,11 +17,33 @@ const ReferenceName = plumbing.ReferenceName;
 const Hash = plumbing.Hash;
 const Remote = remote_mod.Remote;
 
-/// go-git `CreateTagOptions` (unsigned annotated tags; no OpenPGP).
+/// go-git `CreateTagOptions`.
+///
+/// OpenPGP `SignKey *openpgp.Entity` is not ported (no full Entity sign). Use
+/// `pgp_signature` to attach a pre-formed armored block the way go-git stores
+/// `Tag.PGPSignature` after signing.
 pub const CreateTagOptions = struct {
-    /// Required for annotated tags.
+    /// Who creates the tag (go-git `Tagger`). Require non-empty name or email;
+    /// go-git may load Author/User via ConfigScoped when Tagger is nil — not done
+    /// here (`memory.Config` has no identity fields).
     tagger: objpkg.Signature = .{},
+    /// Annotation body (go-git `Message`). Required; canonicalized on create
+    /// (`TrimSpace` + trailing `\n`, same as go-git `Validate`).
     message: []const u8 = "",
+    /// Optional trailing armored signature block (go-git signed-tag path without Entity).
+    /// When set, copied to `Tag.pgp_signature` as go-git stores after SignKey sign.
+    pgp_signature: ?[]const u8 = null,
+
+    /// go-git `CreateTagOptions.Validate`.
+    ///
+    /// Requires non-empty tagger name or email, and a non-empty message.
+    /// `store` and `hash` are accepted for API parity (go-git uses `r` for config load).
+    pub fn validate(self: *const CreateTagOptions, store: *memory.Storage, hash: Hash) !void {
+        _ = store;
+        _ = hash;
+        if (self.tagger.name.len == 0 and self.tagger.email.len == 0) return error.MissingTagger;
+        if (self.message.len == 0) return error.MissingMessage;
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -170,7 +192,7 @@ pub fn tag(store: *memory.Storage, name: []const u8) !Reference {
     };
 }
 
-/// go-git `Repository.CreateTag` — lightweight when `opts == null`; annotated otherwise (no PGP).
+/// go-git `Repository.CreateTag` — lightweight when `opts == null`; annotated otherwise.
 pub fn createTag(
     store: *memory.Storage,
     name: []const u8,
@@ -189,7 +211,7 @@ pub fn createTag(
     }
 
     const target: Hash = if (opts) |o| blk: {
-        if (o.tagger.name.len == 0 and o.tagger.email.len == 0) return error.MissingTagger;
+        try o.validate(store, hash);
         break :blk try createAnnotatedTagObject(store, name, hash, o);
     } else hash;
 
@@ -210,13 +232,16 @@ fn createAnnotatedTagObject(
     var tag_obj = objpkg.Tag.init(gpa);
     defer tag_obj.deinit();
     tag_obj.name = try gpa.dupe(u8, name);
-    tag_obj.message = try gpa.dupe(u8, opts.message);
+    tag_obj.message = try canonicalizeTagMessage(gpa, opts.message);
     tag_obj.tagger = .{
         .name = try gpa.dupe(u8, opts.tagger.name),
         .email = try gpa.dupe(u8, opts.tagger.email),
         .when = opts.tagger.when,
         .tz_offset_minutes = opts.tagger.tz_offset_minutes,
     };
+    if (opts.pgp_signature) |sig| {
+        tag_obj.pgp_signature = try gpa.dupe(u8, sig);
+    }
     tag_obj.target_type = enc.object_type;
     tag_obj.target = hash;
     tag_obj.storage = storer_pkg.ObjectGetter.from(memory.Storage, store);
@@ -224,6 +249,15 @@ fn createAnnotatedTagObject(
     const out = try store.newEncodedObject();
     try tag_obj.encode(out);
     return try store.setEncodedObject(out);
+}
+
+/// go-git `CreateTagOptions.Validate` message canonicalize: `TrimSpace(msg) + "\n"`.
+fn canonicalizeTagMessage(allocator: Allocator, message: []const u8) Allocator.Error![]u8 {
+    const trimmed = std.mem.trim(u8, message, &std.ascii.whitespace);
+    const out = try allocator.alloc(u8, trimmed.len + 1);
+    @memcpy(out[0..trimmed.len], trimmed);
+    out[trimmed.len] = '\n';
+    return out;
 }
 
 /// go-git `Repository.DeleteTag`.
@@ -305,6 +339,89 @@ test "createTag lightweight and deleteTag" {
 
     try deleteTag(store, "v1");
     try std.testing.expectError(error.TagNotFound, tag(store, "v1"));
+}
+
+test "createTag annotated message and tagger" {
+    const gpa = std.testing.allocator;
+    const store = try bareStore(gpa);
+    defer {
+        store.deinit();
+        gpa.destroy(store);
+    }
+
+    const blob = try store.newEncodedObject();
+    blob.setType(.blob);
+    _ = try blob.write("payload");
+    const h = try store.setEncodedObject(blob);
+
+    try std.testing.expectError(error.MissingMessage, createTag(store, "bad-msg", h, .{
+        .tagger = .{ .name = "A", .email = "a@b.c", .when = 1 },
+        .message = "",
+    }));
+    try std.testing.expectError(error.MissingTagger, createTag(store, "bad-tagger", h, .{
+        .message = "x",
+    }));
+
+    const ref = try createTag(store, "v1.0", h, .{
+        .tagger = .{
+            .name = "Tagger",
+            .email = "tagger@example.com",
+            .when = 1_500_000_000,
+            .tz_offset_minutes = 0,
+        },
+        .message = "  release notes  ",
+    });
+    try std.testing.expect(!ref.hash.eql(h));
+
+    var tag_obj = try objpkg.getTag(gpa, store, ref.hash);
+    defer tag_obj.deinit();
+    try std.testing.expectEqualStrings("v1.0", tag_obj.name);
+    try std.testing.expectEqualStrings("release notes\n", tag_obj.message);
+    try std.testing.expectEqualStrings("Tagger", tag_obj.tagger.name);
+    try std.testing.expectEqualStrings("tagger@example.com", tag_obj.tagger.email);
+    try std.testing.expect(tag_obj.target.eql(h));
+    try std.testing.expect(tag_obj.target_type == .blob);
+    try std.testing.expectEqualStrings("", tag_obj.pgp_signature);
+}
+
+test "createTag annotated pgp_signature round-trip via tagObject" {
+    const gpa = std.testing.allocator;
+    const store = try bareStore(gpa);
+    defer {
+        store.deinit();
+        gpa.destroy(store);
+    }
+
+    const blob = try store.newEncodedObject();
+    blob.setType(.blob);
+    _ = try blob.write("signed-payload");
+    const h = try store.setEncodedObject(blob);
+
+    const sig =
+        \\-----BEGIN PGP SIGNATURE-----
+        \\
+        \\iQIzBAABCAAdFiEE...
+        \\-----END PGP SIGNATURE-----
+        \\
+    ;
+
+    const ref = try createTag(store, "signed", h, .{
+        .tagger = .{
+            .name = "Signer",
+            .email = "s@example.com",
+            .when = 42,
+        },
+        .message = "signed tag",
+        .pgp_signature = sig,
+    });
+
+    // Round-trip through the same path as `Repository.tagObject` / `facade.tagObject`.
+    var tag_obj = try objpkg.getTag(gpa, store, ref.hash);
+    defer tag_obj.deinit();
+    try std.testing.expectEqualStrings("signed", tag_obj.name);
+    try std.testing.expectEqualStrings("signed tag\n", tag_obj.message);
+    try std.testing.expectEqualStrings(sig, tag_obj.pgp_signature);
+    try std.testing.expect(tag_obj.target.eql(h));
 }
 
 test "createRemoteAnonymous not stored" {

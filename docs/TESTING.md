@@ -174,7 +174,8 @@ Merge-complete on `develop` also requires `current_phase: 9` in
 
 **Gate:** `//check:phase_10`  
 **Purpose:** go-git `config` package (typed remotes/branches/URLs/modules) and
-root repository Init/Open plus thin object/ref facades. No full Worktree engine
+root repository Init/Open (memory + PlainInit/PlainOpen on `fs.Mem`), object/ref
+facades, Log, CreateTag, and configScoped. No full Worktree engine, PlainClone,
 or Remote fetch/push (phases 11–12).
 
 ### Packages (go-git → gitz)
@@ -182,10 +183,27 @@ or Remote fetch/push (phases 11–12).
 | go-git | gitz | Role |
 |--------|------|------|
 | `config` | `src/config` (`import_name = gitconfig`) | Typed Config, RemoteConfig, Branch, RefSpec, URL, Modules, OptBool |
-| root repository (partial) | `src/repo` | Init/Open over `*memory.Storage`, config/refs, object getters, thin Log, ResolveRevision |
+| root repository (partial) | `src/repo` | Full phase-10 repository surface (see below) |
 
 `//src/plumbing/format/config` remains `@import("config")` (format codec).  
 High-level config is `@import("gitconfig")`.
+
+### Repository surface (`src/repo`)
+
+| Area | API | Notes |
+|------|-----|--------|
+| Lifecycle (memory) | `newRepository`, `init`, `initWithOptions`, `open` | `*memory.Storage`; bare when worktree is null |
+| Lifecycle (plain) | `plainInit`, `plainInitWithOptions`, `plainOpen`, `plainOpenWithOptions` | `fs.Mem` + filesystem storage; owns `PlainRepository` |
+| Config | `config`, `setConfig`, `configScoped` | Storer `memory.Config`; scoped merge via `gitconfig.loadConfig` |
+| Refs | `head`, `reference`, `references`, `branches`, `tags`, `notes` | Filtered ref iters |
+| Worktree probe | `isBare`, `setIsBare`, `worktreeFs` | Optional `?*fs.Mem` only (no Worktree engine) |
+| Remotes (config) | `remote`, `remotes`, `createRemote`, `createRemoteFull`, `createRemoteAnonymous`, `deleteRemote` | No Fetch/List/Push |
+| Branches (config) | `branch`, `createBranch`, `deleteBranch` | Tracking config, not ref creation |
+| Tags | `tag`, `createTag`, `deleteTag` | Lightweight or annotated |
+| CreateTagOptions | `tagger`, `message`, `pgp_signature`, `validate` | No OpenPGP Entity; optional pre-formed armored block |
+| Objects | `commitObject`, `blobObject`, `treeObject`, `tagObject`, `object` | Plus store iters (`commitObjects`, …) |
+| Log | `log` + `LogOptions` / `LogOrder` / `LogResult` | All orders; `all`; `file_name`; `path_filter` / `path_filter_ctx_fn`; `since`/`until` |
+| Revision | `resolveRevision` | Refs, hash, `~`/`^`, `^{/pattern}` (literal/simple) |
 
 ### Class A goldens (phase 10)
 

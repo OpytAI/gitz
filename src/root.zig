@@ -163,6 +163,12 @@ test "phase10 config and repository facade surface" {
     _ = repo.LogOrder;
     _ = repo.Remote;
     _ = repo.CreateTagOptions;
+    _ = repo.CreateTagOptions.validate;
+    _ = repo.plainInit;
+    _ = repo.plainOpen;
+    _ = repo.PlainInitOptions;
+    _ = repo.PlainOpenOptions;
+    _ = repo.configScopedFromLocal;
     _ = repo.Repository.commitObject;
     _ = repo.Repository.blobObject;
     _ = repo.Repository.treeObject;
@@ -176,5 +182,6 @@ test "phase10 config and repository facade surface" {
     _ = repo.Repository.createRemote;
     _ = repo.Repository.createBranch;
     _ = repo.Repository.createTag;
+    _ = repo.Repository.configScoped;
     _ = repo.Repository.worktreeFs;
 }

@@ -1,5 +1,11 @@
 # API inventory: repo (phase 10) — go-git root repository partial
 # packages.yaml go key is git/repository (zig: src/repo).
+#
+# Present: Init/Open (memory), PlainInit/PlainOpen (fs.Mem), configScoped,
+# Log (+ PathFilter fields), CreateTagOptions (tagger/message/pgp_signature),
+# CRUD remotes/branches/tags, object facades, ResolveRevision.
+# Deferred: PlainClone; full Worktree engine (phase 12); Remote Fetch/List/Push
+# (phase 11); EnableDotGitCommonDir (stub flag).
 package: git/repository
 phase: 10
 require:
@@ -12,17 +18,29 @@ require:
     - Remote
     - CreateTagOptions
     - AnonymousRemote
+    - PlainInitOptions
+    - PlainOpenOptions
+    - PlainRepository
   functions:
     - newRepository
     - init
     - initWithOptions
     - open
+    - configScoped
+    - configScopedFromLocal
+    - createTag
+    - log
+    - plainInit
+    - plainInitWithOptions
+    - plainOpen
+    - plainOpenWithOptions
   constants:
     - git_dir_name
   semantic:
     - Repository
     - Repository.config
     - Repository.setConfig
+    - Repository.configScoped
     - Repository.head
     - Repository.reference
     - Repository.references
@@ -62,20 +80,54 @@ require:
     - git_dir_name
     - Remote
     - CreateTagOptions
+    - CreateTagOptions.tagger
+    - CreateTagOptions.message
+    - CreateTagOptions.pgp_signature
+    - CreateTagOptions.validate
+    - LogOptions.from
+    - LogOptions.order
+    - LogOptions.all
+    - LogOptions.file_name
+    - LogOptions.path_filter
+    - LogOptions.path_filter_ctx
+    - LogOptions.path_filter_ctx_fn
+    - LogOptions.since
+    - LogOptions.until
+    - configScoped
+    - configScopedFromLocal
+    - MissingTagger
+    - MissingMessage
+    - PlainInitOptions
+    - PlainOpenOptions
+    - PlainRepository
+    - plainInit
+    - plainInitWithOptions
+    - plainOpen
+    - plainOpenWithOptions
 zig_map:
   Repository: Repository
   InitOptions: InitOptions
   LogOptions: LogOptions
   LogOrder: LogOrder
+  LogResult: LogResult
   Init: init
   InitWithOptions: initWithOptions
   Open: open
   NewRepository: newRepository
   GitDirName: git_dir_name
   Remote: Remote
+  CreateTagOptions: CreateTagOptions
   CreateTag: createTag
   DeleteTag: deleteTag
   CreateRemote: createRemote
   DeleteRemote: deleteRemote
   CreateBranch: createBranch
   DeleteBranch: deleteBranch
+  ConfigScoped: configScoped
+  Log: log
+  PlainInit: plainInit
+  PlainInitWithOptions: plainInitWithOptions
+  PlainOpen: plainOpen
+  PlainOpenWithOptions: plainOpenWithOptions
+  PlainInitOptions: PlainInitOptions
+  PlainOpenOptions: PlainOpenOptions

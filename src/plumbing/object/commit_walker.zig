@@ -16,11 +16,13 @@
 //! | `Commit.allocator` | allocator for parent loads |
 //! | `getCommit(allocator, s, hash)` | `!*Commit` |
 //!
-//! Production walkers load parents via `getCommit` / `CommitLoader`.
-//! Yielded `*Commit`s are caller-owned. Unyielded parent loads and commits
-//! skipped by filters follow go-git GC (not freed by the walker); use an
-//! arena for long filtered walks. `newCommitAllIterFromHashes` owns tips +
-//! loader context.
+//! Production walkers load parents via `getCommit` / `CommitLoader` using the
+//! tip's `ObjectGetter` (no live `*Commit` held as loader context).
+//! Yielded `*Commit`s are caller-owned. Limit/path filters free skipped
+//! heap-owned commits (`Commit.heap_owned`); stack/map test commits are left
+//! alone. Unyielded parents still on walker stacks/queues are not freed by
+//! the walker close path (same as go-git GC for open walks).
+//! `newCommitAllIterFromHashes` owns tips + loader context.
 //!
 //! # go-git map
 //!
@@ -76,12 +78,21 @@ fn hashSetPut(set: *HashSet, allocator: Allocator, h: Hash) Allocator.Error!void
 // ---------------------------------------------------------------------------
 
 /// Loads a commit by hash (go-git `GetCommit` / storer path).
+///
+/// Two modes:
+/// - **getter**: `get_fn == null` — uses `allocator` + `getter` by value (no `*Commit`).
+/// - **custom**: `get_fn` set — unit tests / map-backed loaders via `ptr`.
 pub const CommitLoader = struct {
-    ptr: *anyopaque,
-    get_fn: *const fn (ptr: *anyopaque, h: Hash) anyerror!*Commit,
+    ptr: *anyopaque = undefined,
+    get_fn: ?*const fn (ptr: *anyopaque, h: Hash) anyerror!*Commit = null,
+    /// Used when `get_fn` is null (production storer path).
+    allocator: Allocator = undefined,
+    getter: ?ObjectGetter = null,
 
     pub fn get(self: CommitLoader, h: Hash) anyerror!*Commit {
-        return self.get_fn(self.ptr, h);
+        if (self.get_fn) |f| return f(self.ptr, h);
+        const g = self.getter orelse return error.ObjectNotFound;
+        return getCommitFromGetter(self.allocator, g, h);
     }
 };
 
@@ -95,24 +106,37 @@ fn getCommitFromGetter(allocator: Allocator, getter: ObjectGetter, h: Hash) !*Co
         allocator.destroy(c);
     }
     c.* = Commit.init(allocator);
+    c.heap_owned = true;
     c.storer = getter;
     try c.decode(o);
     return c;
 }
 
-/// Default loader: `GetCommit` through `c.storer` (go-git `GetCommit(c.s, h)`).
-pub fn loaderFromCommit(c: *Commit) CommitLoader {
-    const Gen = struct {
-        fn get(ptr: *anyopaque, h: Hash) anyerror!*Commit {
-            const base: *Commit = @ptrCast(@alignCast(ptr));
-            const getter = base.storer orelse return error.ObjectNotFound;
-            return getCommitFromGetter(base.allocator, getter, h);
-        }
-    };
+/// Parent loader from storer only — stores `ObjectGetter` by value; no live `*Commit`.
+pub fn loaderFromGetter(allocator: Allocator, getter: ObjectGetter) CommitLoader {
     return .{
-        .ptr = c,
-        .get_fn = Gen.get,
+        .allocator = allocator,
+        .getter = getter,
     };
+}
+
+/// Extracts `c.storer` + `c.allocator` into a getter-backed loader.
+/// Does **not** retain `c` (safe to free the tip while the loader is still used).
+pub fn loaderFromCommit(c: *Commit) CommitLoader {
+    if (c.storer) |g| return loaderFromGetter(c.allocator, g);
+    return .{
+        .allocator = c.allocator,
+        .getter = null,
+    };
+}
+
+/// Free a commit loaded via `getCommit` / `getCommitFromGetter` when filters skip it.
+/// No-op for stack/map test commits (`heap_owned == false`).
+fn freeOwnedCommit(c: *Commit) void {
+    if (!c.heap_owned) return;
+    const a = c.allocator;
+    c.deinit();
+    a.destroy(c);
 }
 
 fn loadCommit(loader: CommitLoader, h: Hash) anyerror!*Commit {
@@ -343,13 +367,18 @@ pub const PreorderIter = struct {
 ///
 /// `allocator` is required in Zig (go-git uses GC for maps/stack).
 /// `seen_external` may be null. `ignore` hashes are pre-marked seen.
+/// Parents load via `c.storer` (getter by value — tip may be freed while walking).
 pub fn newCommitPreorderIter(
     allocator: Allocator,
     c: *Commit,
     seen_external: ?*const HashSet,
     ignore: []const Hash,
 ) Allocator.Error!PreorderIter {
-    return newCommitPreorderIterWithLoader(allocator, c, loaderFromCommit(c), seen_external, ignore);
+    const loader = if (c.storer) |g|
+        loaderFromGetter(allocator, g)
+    else
+        loaderFromCommit(c);
+    return newCommitPreorderIterWithLoader(allocator, c, loader, seen_external, ignore);
 }
 
 /// Like `newCommitPreorderIter` with an explicit parent loader (unit tests).
@@ -438,12 +467,17 @@ pub const PostorderIter = struct {
 };
 
 /// go-git `NewCommitPostorderIter`.
+/// Parents load via `c.storer` (getter by value — tip may be freed while walking).
 pub fn newCommitPostorderIter(
     allocator: Allocator,
     c: *Commit,
     ignore: []const Hash,
 ) Allocator.Error!PostorderIter {
-    return newCommitPostorderIterWithLoader(allocator, c, loaderFromCommit(c), ignore);
+    const loader = if (c.storer) |g|
+        loaderFromGetter(allocator, g)
+    else
+        loaderFromCommit(c);
+    return newCommitPostorderIterWithLoader(allocator, c, loader, ignore);
 }
 
 /// Like `newCommitPostorderIter` with an explicit parent loader (unit tests).
@@ -539,13 +573,18 @@ pub const BfsIter = struct {
 };
 
 /// go-git `NewCommitIterBSF`.
+/// Parents load via `c.storer` (getter by value — tip may be freed while walking).
 pub fn newCommitIterBsf(
     allocator: Allocator,
     c: *Commit,
     seen_external: ?*const HashSet,
     ignore: []const Hash,
 ) Allocator.Error!BfsIter {
-    return newCommitIterBsfWithLoader(allocator, c, loaderFromCommit(c), seen_external, ignore);
+    const loader = if (c.storer) |g|
+        loaderFromGetter(allocator, g)
+    else
+        loaderFromCommit(c);
+    return newCommitIterBsfWithLoader(allocator, c, loader, seen_external, ignore);
 }
 
 /// Like `newCommitIterBsf` with an explicit parent loader (unit tests).
@@ -718,16 +757,21 @@ pub const FilterCommitIter = struct {
 /// go-git `NewFilterCommitIter`.
 ///
 /// `is_valid` null → all commits valid. `is_limit` null → never limit.
+/// Parents load via `from.storer` (getter by value — tip may be freed while walking).
 pub fn newFilterCommitIter(
     allocator: Allocator,
     from: *Commit,
     is_valid: ?CommitFilter,
     is_limit: ?CommitFilter,
 ) Allocator.Error!FilterCommitIter {
+    const loader = if (from.storer) |g|
+        loaderFromGetter(allocator, g)
+    else
+        loaderFromCommit(from);
     return newFilterCommitIterWithLoader(
         allocator,
         from,
-        loaderFromCommit(from),
+        loader,
         is_valid,
         is_limit,
     );
@@ -853,13 +897,18 @@ pub const CTimeIter = struct {
 };
 
 /// go-git `NewCommitIterCTime`.
+/// Parents load via `c.storer` (getter by value — tip may be freed while walking).
 pub fn newCommitIterCTime(
     allocator: Allocator,
     c: *Commit,
     seen_external: ?*const HashSet,
     ignore: []const Hash,
 ) Allocator.Error!CTimeIter {
-    return newCommitIterCTimeWithLoader(allocator, c, loaderFromCommit(c), seen_external, ignore);
+    const loader = if (c.storer) |g|
+        loaderFromGetter(allocator, g)
+    else
+        loaderFromCommit(c);
+    return newCommitIterCTimeWithLoader(allocator, c, loader, seen_external, ignore);
 }
 
 /// Like `newCommitIterCTime` with an explicit parent loader (unit tests).
@@ -901,8 +950,8 @@ pub const LogLimitOptions = struct {
 
 /// Filters a source `CommitIter` by committer time (go-git `commitLimitIter`).
 ///
-/// Skipped commits are not freed: preorder/BFS loaders may still hold the tip
-/// as a parent-loader context (go-git GC). Prefer an arena for filtered walks.
+/// Skipped commits are freed when `heap_owned` (production loads). Map/stack
+/// test commits are left alone.
 pub const LimitIter = struct {
     source: CommitIter,
     options: LogLimitOptions,
@@ -911,10 +960,16 @@ pub const LimitIter = struct {
         while (true) {
             const c = try self.source.next();
             if (self.options.since) |since| {
-                if (c.committer.when < since) continue;
+                if (c.committer.when < since) {
+                    freeOwnedCommit(c);
+                    continue;
+                }
             }
             if (self.options.until) |until| {
-                if (c.committer.when > until) continue;
+                if (c.committer.when > until) {
+                    freeOwnedCommit(c);
+                    continue;
+                }
             }
             return c;
         }
@@ -962,11 +1017,15 @@ pub fn newCommitLimitIterFromIter(source: CommitIter, options: LogLimitOptions) 
 /// Path filter callback (go-git `pathFilter func(string) bool`).
 pub const PathFilter = *const fn (path: []const u8) bool;
 
+/// Contextual path filter (Zig substitute for Go closures over state).
+pub const PathFilterCtx = *const fn (ctx: *anyopaque, path: []const u8) bool;
+
 /// Walks a source commit iter and yields commits that change matching paths
 /// (go-git `commitPathIter`).
 ///
 /// Diffs successive trees from the source order. Trees are loaded via
-/// `Commit.tree()` and freed after each step.
+/// `Commit.tree()` and freed after each step. Skipped commits and an unyielded
+/// `current_commit` on close/deinit are freed when `heap_owned`.
 pub const PathIter = struct {
     allocator: Allocator,
     source: CommitIter,
@@ -977,6 +1036,9 @@ pub const PathIter = struct {
     pending_parent_tree: ?*Tree = null,
     /// Owned exact path for file-iter (equality match when set).
     exact_path: ?[]const u8 = null,
+    /// Optional context for `path_filter_ctx_fn` (Zig closure substitute).
+    path_filter_ctx: ?*anyopaque = null,
+    path_filter_ctx_fn: ?PathFilterCtx = null,
 
     pub fn deinit(self: *PathIter) void {
         self.close();
@@ -989,6 +1051,9 @@ pub const PathIter = struct {
 
     fn matchesPath(self: *const PathIter, path: []const u8) bool {
         if (self.exact_path) |ep| return std.mem.eql(u8, path, ep);
+        if (self.path_filter_ctx_fn) |f| {
+            return f(self.path_filter_ctx.?, path);
+        }
         return self.path_filter(path);
     }
 
@@ -996,10 +1061,8 @@ pub const PathIter = struct {
         if (self.current_commit == null) {
             self.current_commit = try self.source.next();
         }
-        return self.getNextFileCommit() catch |err| {
-            self.current_commit = null;
-            return err;
-        };
+        // On error, leave `current_commit` for `close`/`deinit` to free.
+        return self.getNextFileCommit();
     }
 
     fn getNextFileCommit(self: *PathIter) anyerror!*Commit {
@@ -1045,8 +1108,8 @@ pub const PathIter = struct {
             self.current_commit = parent_commit;
 
             if (found) return prev;
-            // Skipped commits are not freed: loaders / parent links may still
-            // reference them (go-git GC). Prefer an arena for path-filtered walks.
+            // Free skipped heap-owned commits (production loads only).
+            freeOwnedCommit(prev);
             if (parent_commit == null) return error.EndOfStream;
         }
     }
@@ -1080,7 +1143,10 @@ pub const PathIter = struct {
             tree_mod.freeTree(self.allocator, t);
             self.pending_parent_tree = null;
         }
-        self.current_commit = null;
+        if (self.current_commit) |c| {
+            freeOwnedCommit(c);
+            self.current_commit = null;
+        }
         self.source.close();
     }
 
@@ -1126,6 +1192,24 @@ pub fn newCommitPathIterFromIter(
         .source = commit_iter,
         .path_filter = path_filter,
         .check_parent = check_parent,
+    };
+}
+
+/// Path iter with a contextual filter (Zig substitute for Go pathFilter closures).
+pub fn newCommitPathIterFromIterCtx(
+    allocator: Allocator,
+    path_filter_ctx: *anyopaque,
+    path_filter_ctx_fn: PathFilterCtx,
+    commit_iter: CommitIter,
+    check_parent: bool,
+) PathIter {
+    return .{
+        .allocator = allocator,
+        .source = commit_iter,
+        .path_filter = pathFilterUnused,
+        .check_parent = check_parent,
+        .path_filter_ctx = path_filter_ctx,
+        .path_filter_ctx_fn = path_filter_ctx_fn,
     };
 }
 

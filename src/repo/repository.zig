@@ -3,24 +3,27 @@
 //! Memory-backed lifecycle for phase 10:
 //! - `init` / `initWithOptions` / `open` over `*memory.Storage`
 //! - optional worktree: `?*fs.Mem` (null = bare)
-//! - head / config / setConfig / reference helpers
+//! - head / config / setConfig / configScoped / reference helpers
 //!
 //! Storer config remains `memory.Config` (storage backends write that shape).
-//! Typed `gitconfig.Config` (`//src/config`) is the high-level go-git config
-//! model for remotes/branches/URLs; bridging storer Config ↔ gitconfig is a
-//! later polish (phase 11 remotes will need it).
+//! `configScoped` loads system/global via `//src/config` (`gitconfig.loadConfig`)
+//! and merges remotes/branches/`is_bare` into a **heap copy** of the local
+//! storer config (caller owns the returned pointer).
 //!
-//! PlainInit/PlainOpen (host path + filesystem storage) are deferred until a
-//! shared storer façade owns both memory and filesystem backends.
+//! Filesystem path lifecycle: `plain.zig` (`plainInit` / `plainOpen` over
+//! `//src/storage/filesystem` + `fs.Mem`). Full Worktree is phase 12.
+//! Remote Fetch / List / Push are phase 11.
 
 const std = @import("std");
 const plumbing = @import("plumbing");
 const storer = @import("storer");
 const memory = @import("memory");
 const fs_pkg = @import("fs");
+const gitconfig = @import("gitconfig");
 
 const error_mod = @import("error.zig");
 const facade = @import("facade.zig");
+const log_mod = @import("log.zig");
 const crud = @import("crud.zig");
 const remote_mod = @import("remote.zig");
 const objpkg = @import("object");
@@ -30,9 +33,9 @@ const Reference = plumbing.Reference;
 const ReferenceName = plumbing.ReferenceName;
 const Config = memory.Config;
 
-pub const LogOptions = facade.LogOptions;
-pub const LogOrder = facade.LogOrder;
-pub const LogResult = facade.LogResult;
+pub const LogOptions = log_mod.LogOptions;
+pub const LogOrder = log_mod.LogOrder;
+pub const LogResult = log_mod.LogResult;
 pub const CreateTagOptions = crud.CreateTagOptions;
 pub const Remote = remote_mod.Remote;
 pub const AnonymousRemote = crud.AnonymousRemote;
@@ -72,6 +75,25 @@ pub const Repository = struct {
         return self.storer.setConfig(cfg);
     }
 
+    /// go-git `Repository.ConfigScoped` — local storer config merged with
+    /// requested scope and lower (system ⊂ global ⊂ local).
+    ///
+    /// Returns a **heap copy** of the local config with missing remotes/branches
+    /// filled from system then global, and `is_bare` filled from higher scopes
+    /// only when local is still false (mergo zero-value rule). Caller owns the
+    /// pointer (`deinit` + `destroy`). Do not pass the result to `setConfig`.
+    ///
+    /// `io` / `environ` feed `gitconfig.loadConfig` (Zig 0.16 host paths).
+    pub fn configScoped(
+        self: *Repository,
+        allocator: Allocator,
+        scope: gitconfig.Scope,
+        io: std.Io,
+        environ: std.process.Environ,
+    ) ! *Config {
+        return configScopedFromLocal(try self.config(), allocator, scope, io, environ);
+    }
+
     // -----------------------------------------------------------------------
     // References
     // -----------------------------------------------------------------------
@@ -94,7 +116,7 @@ pub const Repository = struct {
     }
 
     // -----------------------------------------------------------------------
-    // Worktree probe (thin; full Worktree type is phase 12)
+    // Worktree probe (full Worktree type is phase 12)
     // -----------------------------------------------------------------------
 
     /// Whether this repository has a worktree filesystem attached.
@@ -220,7 +242,7 @@ pub const Repository = struct {
         return facade.notes(self.storer);
     }
     pub fn log(self: *Repository, opts: LogOptions) !LogResult {
-        return facade.log(self.storer, opts);
+        return log_mod.log(self.storer, opts);
     }
     pub fn resolveRevision(self: *Repository, rev: []const u8) !plumbing.Hash {
         return facade.resolveRevision(self.storer, rev);
@@ -248,7 +270,8 @@ pub fn init(s: *memory.Storage, worktree: ?*fs_pkg.Mem) !Repository {
 /// go-git `InitWithOptions`.
 ///
 /// go-git calls storer `Initializer` when present; `memory.Storage` has none
-/// (type assert fails → no-op). Filesystem layout init lands with PlainInit.
+/// (type assert fails → no-op). Filesystem layout init is `plainInit` /
+/// `Storage.initLayout`.
 pub fn initWithOptions(s: *memory.Storage, worktree: ?*fs_pkg.Mem, options: InitOptions) !Repository {
     var opts = options;
     if (opts.default_branch.raw.len == 0) {
@@ -295,6 +318,110 @@ pub fn open(s: *memory.Storage, worktree: ?*fs_pkg.Mem) !Repository {
     _ = try s.config();
 
     return newRepository(s, worktree);
+}
+
+// ---------------------------------------------------------------------------
+// ConfigScoped helpers (go-git mergo subset for memory.Config)
+// ---------------------------------------------------------------------------
+
+/// Clone local, load system/global via `gitconfig.loadConfig`, merge into the
+/// clone. Caller owns the returned `*memory.Config`.
+pub fn configScopedFromLocal(
+    local: *const Config,
+    allocator: Allocator,
+    scope: gitconfig.Scope,
+    io: std.Io,
+    environ: std.process.Environ,
+) ! *Config {
+    const merged = try cloneMemoryConfig(allocator, local);
+    errdefer {
+        merged.deinit();
+        allocator.destroy(merged);
+    }
+
+    // go-git: LoadConfig(system) then LoadConfig(global); mergo.Merge(global, system)
+    // then mergo.Merge(local, global). Fill-missing into a local clone with priority
+    // local > global > system: apply global first, then system (only gaps remain).
+    // Scope order: local=0, global=1, system=2.
+    if (@intFromEnum(scope) >= @intFromEnum(gitconfig.Scope.global)) {
+        var global = try gitconfig.loadConfig(allocator, .global, io, environ);
+        defer global.deinit();
+        try mergeGitconfigIntoMemory(merged, &global);
+    }
+    if (@intFromEnum(scope) >= @intFromEnum(gitconfig.Scope.system)) {
+        var system = try gitconfig.loadConfig(allocator, .system, io, environ);
+        defer system.deinit();
+        try mergeGitconfigIntoMemory(merged, &system);
+    }
+
+    return merged;
+}
+
+/// Deep-copy `src` into a heap `*Config` owned by the caller.
+pub fn cloneMemoryConfig(allocator: Allocator, src: *const Config) Allocator.Error!*Config {
+    const c = try allocator.create(Config);
+    errdefer allocator.destroy(c);
+    c.* = Config.init(allocator);
+    errdefer c.deinit();
+
+    c.is_bare = src.is_bare;
+
+    var rit = src.remotes.iterator();
+    while (rit.next()) |e| {
+        const rc = e.value_ptr.*;
+        const urls = try slicesAsConst(allocator, rc.urls);
+        defer if (urls.len > 0) allocator.free(urls);
+        const fetch = try slicesAsConst(allocator, rc.fetch);
+        defer if (fetch.len > 0) allocator.free(fetch);
+        try c.putRemoteFull(rc.name, urls, fetch, rc.mirror);
+    }
+
+    var bit = src.branches.iterator();
+    while (bit.next()) |e| {
+        const bc = e.value_ptr.*;
+        try c.putBranch(bc.name, bc.remote, bc.merge);
+    }
+
+    return c;
+}
+
+/// Merge gitconfig remotes/branches/`is_bare` into `dst` (dst wins on key collision).
+/// Matches go-git `mergo.Merge(dst, src)` for the fields we carry on `memory.Config`.
+pub fn mergeGitconfigIntoMemory(dst: *Config, src: *const gitconfig.Config) Allocator.Error!void {
+    var rit = src.remotes.iterator();
+    while (rit.next()) |e| {
+        const name = e.key_ptr.*;
+        if (dst.remotes.contains(name)) continue;
+        const rc = e.value_ptr.*;
+        const fetch = try refspecsAsStrings(dst.allocator, rc.fetch);
+        defer if (fetch.len > 0) dst.allocator.free(fetch);
+        try dst.putRemoteFull(name, rc.urls, fetch, rc.mirror);
+    }
+
+    var bit = src.branches.iterator();
+    while (bit.next()) |e| {
+        const name = e.key_ptr.*;
+        if (dst.branches.contains(name)) continue;
+        const b = e.value_ptr.*;
+        try dst.putBranch(name, b.remote, b.merge.raw);
+    }
+
+    // Go bool zero is false: fill dst.is_bare from src only when still false.
+    if (!dst.is_bare) dst.is_bare = src.core.is_bare;
+}
+
+fn slicesAsConst(allocator: Allocator, items: []const []u8) Allocator.Error![]const []const u8 {
+    if (items.len == 0) return &.{};
+    const out = try allocator.alloc([]const u8, items.len);
+    for (items, 0..) |s, i| out[i] = s;
+    return out;
+}
+
+fn refspecsAsStrings(allocator: Allocator, specs: []const gitconfig.RefSpec) Allocator.Error![]const []const u8 {
+    if (specs.len == 0) return &.{};
+    const out = try allocator.alloc([]const u8, specs.len);
+    for (specs, 0..) |rs, i| out[i] = rs.raw;
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -573,4 +700,84 @@ test "facade commitObject and resolveRevision after Init" {
 
     const resolved = try r.resolveRevision("HEAD");
     try std.testing.expect(resolved.eql(commit_h));
+}
+
+test "configScoped LocalScope returns heap copy of local" {
+    const allocator = std.testing.allocator;
+    const s = try memory.newStorage(allocator);
+    defer {
+        s.deinit();
+        allocator.destroy(s);
+    }
+
+    var r = try init(s, null);
+    const cfg = try r.config();
+    try cfg.putRemote("origin", &[_][]const u8{"http://example.com/r.git"});
+    try r.setConfig(cfg);
+
+    const scoped = try r.configScoped(allocator, .local, std.testing.io, std.testing.environ);
+    defer {
+        scoped.deinit();
+        allocator.destroy(scoped);
+    }
+    try std.testing.expect(scoped != try r.config());
+    const remote = scoped.remotes.get("origin") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("http://example.com/r.git", remote.urls[0]);
+}
+
+test "mergeGitconfigIntoMemory fills missing remotes branches is_bare" {
+    const allocator = std.testing.allocator;
+    var local = Config.init(allocator);
+    defer local.deinit();
+    try local.putRemote("origin", &[_][]const u8{"http://local/r.git"});
+
+    var gc = try gitconfig.readConfig(allocator,
+        "[core]\n" ++
+            "\tbare = true\n" ++
+            "[remote \"origin\"]\n" ++
+            "\turl = http://global-should-not-win/r.git\n" ++
+            "[remote \"upstream\"]\n" ++
+            "\turl = http://upstream/r.git\n" ++
+            "[branch \"main\"]\n" ++
+            "\tremote = origin\n" ++
+            "\tmerge = refs/heads/main\n",
+    );
+    defer gc.deinit();
+
+    try mergeGitconfigIntoMemory(&local, &gc);
+
+    // Local origin wins
+    const origin = local.remotes.get("origin") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("http://local/r.git", origin.urls[0]);
+
+    // Missing remote filled
+    const up = local.remotes.get("upstream") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("http://upstream/r.git", up.urls[0]);
+
+    // Branch filled
+    const br = local.branches.get("main") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("origin", br.remote);
+    try std.testing.expectEqualStrings("refs/heads/main", br.merge);
+
+    // is_bare filled from higher scope when local was false
+    try std.testing.expect(local.is_bare);
+}
+
+test "configScoped GlobalScope with empty env still returns local" {
+    // No HOME / XDG files → empty global; result equals local clone.
+    const allocator = std.testing.allocator;
+    const s = try memory.newStorage(allocator);
+    defer {
+        s.deinit();
+        allocator.destroy(s);
+    }
+
+    var r = try init(s, null);
+    const scoped = try r.configScoped(allocator, .global, std.testing.io, std.process.Environ.empty);
+    defer {
+        scoped.deinit();
+        allocator.destroy(scoped);
+    }
+    try std.testing.expect(scoped.is_bare);
+    try std.testing.expectEqual(@as(usize, 0), scoped.remotes.count());
 }

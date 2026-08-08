@@ -32,6 +32,12 @@ pub const Error = error{
     TagNotFound,
     /// go-git `ErrTagExists`.
     TagExists,
-    /// Annotated tag requires a tagger (go-git `CreateTagOptions.Validate`).
+    /// Annotated tag requires a tagger (go-git `ErrMissingTagger`).
     MissingTagger,
+    /// Annotated tag requires a message (go-git `ErrMissingMessage`).
+    MissingMessage,
+    /// go-git `ErrSHA256NotSupported` — object format sha256 without SHA-256 build.
+    SHA256NotSupported,
+    /// `.git` file is not a valid `gitdir: ` pointer.
+    InvalidGitDirFile,
 };

@@ -1,12 +1,14 @@
 load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
 
-# go-git root repository: Init/Open + object/ref facades.
+# go-git root repository: Init/Open + object/ref facades + PlainInit/Open.
 _SRCS = [
     "error.zig",
     "repository.zig",
     "facade.zig",
+    "log.zig",
     "remote.zig",
     "crud.zig",
+    "plain.zig",
 ]
 
 _DEPS = [
@@ -14,7 +16,11 @@ _DEPS = [
     "//src/plumbing/object",
     "//src/plumbing/storer",
     "//src/plumbing/revlist",
+    "//src/plumbing/format/config",
     "//src/storage/memory",
+    "//src/storage/filesystem",
+    "//src/storage/filesystem/dotgit",
+    "//src/config",
     "//src/internal/revision",
     "//src/fs",
 ]

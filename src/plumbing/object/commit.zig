@@ -123,6 +123,10 @@ pub const Commit = struct {
 
     /// Whether `encoding` was heap-allocated (non-default).
     encoding_owned: bool = false,
+    /// True when this commit was `allocator.create`d by `getCommit` /
+    /// `decodeCommit` / parent loaders. `freeOwnedCommit` only destroys when set.
+    /// Map/stack test commits stay false.
+    heap_owned: bool = false,
 
     pub fn init(allocator: Allocator) Commit {
         return .{
@@ -147,9 +151,11 @@ pub const Commit = struct {
     fn reset(self: *Commit) void {
         const allocator = self.allocator;
         const s = self.storer;
+        const owned = self.heap_owned;
         self.deinit();
         self.* = Commit.init(allocator);
         self.storer = s;
+        self.heap_owned = owned;
     }
 
     /// go-git `Commit.ID`.
@@ -459,6 +465,7 @@ pub fn decodeCommit(allocator: Allocator, s: anytype, o: *MemoryObject) !*Commit
         allocator.destroy(c);
     }
     c.* = Commit.init(allocator);
+    c.heap_owned = true;
     c.storer = ObjectGetter.from(@TypeOf(s.*), s);
     try c.decode(o);
     return c;
@@ -472,6 +479,7 @@ fn getCommitWithGetter(allocator: Allocator, s: ObjectGetter, h: Hash) !*Commit 
         allocator.destroy(c);
     }
     c.* = Commit.init(allocator);
+    c.heap_owned = true;
     c.storer = s;
     try c.decode(o);
     return c;
