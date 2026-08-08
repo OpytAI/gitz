@@ -10,10 +10,14 @@ require:
   functions:
     - listSubmodules
     - getSubmodule
+    - submoduleForWorktree
+    - submodulesForWorktree
   semantic:
     - Submodule
     - Submodule.init
     - Submodule.status
+    - Submodule.repository
+    - Submodule.updateContext
     - SubmoduleAlreadyInitialized
     - Host
     - SubmoduleUpdateOptions
@@ -27,11 +31,19 @@ require:
     - ParentRemoteNotFound
     - checkoutModuleWorktree
     - checkout
+    - submoduleForWorktree
+    - submodulesForWorktree
+    - WorktreeSubmodule
+    - WorktreeSubmodules
 zig_map:
   Submodule: Submodule
   Submodules: Submodules
   Host: Host
   SubmoduleUpdateOptions: SubmoduleUpdateOptions
   SubmoduleEmptyURL: SubmoduleEmptyURL
+  submoduleForWorktree: submoduleForWorktree
+  submodulesForWorktree: submodulesForWorktree
+  WorktreeSubmodule: WorktreeSubmodule
+  WorktreeSubmodules: WorktreeSubmodules
   resolveSubmoduleURL: resolveSubmoduleURL
   defaultRemote: defaultRemote

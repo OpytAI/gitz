@@ -72,6 +72,7 @@ pub const KeyMaterial = entity_mod.KeyMaterial;
 pub const Subkey = entity_mod.Subkey;
 pub const Entity = entity_mod.Entity;
 pub const freeEntities = entity_mod.freeEntities;
+pub const entityForFingerprint = entity_mod.entityForFingerprint;
 pub const readArmoredKeyRing = entity_mod.readArmoredKeyRing;
 pub const generateEd25519Entity = entity_mod.generateEd25519Entity;
 pub const generateEd25519Subkey = entity_mod.generateEd25519Subkey;
@@ -84,6 +85,7 @@ pub const selectSigningKey = sign_mod.selectSigningKey;
 pub const SigningSelection = sign_mod.SigningSelection;
 
 pub const checkArmoredDetachedSignature = verify_mod.checkArmoredDetachedSignature;
+pub const VerifiedKey = verify_mod.VerifiedKey;
 pub const parseKeyring = verify_mod.parseKeyring;
 pub const parsePublicKey = verify_mod.parsePublicKey;
 pub const parseSignature = verify_mod.parseSignature;

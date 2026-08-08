@@ -30,7 +30,9 @@ pub const ResetMode = options_mod.ResetMode;
 pub const ResetOptions = options_mod.ResetOptions;
 pub const AddOptions = options_mod.AddOptions;
 pub const CommitOptions = options_mod.CommitOptions;
+pub const Signer = options_mod.Signer;
 pub const PullOptions = options_mod.PullOptions;
+pub const SubmoduleUpdater = options_mod.SubmoduleUpdater;
 pub const CloneOptions = options_mod.CloneOptions;
 pub const CleanOptions = options_mod.CleanOptions;
 pub const RestoreOptions = options_mod.RestoreOptions;
@@ -55,9 +57,11 @@ pub const checkout = checkout_mod.checkout;
 pub const reset = reset_mod.reset;
 pub const resetSparsely = reset_mod.resetSparsely;
 pub const pull = pull_mod.pull;
+pub const pullContext = pull_mod.pullContext;
 pub const clean = clean_mod.clean;
 pub const restore = reset_mod.restore;
 pub const grep = grep_mod.grep;
+pub const grepRepository = grep_mod.grepRepository;
 
 // Platform index stat fill (go-git worktree_linux.go / worktree_windows.go).
 pub const fillSystemInfo = platform_mod.fillSystemInfo;

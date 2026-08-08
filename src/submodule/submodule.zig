@@ -13,6 +13,10 @@ const index_format = @import("index");
 const worktree = @import("worktree");
 const remote = @import("remote");
 const object = @import("object");
+const server = @import("server");
+const transport = @import("transport");
+const repo_pkg = @import("repo");
+const pathutil = @import("pathutil");
 
 const options_mod = @import("options.zig");
 const status_mod = @import("status.zig");
@@ -74,6 +78,53 @@ pub const Submodule = struct {
         return try self.statusWithIndex(idx);
     }
 
+    /// go-git `Submodule.Repository` with explicit ownership for the chrooted
+    /// worktree filesystem. Caller must call `OwnedRepository.deinit`.
+    pub fn repository(self: *Submodule) !OwnedRepository {
+        if (!self.initialized) return error.SubmoduleNotInitialized;
+        try pathutil.validTreePath(self.c.path);
+
+        const allocator = self.host.allocator;
+        const mod = try self.host.storer.module(self.c.name);
+        const view = try allocator.create(fs_pkg.Mem);
+        errdefer allocator.destroy(view);
+        view.* = try self.host.filesystem.chroot(self.c.path);
+        errdefer view.deinit();
+
+        const exists = blk: {
+            _ = mod.reference(plumbing.HEAD) catch |err| switch (err) {
+                error.ReferenceNotFound => break :blk false,
+                else => |e| return e,
+            };
+            break :blk true;
+        };
+
+        var repository_handle = if (exists)
+            try repo_pkg.open(mod, view)
+        else
+            try repo_pkg.init(mod, view);
+
+        if (!exists) {
+            const default_opts = SubmoduleUpdateOptions{};
+            const resolved = try resolveFetchURL(self, &default_opts);
+            defer allocator.free(resolved);
+            const cfg = try repository_handle.config();
+            try cfg.putRemoteFull(
+                default_remote_name,
+                &[_][]const u8{resolved},
+                &[_][]const u8{"+refs/heads/*:refs/remotes/origin/*"},
+                false,
+            );
+            try repository_handle.setConfig(cfg);
+        }
+
+        return .{
+            .allocator = allocator,
+            .worktree_fs = view,
+            .repo = repository_handle,
+        };
+    }
+
     /// Status using a pre-loaded index (go-git unexported `status`).
     pub fn statusWithIndex(self: *Submodule, idx: *index_format.Index) !SubmoduleStatus {
         var st: SubmoduleStatus = .{
@@ -117,6 +168,17 @@ pub const Submodule = struct {
         return self.updateWithHash(o, ZeroHash);
     }
 
+    /// go-git `Submodule.UpdateContext` via cooperative transport context.
+    pub fn updateContext(
+        self: *Submodule,
+        context: transport.OperationContext,
+        o: *const SubmoduleUpdateOptions,
+    ) !void {
+        var opts = o.*;
+        opts.operation_context = context;
+        return self.update(&opts);
+    }
+
     /// Like `update`, but when `force_hash` is non-zero use it as the target
     /// commit instead of the superproject index gitlink (go-git `update` forceHash).
     ///
@@ -137,6 +199,20 @@ pub const Submodule = struct {
         try mod.setReference(plumbing.Reference.newHashReference(plumbing.HEAD, expected));
 
         try doRecursiveUpdate(self, mod, o, expected);
+    }
+};
+
+/// Owned result of `Submodule.repository`. The module storage remains owned by
+/// the superproject storer; this handle owns only its worktree chroot.
+pub const OwnedRepository = struct {
+    allocator: Allocator,
+    worktree_fs: *fs_pkg.Mem,
+    repo: repo_pkg.Repository,
+
+    pub fn deinit(self: *OwnedRepository) void {
+        self.worktree_fs.deinit();
+        self.allocator.destroy(self.worktree_fs);
+        self.* = undefined;
     }
 };
 
@@ -243,7 +319,10 @@ fn makeFetchOptions(
         .remote_name = "origin",
         .remote_url = url,
         .depth = o.depth,
-        .transport = .{ .auth = o.auth },
+        .transport = .{
+            .auth = o.auth,
+            .operation_context = o.operation_context,
+        },
         .ref_specs = ref_specs,
     };
 }
@@ -619,10 +698,66 @@ pub fn getSubmodule(host: *Host, name: []const u8) !*Submodule {
 /// Host must share the same storer/filesystem as `w` (use `Host.fromWorktree`
 /// then keep Host alive while list is used). Caller still owns init registry
 /// on Host after Init.
-pub fn listFromWorktree(host: *Host, w: *worktree.Worktree) !Submodules {
+pub fn listFromWorktree(host: *Host, w: anytype) !Submodules {
     std.debug.assert(host.storer == w.storer);
     std.debug.assert(host.filesystem == w.filesystem);
     return listSubmodules(host, null);
+}
+
+/// Owned Worktree.Submodules glue. This keeps the Host at a stable address for
+/// the lifetime of every returned Submodule.
+pub const WorktreeSubmodules = struct {
+    allocator: Allocator,
+    host: *Host,
+    items: Submodules,
+
+    pub fn deinit(self: *WorktreeSubmodules) void {
+        self.items.free(self.allocator);
+        self.host.deinit();
+        self.allocator.destroy(self.host);
+        self.* = undefined;
+    }
+};
+
+/// go-git `Worktree.Submodules` method glue without a package cycle.
+pub fn submodulesForWorktree(w: anytype) !WorktreeSubmodules {
+    const h = try w.allocator.create(Host);
+    errdefer w.allocator.destroy(h);
+    h.* = Host.fromWorktree(w);
+    errdefer h.deinit();
+    return .{
+        .allocator = w.allocator,
+        .host = h,
+        .items = try listSubmodules(h, null),
+    };
+}
+
+/// Owned Worktree.Submodule glue for one named module.
+pub const WorktreeSubmodule = struct {
+    allocator: Allocator,
+    host: *Host,
+    item: *Submodule,
+
+    pub fn deinit(self: *WorktreeSubmodule) void {
+        self.item.deinit();
+        self.allocator.destroy(self.item);
+        self.host.deinit();
+        self.allocator.destroy(self.host);
+        self.* = undefined;
+    }
+};
+
+/// go-git `Worktree.Submodule(name)` method glue without a package cycle.
+pub fn submoduleForWorktree(w: anytype, name: []const u8) !WorktreeSubmodule {
+    const h = try w.allocator.create(Host);
+    errdefer w.allocator.destroy(h);
+    h.* = Host.fromWorktree(w);
+    errdefer h.deinit();
+    return .{
+        .allocator = w.allocator,
+        .host = h,
+        .item = try getSubmodule(h, name),
+    };
 }
 
 /// Expected gitlink hash from an index entry, or zero when not a submodule.
@@ -632,4 +767,64 @@ pub fn expectedFromEntry(entry: *const index_format.Entry) Hash {
         return entry.hash;
     }
     return ZeroHash;
+}
+
+/// Post-pull submodule init+update (go-git Worktree.Pull recurse path).
+///
+/// Call after `worktree.pull` when `PullOptions.recurse_submodules > 0`
+/// (from porcelain or app code — worktree cannot import this package).
+pub fn updateFromWorktreePull(
+    allocator: Allocator,
+    storer_ptr: *memory.Storage,
+    filesystem: *fs_pkg.Mem,
+    embedded: ?*server.Server,
+    recurse: u32,
+    depth: i32,
+    auth: ?transport.AuthMethod,
+    operation_context: transport.OperationContext,
+) !void {
+    if (recurse == 0) return;
+    var h = Host.init(allocator, storer_ptr, filesystem);
+    defer h.deinit();
+    var list = try listSubmodules(&h, null);
+    defer list.free(allocator);
+    const o = SubmoduleUpdateOptions{
+        .init = true,
+        .no_fetch = false,
+        .recurse_submodules = recurse,
+        .depth = depth,
+        .auth = auth,
+        .operation_context = operation_context,
+        .embedded = embedded,
+    };
+    try list.update(&o);
+}
+
+/// Bind the concrete submodule updater to worktree PullOptions without adding
+/// a worktree -> submodule package dependency.
+pub fn bindPullOptions(o: anytype) void {
+    o.submodule_updater = .{ .update_fn = pullUpdateCallback };
+}
+
+fn pullUpdateCallback(
+    _: ?*anyopaque,
+    allocator: Allocator,
+    storer_ptr: *memory.Storage,
+    filesystem: *fs_pkg.Mem,
+    embedded: ?*server.Server,
+    recurse: u32,
+    depth: i32,
+    auth: ?transport.AuthMethod,
+    operation_context: transport.OperationContext,
+) anyerror!void {
+    return updateFromWorktreePull(
+        allocator,
+        storer_ptr,
+        filesystem,
+        embedded,
+        recurse,
+        depth,
+        auth,
+        operation_context,
+    );
 }

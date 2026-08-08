@@ -75,6 +75,8 @@ pub const Error = error{
     SpawnUnsupported,
     /// Command failed to start / plan incomplete.
     CommandFailed,
+    /// Endpoint requested a proxy while using the system-ssh dialer.
+    ProxyUnsupported,
 };
 
 fn singleThreadedIo() Io {
@@ -192,6 +194,8 @@ pub const CommandPlan = struct {
     insecure_ignore_host_key: bool = false,
     /// Snapshot of auth config (slices may be borrowed from caller-owned auth).
     client_config: auth_mod.ClientConfig = .{},
+    /// Normalized SOCKS5 proxy URL. Empty means direct dial.
+    proxy_url: []u8 = &.{},
 
     pub fn deinit(self: *CommandPlan) void {
         const a = self.allocator;
@@ -202,6 +206,7 @@ pub const CommandPlan = struct {
         if (self.identity_path.len > 0) a.free(self.identity_path);
         if (self.owned_host) |h| a.free(h);
         if (self.owned_user) |u| a.free(u);
+        if (self.proxy_url.len > 0) a.free(self.proxy_url);
         self.* = .{ .allocator = a };
     }
 };
@@ -748,6 +753,7 @@ pub const Runner = struct {
         ep: *const Endpoint,
         auth: ?transport.AuthMethod,
     ) anyerror!transport_common.Command {
+        if (ep.proxy.url.len != 0) try ep.proxy.validate();
         var cfg = auth_mod.ClientConfig{};
         var auth_name: []const u8 = "";
         // Owned user snapshot when default agent auth resolves USER from environ.
@@ -763,8 +769,7 @@ pub const Runner = struct {
         } else if (auth) |a| {
             if (!isSshAuthMethod(a)) return transport.Error.InvalidAuthMethod;
             auth_name = a.name();
-            cfg.auth_kind = authKindFromName(auth_name);
-            cfg.user = if (self.options.user.len > 0) self.options.user else ep.user;
+            cfg = try clientConfigFromTransport(a, self.allocator);
         } else {
             // Default: SSH agent (go-git DefaultAuthBuilder). Snapshot only
             // stable fields — system ssh uses ambient SSH_AUTH_SOCK; do not
@@ -833,6 +838,7 @@ pub const Runner = struct {
                 return nc.asCommand();
             },
             .system_ssh => {
+                if (plan.proxy_url.len != 0) return Error.ProxyUnsupported;
                 // Miss: leave `plan` to outer errdefer.
                 const bin_opt = try lookPath(self.allocator, self.io, "ssh");
                 const bin_owned = bin_opt orelse return Error.SshBinaryNotFound;
@@ -881,6 +887,7 @@ pub const Runner = struct {
         const port = plan.port;
         const user = plan.user;
         const insecure = plan.insecure_ignore_host_key;
+        const proxy_url = plan.proxy_url;
         var cfg = plan.client_config;
         if (owned_user) |u| cfg.user = u;
         cfg.identity_file = "";
@@ -893,6 +900,7 @@ pub const Runner = struct {
         plan.owned_user = null;
         plan.user = "";
         plan.client_config = .{};
+        plan.proxy_url = &.{};
 
         return .{
             .allocator = allocator,
@@ -905,6 +913,7 @@ pub const Runner = struct {
             .owned_user = owned_user,
             .insecure_ignore_host_key = insecure,
             .client_config = cfg,
+            .proxy_url = proxy_url,
         };
     }
 
@@ -947,6 +956,10 @@ pub const Runner = struct {
 
         draft.insecure_ignore_host_key = self.options.insecure_ignore_host_key or
             (cfg.host_key_callback != null and isInsecureCallback(cfg.host_key_callback.?));
+
+        if (ep.proxy.url.len != 0) {
+            draft.proxy_url = try ep.proxy.fullURL(self.allocator);
+        }
 
         if (cfg.identity_file.len > 0) {
             draft.identity_path = try self.allocator.dupe(u8, cfg.identity_file);
@@ -1009,13 +1022,31 @@ fn isInsecureCallback(cb: auth_mod.HostKeyCallback) bool {
     return cb.check_fn == insecure.check_fn;
 }
 
-fn authKindFromName(name: []const u8) auth_mod.AuthKind {
-    if (std.mem.eql(u8, name, auth_mod.PasswordName)) return .password;
-    if (std.mem.eql(u8, name, auth_mod.PasswordCallbackName)) return .password_callback;
-    if (std.mem.eql(u8, name, auth_mod.KeyboardInteractiveName)) return .keyboard_interactive;
-    if (std.mem.eql(u8, name, auth_mod.PublicKeysName)) return .public_keys;
-    if (std.mem.eql(u8, name, auth_mod.PublicKeysCallbackName)) return .public_keys_callback;
-    return .none;
+fn clientConfigFromTransport(auth: transport.AuthMethod, allocator: Allocator) !auth_mod.ClientConfig {
+    const credentials = auth.protocolCredentials("ssh") orelse
+        return transport.Error.InvalidAuthMethod;
+    const name = auth.name();
+    if (std.mem.eql(u8, name, auth_mod.PasswordName)) {
+        const value: *auth_mod.Password = @ptrCast(@alignCast(credentials));
+        return value.clientConfig(allocator);
+    }
+    if (std.mem.eql(u8, name, auth_mod.PasswordCallbackName)) {
+        const value: *auth_mod.PasswordCallback = @ptrCast(@alignCast(credentials));
+        return value.clientConfig(allocator);
+    }
+    if (std.mem.eql(u8, name, auth_mod.KeyboardInteractiveName)) {
+        const value: *auth_mod.KeyboardInteractive = @ptrCast(@alignCast(credentials));
+        return value.clientConfig(allocator);
+    }
+    if (std.mem.eql(u8, name, auth_mod.PublicKeysName)) {
+        const value: *auth_mod.PublicKeys = @ptrCast(@alignCast(credentials));
+        return value.clientConfig(allocator);
+    }
+    if (std.mem.eql(u8, name, auth_mod.PublicKeysCallbackName)) {
+        const value: *auth_mod.PublicKeysCallback = @ptrCast(@alignCast(credentials));
+        return value.clientConfig(allocator);
+    }
+    return transport.Error.InvalidAuthMethod;
 }
 
 fn clonePlan(allocator: Allocator, src: *const CommandPlan) Allocator.Error!CommandPlan {
@@ -1044,6 +1075,9 @@ fn clonePlan(allocator: Allocator, src: *const CommandPlan) Allocator.Error!Comm
 
     if (src.identity_path.len > 0) {
         out.identity_path = try allocator.dupe(u8, src.identity_path);
+    }
+    if (src.proxy_url.len > 0) {
+        out.proxy_url = try allocator.dupe(u8, src.proxy_url);
     }
 
     // Always snapshot user into owned_user for last_plan independence.
@@ -1111,27 +1145,7 @@ pub const Client = struct {
     }
 
     pub fn asTransport(self: *Client) transport.Transport {
-        const gen = struct {
-            fn up(ptr: *anyopaque, endpoint: *const Endpoint, auth: ?transport.AuthMethod) anyerror!?transport.SessionHandle {
-                const c: *Client = @ptrCast(@alignCast(ptr));
-                const sess = try c.allocator.create(transport_common.Session);
-                errdefer c.allocator.destroy(sess);
-                sess.* = try c.newUploadPackSession(endpoint, auth);
-                return @ptrCast(sess);
-            }
-            fn rp(ptr: *anyopaque, endpoint: *const Endpoint, auth: ?transport.AuthMethod) anyerror!?transport.SessionHandle {
-                const c: *Client = @ptrCast(@alignCast(ptr));
-                const sess = try c.allocator.create(transport_common.Session);
-                errdefer c.allocator.destroy(sess);
-                sess.* = try c.newReceivePackSession(endpoint, auth);
-                return @ptrCast(sess);
-            }
-            const vtable = transport.Transport.VTable{
-                .newUploadPackSession = up,
-                .newReceivePackSession = rp,
-            };
-        };
-        return .{ .ptr = self, .vtable = &gen.vtable };
+        return self.inner.asTransport();
     }
 
     /// Access underlying runner (plans / test hooks).
@@ -1342,6 +1356,24 @@ test "runner builds plan with password auth" {
     try testing.expectEqualStrings("git", plan.user);
     // ssh_args: -p 22 -l git example.com remote
     try testing.expect(plan.ssh_args.len >= 6);
+}
+
+test "transport password auth carries credentials without runner override" {
+    var runner = Runner.init(testing.allocator, .{});
+    defer runner.deinit();
+    runner.use_system_ssh = false;
+    var password = auth_mod.Password{ .user = "remote-user", .password = "remote-secret" };
+    var ep = Endpoint{
+        .allocator = testing.allocator,
+        .host = @constCast("example.com"),
+        .path = @constCast("/repo.git"),
+    };
+
+    _ = try runner.command("git-upload-pack", &ep, password.asTransportAuth());
+    const plan = runner.last_plan orelse return error.TestUnexpectedResult;
+    try testing.expect(plan.auth_kind == .password);
+    try testing.expectEqualStrings("remote-user", plan.user);
+    try testing.expectEqualStrings("remote-secret", plan.client_config.password);
 }
 
 test "buildSshArgv basic" {
@@ -1619,6 +1651,34 @@ test "effectiveDialMode native default" {
     var runner = Runner.init(testing.allocator, .{});
     defer runner.deinit();
     try testing.expect(runner.effectiveDialMode() == .native);
+}
+
+test "SSH endpoint SOCKS5 proxy is preserved in native command plan" {
+    const allocator = testing.allocator;
+    var runner = Runner.init(allocator, .{});
+    defer runner.deinit();
+    var ep = try transport.newEndpoint(allocator, testing.io, "ssh://git@example.com/repo.git");
+    defer ep.deinit();
+    ep.proxy = .{ .url = "socks5://127.0.0.1:1080" };
+    var password = auth_mod.Password{ .user = "git", .password = "secret" };
+    runner.ssh_auth = password.asAuthMethod();
+    runner.use_system_ssh = false;
+    _ = try runner.command("git-upload-pack", &ep, null);
+    const plan = runner.last_plan orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("socks5://127.0.0.1:1080/", plan.proxy_url);
+}
+
+test "system SSH rejects proxy instead of dialing around it" {
+    const allocator = testing.allocator;
+    var runner = Runner.init(allocator, .{});
+    defer runner.deinit();
+    runner.dial_mode = .system_ssh;
+    var password = auth_mod.Password{ .user = "git", .password = "secret" };
+    runner.ssh_auth = password.asAuthMethod();
+    var ep = try transport.newEndpoint(allocator, testing.io, "ssh://git@example.com/repo.git");
+    defer ep.deinit();
+    ep.proxy = .{ .url = "socks5://127.0.0.1:1080" };
+    try testing.expectError(Error.ProxyUnsupported, runner.command("git-upload-pack", &ep, null));
 }
 
 test "newClient defaults to native dial mode" {

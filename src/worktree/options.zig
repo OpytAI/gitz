@@ -6,6 +6,9 @@ const objpkg = @import("object");
 const remote = @import("remote");
 const transport = @import("transport");
 const storer = @import("storer");
+const memory = @import("memory");
+const fs_pkg = @import("fs");
+const server = @import("server");
 
 const error_mod = @import("error.zig");
 const status_types = @import("status_types.zig");
@@ -53,6 +56,21 @@ pub const ResetOptions = struct {
     commit: Hash = ZeroHash,
     mode: ResetMode = .mixed,
     files: []const []const u8 = &.{},
+
+    /// go-git `ResetOptions.Validate(*Repository)` public option validation.
+    /// Defaults a zero commit from HEAD and rejects a non-commit object id.
+    pub fn validate(self: *ResetOptions, repository: anytype) !void {
+        if (self.commit.isZero()) {
+            const head_ref = try repository.head();
+            self.commit = head_ref.hash;
+            return;
+        }
+        const c = try repository.commitObject(self.commit);
+        defer {
+            c.deinit();
+            repository.storer.allocator.destroy(c);
+        }
+    }
 };
 
 /// go-git `AddOptions`.
@@ -67,7 +85,25 @@ pub const AddOptions = struct {
     }
 };
 
-/// go-git `CommitOptions` (signer/amend subset; SignKey = openpgp Entity).
+/// Type-erased go-git `Signer` equivalent.
+///
+/// `sign_fn` receives the unsigned encoded Git object and must return a
+/// signature allocated with the supplied allocator. The commit path frees the
+/// returned signature after encoding the signed object.
+pub const Signer = struct {
+    context: ?*anyopaque = null,
+    sign_fn: *const fn (
+        context: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        message: []const u8,
+    ) anyerror![]u8,
+
+    pub fn sign(self: Signer, allocator: std.mem.Allocator, message: []const u8) ![]u8 {
+        return self.sign_fn(self.context, allocator, message);
+    }
+};
+
+/// go-git `CommitOptions` (including generic Signer and OpenPGP SignKey).
 pub const CommitOptions = struct {
     all: bool = false,
     allow_empty_commits: bool = false,
@@ -75,6 +111,8 @@ pub const CommitOptions = struct {
     committer: ?Signature = null,
     parents: []const Hash = &.{},
     sign_key: ?*objpkg.Entity = null,
+    /// Generic signer. Takes precedence over `sign_key`, as in go-git.
+    signer: ?Signer = null,
     amend: bool = false,
 
     pub fn validate(self: *const CommitOptions) !void {
@@ -91,12 +129,62 @@ pub const PullOptions = struct {
     single_branch: bool = false,
     depth: i32 = 0,
     force: bool = false,
+    /// Nested submodule update depth after pull (go-git `RecurseSubmodules`).
+    /// Zero = do not update submodules (`NoRecurseSubmodules`).
+    recurse_submodules: u32 = 0,
+    /// Package-cycle-safe glue used to execute the submodule update. Bind the
+    /// concrete implementation with `submodule.bindPullOptions`.
+    submodule_updater: ?SubmoduleUpdater = null,
     transport: remote.TransportClientOpts = .{},
     progress: ?*std.Io.Writer = null,
 
     pub fn validate(self: *PullOptions) !void {
         if (self.remote_name.len == 0) self.remote_name = remote.default_remote_name;
         if (self.reference_name.raw.len == 0) self.reference_name = plumbing.HEAD;
+    }
+};
+
+/// Callback boundary from worktree Pull to the submodule package.
+///
+/// Worktree cannot import submodule because submodule imports worktree for
+/// checkout. Keeping the callback on PullOptions preserves that DAG while
+/// making non-zero `recurse_submodules` executable rather than comment-only.
+pub const SubmoduleUpdater = struct {
+    context: ?*anyopaque = null,
+    update_fn: *const fn (
+        context: ?*anyopaque,
+        allocator: std.mem.Allocator,
+        storer_ptr: *memory.Storage,
+        filesystem: *fs_pkg.Mem,
+        embedded: ?*server.Server,
+        recurse: u32,
+        depth: i32,
+        auth: ?transport.AuthMethod,
+        operation_context: transport.OperationContext,
+    ) anyerror!void,
+
+    pub fn update(
+        self: SubmoduleUpdater,
+        allocator: std.mem.Allocator,
+        storer_ptr: *memory.Storage,
+        filesystem: *fs_pkg.Mem,
+        embedded: ?*server.Server,
+        recurse: u32,
+        depth: i32,
+        auth: ?transport.AuthMethod,
+        operation_context: transport.OperationContext,
+    ) !void {
+        return self.update_fn(
+            self.context,
+            allocator,
+            storer_ptr,
+            filesystem,
+            embedded,
+            recurse,
+            depth,
+            auth,
+            operation_context,
+        );
     }
 };
 
@@ -112,6 +200,14 @@ pub const CloneOptions = struct {
     mirror: bool = false,
     bare: bool = false,
     force: bool = false,
+    /// Local-source object alternates (go-git `Shared`).
+    shared: bool = false,
+    /// Nested submodule init+update depth after clone (go-git `RecurseSubmodules`).
+    /// Zero = skip (`NoRecurseSubmodules`).
+    recurse_submodules: u32 = 0,
+    /// When true and depth > 0, submodule fetch uses the same depth
+    /// (go-git `ShallowSubmodules`).
+    shallow_submodules: bool = false,
     transport: remote.TransportClientOpts = .{},
     progress: ?*std.Io.Writer = null,
 

@@ -3,8 +3,9 @@
 //! Hermetic path uses `fs.Mem` + `//src/storage/filesystem` (no host `Os` required
 //! for tests). Host `Os` can follow the same flow via `filesystem.newStorageOs`.
 //!
-//! Out of scope here: PlainClone (see `//src/porcelain`), EnableDotGitCommonDir
-//! (stub flag ignored).
+//! PlainClone is in `//src/porcelain`. Linked-worktree commondir repositories
+//! use a local storage for worktree-private HEAD/index and a common storage
+//! for refs, objects, config, and packs.
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -19,6 +20,7 @@ const utils_sync = @import("utils/sync");
 
 const repository = @import("repository.zig");
 const error_mod = @import("error.zig");
+const repack_mod = @import("repack.zig");
 
 const Allocator = std.mem.Allocator;
 const Reference = plumbing.Reference;
@@ -29,6 +31,7 @@ const Mem = fs_pkg.Mem;
 pub const Error = error_mod.Error;
 pub const git_dir_name = repository.git_dir_name;
 pub const InitOptions = repository.InitOptions;
+pub const RepackConfig = repack_mod.RepackConfig;
 
 /// go-git `PlainInitOptions`.
 pub const PlainInitOptions = struct {
@@ -38,13 +41,16 @@ pub const PlainInitOptions = struct {
     bare: bool = false,
     /// Object hash format (`""` / `"sha1"` default; `"sha256"` enables SHA-256 OIDs).
     object_format: []const u8 = "",
+    /// Filesystem root used to resolve `objects/info/alternates` paths.
+    /// The caller owns this filesystem and must keep it alive with the repository.
+    alternates_fs: ?*Mem = null,
 };
 
 /// go-git `PlainOpenOptions`.
 pub const PlainOpenOptions = struct {
     /// Walk parent directories until `.git` is found.
     detect_dot_git: bool = false,
-    /// `.git/commondir` support — stubbed (ignored; not implemented).
+    /// Enable `.git/commondir` linked-worktree layout.
     enable_dot_git_common_dir: bool = false,
 };
 
@@ -55,16 +61,29 @@ pub const PlainOpenOptions = struct {
 pub const PlainRepository = struct {
     allocator: Allocator,
     storer: *filesystem.StorageMem,
+    /// Worktree-local gitdir storage for a linked worktree. `storer` points at
+    /// the common directory when this is non-null.
+    local_storer: ?*filesystem.StorageMem = null,
     /// Owned chroot into `.git` (non-bare) or into a `gitdir:` target.
     owned_dot: ?*Mem = null,
     /// Owned worktree chroot when DetectDotGit walked to a parent.
     owned_worktree: ?*Mem = null,
+    /// Owned chroot of the common git directory for linked worktrees.
+    owned_common: ?*Mem = null,
     /// Worktree FS; null when bare. May equal `owned_worktree` or caller's Mem.
     worktree: ?*Mem = null,
 
     pub fn deinit(self: *PlainRepository) void {
+        if (self.local_storer) |local| {
+            local.deinit();
+            self.allocator.destroy(local);
+        }
         self.storer.deinit();
         self.allocator.destroy(self.storer);
+        if (self.owned_common) |common| {
+            common.deinit();
+            self.allocator.destroy(common);
+        }
         if (self.owned_dot) |dot| {
             dot.deinit();
             self.allocator.destroy(dot);
@@ -83,6 +102,7 @@ pub const PlainRepository = struct {
     /// Activate this repository's object format for process-wide wire codecs.
     pub fn activateFormat(self: *const PlainRepository) void {
         self.storer.activateFormat();
+        if (self.local_storer) |local| local.setHashAlgo(self.storer.hashAlgo());
     }
 
     pub fn config(self: *PlainRepository) !*Config {
@@ -100,10 +120,39 @@ pub const PlainRepository = struct {
         try self.setConfig(cfg);
     }
 
+    /// Index is worktree-private in Git's commondir layout.
+    pub fn index(self: *PlainRepository) !*filesystem.StorageMem.Index {
+        if (self.local_storer) |local| return local.index();
+        return self.storer.index();
+    }
+
+    /// Store an index in the worktree-local gitdir when commondir is active.
+    pub fn setIndex(self: *PlainRepository, idx: *filesystem.StorageMem.Index) void {
+        if (self.local_storer) |local| {
+            local.setIndex(idx);
+        } else {
+            self.storer.setIndex(idx);
+        }
+    }
+
     /// Unresolved reference lookup. FS refs are owned — free with `freeReference`.
     pub fn reference(self: *PlainRepository, name: ReferenceName, resolved: bool) !Reference {
         self.activateFormat();
-        if (resolved) return storer.resolveReference(self.storer, name);
+        if (self.local_storer) |local| {
+            if (name.eql(plumbing.HEAD)) {
+                const head_ref = try local.reference(name);
+                if (!resolved or head_ref.type == .hash) return head_ref;
+                const target = head_ref.target;
+                // Resolve through common refs before freeing the owned local ref.
+                const result = resolveOwnedFsReference(self.storer, self.allocator, target) catch |err| {
+                    dotgit.freeRef(self.allocator, head_ref);
+                    return err;
+                };
+                dotgit.freeRef(self.allocator, head_ref);
+                return result;
+            }
+        }
+        if (resolved) return resolveOwnedFsReference(self.storer, self.allocator, name);
         return self.storer.reference(name);
     }
 
@@ -113,10 +162,44 @@ pub const PlainRepository = struct {
     }
 
     pub fn head(self: *PlainRepository) !Reference {
+        return self.reference(plumbing.HEAD, true);
+    }
+
+    /// go-git `Repository.RepackObjects` over filesystem storage.
+    ///
+    /// Walks all refs, writes one new pack of reachable objects, deletes packed
+    /// loose objects, then deletes older packs per `cfg.only_delete_packs_older_than`.
+    pub fn repackObjects(self: *PlainRepository, cfg: *const RepackConfig) !void {
         self.activateFormat();
-        return storer.resolveReference(self.storer, plumbing.HEAD);
+        return repack_mod.repackObjectsFs(self.allocator, self.storer, cfg);
     }
 };
+
+/// Resolve filesystem references while releasing each owned symbolic hop.
+/// The generic storer resolver is correct for borrowed reference values, but
+/// filesystem reference names and targets are heap-owned.
+fn resolveOwnedFsReference(
+    storage: *filesystem.StorageMem,
+    allocator: Allocator,
+    name: ReferenceName,
+) !Reference {
+    var current = try storage.reference(name);
+    var recursion: usize = 0;
+    while (current.type == .symbolic) {
+        if (recursion > storer.MaxResolveRecursion) {
+            dotgit.freeRef(allocator, current);
+            return error.MaxResolveRecursion;
+        }
+        const next = storage.reference(current.target) catch |err| {
+            dotgit.freeRef(allocator, current);
+            return err;
+        };
+        dotgit.freeRef(allocator, current);
+        current = next;
+        recursion += 1;
+    }
+    return current;
+}
 
 // ---------------------------------------------------------------------------
 // PlainInit
@@ -148,7 +231,12 @@ pub fn plainInitWithOptions(allocator: Allocator, path_fs: *Mem, opts: PlainInit
         break :blk p;
     };
 
-    const s = try filesystem.newStorage(allocator, dot_fs, null);
+    const s = try filesystem.newStorageWithOptions(
+        allocator,
+        dot_fs,
+        null,
+        .{ .alternates_fs = opts.alternates_fs },
+    );
     errdefer {
         s.deinit();
         allocator.destroy(s);
@@ -207,40 +295,85 @@ pub fn plainOpen(allocator: Allocator, path_fs: *Mem) !PlainRepository {
 
 /// go-git `PlainOpenWithOptions` over `fs.Mem`.
 pub fn plainOpenWithOptions(allocator: Allocator, path_fs: *Mem, o: PlainOpenOptions) !PlainRepository {
-    // CommonDir support is a residual stub.
-    _ = o.enable_dot_git_common_dir;
-
     var resolved = try resolveDotGitMem(allocator, path_fs, o.detect_dot_git);
     errdefer resolved.deinitOwned(allocator);
 
-    const s = try filesystem.newStorage(allocator, resolved.dot, null);
+    var common_fs: ?*Mem = null;
+    errdefer if (common_fs) |common| {
+        common.deinit();
+        allocator.destroy(common);
+    };
+    if (o.enable_dot_git_common_dir)
+        common_fs = try resolveCommonDir(allocator, resolved.dot, resolved.worktree orelse path_fs);
+
+    const local_s = try filesystem.newStorage(allocator, resolved.dot, null);
     errdefer {
-        s.deinit();
-        allocator.destroy(s);
+        local_s.deinit();
+        allocator.destroy(local_s);
     }
 
-    // Open: HEAD must exist
-    if (s.reference(plumbing.HEAD)) |ref| {
+    // Open: worktree-local HEAD must exist.
+    if (local_s.reference(plumbing.HEAD)) |ref| {
         freeFsRef(allocator, ref);
     } else |err| switch (err) {
         error.ReferenceNotFound => return error.RepositoryNotExists,
         else => |e| return e,
     }
 
+    var common_s: ?*filesystem.StorageMem = null;
+    errdefer if (common_s) |common| {
+        common.deinit();
+        allocator.destroy(common);
+    };
+    const s = if (common_fs) |common| blk: {
+        const storage = try filesystem.newStorage(allocator, common, null);
+        common_s = storage;
+        break :blk storage;
+    } else local_s;
+
     const cfg = try s.config();
+    try repository.verifyExtensions(cfg);
     const fmt = resolveObjectFormat(cfg.object_format) catch .sha1;
     s.setHashAlgo(fmt);
 
     const r = PlainRepository{
         .allocator = allocator,
         .storer = s,
+        .local_storer = if (common_fs != null) local_s else null,
         .owned_dot = resolved.owned_dot,
         .owned_worktree = resolved.owned_worktree,
+        .owned_common = common_fs,
         .worktree = resolved.worktree,
     };
+    if (common_fs != null) common_s = null;
+    common_fs = null;
     resolved.owned_dot = null;
     resolved.owned_worktree = null;
     return r;
+}
+
+/// Resolve `.git/commondir`. Null means a normal repository. The path is
+/// relative to the worktree-local gitdir, as specified by Git.
+fn resolveCommonDir(allocator: Allocator, dot: *Mem, base: *Mem) !?*Mem {
+    var f = dot.open("commondir") catch |err| switch (err) {
+        error.NotExist => return null,
+        else => |e| return e,
+    };
+    defer f.close() catch {};
+    const raw = try readAll(allocator, &f);
+    defer allocator.free(raw);
+    const path = std.mem.trim(u8, raw, " \t\r\n");
+    if (path.len == 0) return error.RepositoryIncomplete;
+
+    const absolute = try std.fs.path.resolve(allocator, &.{ dot.root(), path });
+    defer allocator.free(absolute);
+    const view = base.chroot(absolute) catch |err| switch (err) {
+        error.NotExist, error.NotDir, error.CrossedBoundary => return error.RepositoryIncomplete,
+        else => |e| return e,
+    };
+    const owned = try allocator.create(Mem);
+    owned.* = view;
+    return owned;
 }
 
 /// Map config/option object format string to algorithm.
@@ -456,6 +589,61 @@ test "PlainOpen after PlainInit works" {
     try std.testing.expectEqualStrings(plumbing.master.raw, head_ref.target.raw);
 }
 
+test "PlainOpen EnableDotGitCommonDir routes local HEAD and common storage" {
+    const gpa = std.testing.allocator;
+    var root = try Mem.init(gpa);
+    defer root.deinit();
+
+    {
+        var initialized = try plainInit(gpa, &root, false);
+        initialized.deinit();
+    }
+    {
+        var opened = try plainOpenWithOptions(gpa, &root, .{
+            .enable_dot_git_common_dir = true,
+        });
+        opened.deinit();
+    }
+
+    var f = try root.create(".git/commondir");
+    _ = try f.write("../common\n");
+    try f.close();
+    // A declared but missing common directory is an incomplete repository.
+    try std.testing.expectError(
+        error.RepositoryIncomplete,
+        plainOpenWithOptions(gpa, &root, .{ .enable_dot_git_common_dir = true }),
+    );
+
+    try root.mkdirAll("common", fs_pkg.Mode.dir);
+    var common_fs = try root.chroot("common");
+    defer common_fs.deinit();
+    const common_head = plumbing.newHash("2222222222222222222222222222222222222222");
+    {
+        var common_repo = try plainInit(gpa, &common_fs, true);
+        try common_repo.storer.setReference(
+            Reference.newHashReference(plumbing.master, common_head),
+        );
+        const common_cfg = try common_repo.config();
+        try common_cfg.setUser("Common User", "common@example.com");
+        try common_repo.setConfig(common_cfg);
+        common_repo.deinit();
+    }
+
+    var linked = try plainOpenWithOptions(gpa, &root, .{
+        .enable_dot_git_common_dir = true,
+    });
+    defer linked.deinit();
+    try std.testing.expect(linked.local_storer != null);
+    const unresolved = try linked.reference(plumbing.HEAD, false);
+    defer linked.freeReference(unresolved);
+    try std.testing.expect(unresolved.type == .symbolic);
+    const resolved_head = try linked.head();
+    defer linked.freeReference(resolved_head);
+    try std.testing.expect(resolved_head.hash.eql(common_head));
+    const cfg = try linked.config();
+    try std.testing.expectEqualStrings("Common User", cfg.user_name);
+}
+
 test "PlainOpen missing returns RepositoryNotExists" {
     const gpa = std.testing.allocator;
     var root = try Mem.init(gpa);
@@ -597,4 +785,64 @@ test "PlainOpen bare after PlainInit bare" {
     var r = try plainOpen(gpa, &root);
     defer r.deinit();
     try std.testing.expect(r.isBare());
+}
+
+test "PlainRepository.repackObjects packs loose commit" {
+    const gpa = std.testing.allocator;
+    defer utils_sync.deinitPools(gpa);
+
+    var root = try Mem.init(gpa);
+    defer root.deinit();
+
+    var r = try plainInit(gpa, &root, true);
+    defer r.deinit();
+
+    const s = r.storer;
+    const blob_obj = try s.newEncodedObject();
+    blob_obj.setType(.blob);
+    _ = try blob_obj.write("plain-repack");
+    const blob_h = try s.setEncodedObject(blob_obj);
+
+    var tbuf: std.ArrayList(u8) = .empty;
+    defer tbuf.deinit(gpa);
+    try tbuf.appendSlice(gpa, "100644 f.txt\x00");
+    try tbuf.appendSlice(gpa, blob_h.slice());
+    const tree_obj = try s.newEncodedObject();
+    tree_obj.setType(.tree);
+    _ = try tree_obj.write(tbuf.items);
+    const tree_h = try s.setEncodedObject(tree_obj);
+
+    var cbuf: std.ArrayList(u8) = .empty;
+    defer cbuf.deinit(gpa);
+    var tree_hex: [plumbing.MaxHexSize]u8 = undefined;
+    try cbuf.appendSlice(gpa, "tree ");
+    try cbuf.appendSlice(gpa, tree_h.string(&tree_hex));
+    try cbuf.appendSlice(gpa, "\nauthor T <t@e.com> 1 +0000\ncommitter T <t@e.com> 1 +0000\n\nm\n");
+    const commit_obj = try s.newEncodedObject();
+    commit_obj.setType(.commit);
+    _ = try commit_obj.write(cbuf.items);
+    const commit_h = try s.setEncodedObject(commit_obj);
+
+    try s.setReference(Reference.newHashReference(plumbing.master, commit_h));
+
+    const cfg = RepackConfig{};
+    try r.repackObjects(&cfg);
+
+    const Count = struct {
+        n: usize = 0,
+        fn cb(self: *@This(), _: plumbing.Hash) anyerror!void {
+            self.n += 1;
+        }
+    };
+    var loose = Count{};
+    try s.forEachObjectHash(&loose, Count.cb);
+    try std.testing.expectEqual(@as(usize, 0), loose.n);
+
+    const packs = try s.objectPacks();
+    defer dotgit.freeHashes(s.allocator, packs);
+    try std.testing.expectEqual(@as(usize, 1), packs.len);
+
+    try s.hasEncodedObject(commit_h);
+    const got = try s.encodedObject(.blob, blob_h);
+    try std.testing.expectEqualStrings("plain-repack", got.readerBytes());
 }

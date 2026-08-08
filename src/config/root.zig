@@ -11,6 +11,7 @@ const refspec_mod = @import("refspec.zig");
 const branch_mod = @import("branch.zig");
 const url_mod = @import("url.zig");
 const modules_mod = @import("modules.zig");
+const storer_mod = @import("storer.zig");
 
 // --- config.go ---
 pub const Config = config_mod.Config;
@@ -32,6 +33,7 @@ pub const newConfig = config_mod.newConfig;
 pub const readConfig = config_mod.readConfig;
 pub const loadConfig = config_mod.loadConfig;
 pub const paths = config_mod.paths;
+pub const ConfigStorer = storer_mod.ConfigStorer;
 
 // --- optbool.go ---
 pub const OptBool = optbool_mod.OptBool;
@@ -61,4 +63,5 @@ test {
     _ = @import("modules.zig");
     _ = @import("config.zig");
     _ = @import("owned.zig");
+    _ = @import("storer.zig");
 }

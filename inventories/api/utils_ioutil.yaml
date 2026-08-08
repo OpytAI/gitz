@@ -2,14 +2,92 @@
 package: utils/ioutil
 phase: 1
 require:
-  types: []
+  types:
+    - ReadCloser
+    - WriteCloser
+    - ChainedReadCloser
+    - ContextReader
+    - ContextWriter
+    - ContextReadCloser
+    - ContextWriteCloser
+    - ReaderAt
+    - ReaderUsingReaderAt
+    - ReaderOnError
+    - WriterOnError
+    - ReadCloserOnError
+    - WriteCloserOnError
   functions:
     - NonEmptyReader
     - NewReaderFromBuf
+    - NewReadCloser
+    - NewWriteCloser
+    - NewReadCloserWithCloser
+    - WriteNopCloser
+    - NewContextReader
+    - NewContextWriter
+    - NewContextReadCloser
+    - NewContextWriteCloser
+    - NewReaderUsingReaderAt
+    - NewReaderOnError
+    - NewWriterOnError
+    - NewReadCloserOnError
+    - NewWriteCloserOnError
   constants: []
   semantic:
     - ioutil.nonEmptyReader
     - ioutil.newReaderFromBuf
+    - ioutil.ReadCloser
+    - ioutil.WriteCloser
+    - ioutil.ChainedReadCloser
+    - ioutil.newReadCloser
+    - ioutil.newWriteCloser
+    - ioutil.newReadCloserWithCloser
+    - ioutil.writeNopCloser
+    - ioutil.ContextReader
+    - ioutil.ContextWriter
+    - ioutil.ContextReadCloser
+    - ioutil.ContextWriteCloser
+    - ioutil.ReaderAt
+    - ioutil.ReaderUsingReaderAt
+    - ioutil.ReaderOnError
+    - ioutil.WriterOnError
+    - ioutil.ReadCloserOnError
+    - ioutil.WriteCloserOnError
+    - ioutil.newContextReader
+    - ioutil.newContextWriter
+    - ioutil.newContextReadCloser
+    - ioutil.newContextWriteCloser
+    - ioutil.newReaderUsingReaderAt
+    - ioutil.newReaderOnError
+    - ioutil.newWriterOnError
+    - ioutil.newReadCloserOnError
+    - ioutil.newWriteCloserOnError
 zig_map:
   NonEmptyReader: ioutil.nonEmptyReader
   NewReaderFromBuf: ioutil.newReaderFromBuf
+  ReadCloser: ioutil.ReadCloser
+  WriteCloser: ioutil.WriteCloser
+  ChainedReadCloser: ioutil.ChainedReadCloser
+  NewReadCloser: ioutil.newReadCloser
+  NewWriteCloser: ioutil.newWriteCloser
+  NewReadCloserWithCloser: ioutil.newReadCloserWithCloser
+  WriteNopCloser: ioutil.writeNopCloser
+  ContextReader: ioutil.ContextReader
+  ContextWriter: ioutil.ContextWriter
+  ContextReadCloser: ioutil.ContextReadCloser
+  ContextWriteCloser: ioutil.ContextWriteCloser
+  ReaderAt: ioutil.ReaderAt
+  ReaderUsingReaderAt: ioutil.ReaderUsingReaderAt
+  ReaderOnError: ioutil.ReaderOnError
+  WriterOnError: ioutil.WriterOnError
+  ReadCloserOnError: ioutil.ReadCloserOnError
+  WriteCloserOnError: ioutil.WriteCloserOnError
+  NewContextReader: ioutil.newContextReader
+  NewContextWriter: ioutil.newContextWriter
+  NewContextReadCloser: ioutil.newContextReadCloser
+  NewContextWriteCloser: ioutil.newContextWriteCloser
+  NewReaderUsingReaderAt: ioutil.newReaderUsingReaderAt
+  NewReaderOnError: ioutil.newReaderOnError
+  NewWriterOnError: ioutil.newWriterOnError
+  NewReadCloserOnError: ioutil.newReadCloserOnError
+  NewWriteCloserOnError: ioutil.newWriteCloserOnError

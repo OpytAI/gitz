@@ -243,6 +243,34 @@ pub fn freeEntities(allocator: Allocator, entities: []Entity) void {
     allocator.free(entities);
 }
 
+/// Parse the keyring and transfer ownership of the entity containing the
+/// verified primary key or signing subkey. Caller must call `Entity.deinit`.
+pub fn entityForFingerprint(allocator: Allocator, armored: []const u8, fingerprint: [20]u8) (Allocator.Error || Error)!Entity {
+    const entities = try readArmoredKeyRing(allocator, armored);
+    var selected: ?usize = null;
+    for (entities, 0..) |*entity, i| {
+        if (std.mem.eql(u8, &entity.primary.fingerprint, &fingerprint)) {
+            selected = i;
+            break;
+        }
+        for (entity.subkeys) |*subkey| {
+            if (std.mem.eql(u8, &subkey.fingerprint, &fingerprint)) {
+                selected = i;
+                break;
+            }
+        }
+        if (selected != null) break;
+    }
+    const index = selected orelse {
+        freeEntities(allocator, entities);
+        return error.KeyNotFound;
+    };
+    const result = entities[index];
+    for (entities, 0..) |*entity, i| if (i != index) entity.deinit();
+    allocator.free(entities);
+    return result;
+}
+
 fn publicMaterialEnd(body: []const u8) Error!usize {
     if (body.len < 6 or body[0] != 4) return error.UnsupportedAlgorithm;
     const algo = body[5];

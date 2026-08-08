@@ -37,6 +37,11 @@ require:
     - plan_only
     - entryHostMatches
     - hash_salt
+    - proxy_url
+    - socks5Connect
+    - SshProxyUnsupported
+    - SshProxyHandshakeFailed
+    - SshProxyConnectRejected
 zig_map:
   Password: Password
   PublicKeys: PublicKeys

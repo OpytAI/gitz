@@ -313,9 +313,13 @@ pub const Password = struct {
                 const s: *Password = @ptrCast(@alignCast(ptr));
                 return s.format(allocator);
             }
+            fn credentialsFn(ptr: *anyopaque, protocol: []const u8) ?*anyopaque {
+                return if (std.mem.eql(u8, protocol, "ssh")) ptr else null;
+            }
             const vtable = transport.AuthMethod.VTable{
                 .name = nameFn,
                 .format = formatFn,
+                .protocol_credentials = credentialsFn,
             };
         };
         return .{ .ptr = self, .vtable = &gen.vtable };
@@ -385,9 +389,13 @@ pub const PasswordCallback = struct {
                 const s: *PasswordCallback = @ptrCast(@alignCast(ptr));
                 return s.format(allocator);
             }
+            fn credentialsFn(ptr: *anyopaque, protocol: []const u8) ?*anyopaque {
+                return if (std.mem.eql(u8, protocol, "ssh")) ptr else null;
+            }
             const vtable = transport.AuthMethod.VTable{
                 .name = nameFn,
                 .format = formatFn,
+                .protocol_credentials = credentialsFn,
             };
         };
         return .{ .ptr = self, .vtable = &gen.vtable };
@@ -457,9 +465,13 @@ pub const KeyboardInteractive = struct {
                 const s: *KeyboardInteractive = @ptrCast(@alignCast(ptr));
                 return s.format(allocator);
             }
+            fn credentialsFn(ptr: *anyopaque, protocol: []const u8) ?*anyopaque {
+                return if (std.mem.eql(u8, protocol, "ssh")) ptr else null;
+            }
             const vtable = transport.AuthMethod.VTable{
                 .name = nameFn,
                 .format = formatFn,
+                .protocol_credentials = credentialsFn,
             };
         };
         return .{ .ptr = self, .vtable = &gen.vtable };
@@ -744,9 +756,13 @@ pub const PublicKeys = struct {
                 const s: *PublicKeys = @ptrCast(@alignCast(ptr));
                 return s.format(allocator);
             }
+            fn credentialsFn(ptr: *anyopaque, protocol: []const u8) ?*anyopaque {
+                return if (std.mem.eql(u8, protocol, "ssh")) ptr else null;
+            }
             const vtable = transport.AuthMethod.VTable{
                 .name = nameFn,
                 .format = formatFn,
+                .protocol_credentials = credentialsFn,
             };
         };
         return .{ .ptr = self, .vtable = &gen.vtable };
@@ -910,9 +926,13 @@ pub const PublicKeysCallback = struct {
                 const s: *PublicKeysCallback = @ptrCast(@alignCast(ptr));
                 return s.format(allocator);
             }
+            fn credentialsFn(ptr: *anyopaque, protocol: []const u8) ?*anyopaque {
+                return if (std.mem.eql(u8, protocol, "ssh")) ptr else null;
+            }
             const vtable = transport.AuthMethod.VTable{
                 .name = nameFn,
                 .format = formatFn,
+                .protocol_credentials = credentialsFn,
             };
         };
         return .{ .ptr = self, .vtable = &gen.vtable };

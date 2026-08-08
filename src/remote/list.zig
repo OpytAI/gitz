@@ -42,16 +42,16 @@ pub fn list(
     o: ListOptions,
 ) ![]Reference {
     if (o.timeout_sec < 0) return RemoteError.InvalidTimeout;
-    // effectiveTimeoutSec is available for phase-13 network deadline wiring.
-    _ = o.effectiveTimeoutSec();
-
     if (config.urls.len == 0) return RemoteError.EmptyUrls;
 
     const sopts = session.SessionOpts.fromClient(o.transport);
-    var sess = try session.openUploadPackUrl(allocator, config.urls[0], sopts, embedded);
-    defer sess.close();
-
-    const ar = try sess.advertisedReferences();
+    const ar = try advertisedReferencesWithTimeout(
+        allocator,
+        config.urls[0],
+        sopts,
+        embedded,
+        o.effectiveTimeoutSec(),
+    );
     defer packp.freeAdvRefs(allocator, ar);
 
     var all_refs = try ar.allReferences();
@@ -68,6 +68,66 @@ pub fn list(
     }
 
     return try out.toOwnedSlice(allocator);
+}
+
+const TimedAdvertisement = union(enum) {
+    advertisement: anyerror!*packp.AdvRefs,
+    deadline: std.Io.Cancelable!void,
+};
+
+/// Enforce go-git's List timeout around both the transport connect and the
+/// advertised-reference read. Canceling the operation interrupts its next
+/// std.Io cancellation point, including socket connect/read/write operations.
+fn advertisedReferencesWithTimeout(
+    allocator: Allocator,
+    url: []const u8,
+    opts: session.SessionOpts,
+    embedded: ?*server.Server,
+    timeout_sec: i32,
+) !*packp.AdvRefs {
+    const io = session.defaultIo();
+    var results: [2]TimedAdvertisement = undefined;
+    var select = std.Io.Select(TimedAdvertisement).init(io, &results);
+    select.async(.advertisement, openAndReadAdvertisement, .{ allocator, io, url, opts, embedded });
+    select.async(.deadline, waitForDeadline, .{ io, std.Io.Duration.fromSeconds(timeout_sec) });
+
+    const first = try select.await();
+    switch (first) {
+        .advertisement => |result| {
+            // Only the timer remains and it owns no resources.
+            select.cancelDiscard();
+            return result;
+        },
+        .deadline => |deadline_result| {
+            // A spontaneous timer error is not a timeout. Preserve it.
+            try deadline_result;
+            // Drain the canceled operation. It may have completed at the same
+            // instant as the timer and returned an allocation that we own.
+            while (select.cancel()) |remaining| switch (remaining) {
+                .advertisement => |result| if (result) |refs| {
+                    packp.freeAdvRefs(allocator, refs);
+                } else |_| {},
+                .deadline => {},
+            };
+            return RemoteError.ListTimeout;
+        },
+    }
+}
+
+fn openAndReadAdvertisement(
+    allocator: Allocator,
+    io: std.Io,
+    url: []const u8,
+    opts: session.SessionOpts,
+    embedded: ?*server.Server,
+) anyerror!*packp.AdvRefs {
+    var sess = try session.openUploadPack(allocator, io, url, opts, embedded);
+    defer sess.close();
+    return sess.advertisedReferences();
+}
+
+fn waitForDeadline(io: std.Io, duration: std.Io.Duration) std.Io.Cancelable!void {
+    return std.Io.sleep(io, duration, .real);
 }
 
 fn freeReferenceList(allocator: Allocator, refs_list: *std.ArrayList(Reference)) void {
@@ -127,6 +187,10 @@ fn cloneReference(allocator: Allocator, ref: Reference) !Reference {
 
 test "PeelingOption values" {
     try std.testing.expect(@intFromEnum(PeelingOption.ignore_peeled) == 0);
-    try std.testing.expect(@intFromEnum(PeelingOption.append_peeled) == 1);
-    try std.testing.expect(@intFromEnum(PeelingOption.only_peeled) == 2);
+    try std.testing.expect(@intFromEnum(PeelingOption.only_peeled) == 1);
+    try std.testing.expect(@intFromEnum(PeelingOption.append_peeled) == 2);
+}
+
+test "List deadline task is an actual monotonic timer" {
+    try waitForDeadline(std.testing.io, .fromNanoseconds(0));
 }

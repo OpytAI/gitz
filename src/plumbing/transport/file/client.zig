@@ -1014,43 +1014,8 @@ pub const FileClient = struct {
 
     /// Expose as `transport.Transport` vtable for `client.installProtocol("file", ...)`.
     pub fn asTransport(self: *FileClient) transport.Transport {
-        return .{
-            .ptr = self,
-            .vtable = &file_transport_vtable,
-        };
+        return self.client.asTransport();
     }
-};
-
-fn fileNewUploadPackSession(
-    ptr: *anyopaque,
-    endpoint: *const Endpoint,
-    auth: ?AuthMethod,
-) anyerror!?transport.SessionHandle {
-    const self: *FileClient = @ptrCast(@alignCast(ptr));
-    // Session is stack-unfriendly through the vtable; callers that need typed
-    // sessions use FileClient.newUploadPackSession directly (same as phase-11
-    // server transportFromServer returning null).
-    _ = self;
-    _ = endpoint;
-    _ = auth;
-    return null;
-}
-
-fn fileNewReceivePackSession(
-    ptr: *anyopaque,
-    endpoint: *const Endpoint,
-    auth: ?AuthMethod,
-) anyerror!?transport.SessionHandle {
-    const self: *FileClient = @ptrCast(@alignCast(ptr));
-    _ = self;
-    _ = endpoint;
-    _ = auth;
-    return null;
-}
-
-const file_transport_vtable = transport.Transport.VTable{
-    .newUploadPackSession = fileNewUploadPackSession,
-    .newReceivePackSession = fileNewReceivePackSession,
 };
 
 /// go-git `NewClient` — local client using the given binary labels.

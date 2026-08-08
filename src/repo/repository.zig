@@ -20,6 +20,8 @@ const storer = @import("storer");
 const memory = @import("memory");
 const fs_pkg = @import("fs");
 const gitconfig = @import("gitconfig");
+const format_config = @import("config");
+const transport = @import("transport");
 
 const error_mod = @import("error.zig");
 const facade = @import("facade.zig");
@@ -29,8 +31,12 @@ const remote_mod = @import("remote.zig");
 const objpkg = @import("object");
 const worktree_pkg = @import("worktree");
 const server_pkg = @import("server");
+const repack_mod = @import("repack.zig");
+const prune_pkg = @import("prune");
+const blame_pkg = @import("blame");
 
 const Allocator = std.mem.Allocator;
+const Hash = plumbing.Hash;
 const Reference = plumbing.Reference;
 const ReferenceName = plumbing.ReferenceName;
 const Config = memory.Config;
@@ -44,6 +50,9 @@ pub const FetchOptions = remote_mod.FetchOptions;
 pub const PushOptions = remote_mod.PushOptions;
 pub const ListOptions = remote_mod.ListOptions;
 pub const AnonymousRemote = crud.AnonymousRemote;
+pub const RepackConfig = repack_mod.RepackConfig;
+pub const PruneOptions = prune_pkg.PruneOptions;
+pub const BlameResult = blame_pkg.BlameResult;
 
 pub const Error = error_mod.Error;
 
@@ -201,12 +210,32 @@ pub const Repository = struct {
         var rem = try self.remote(o.remote_name);
         return rem.fetch(o);
     }
+    /// go-git `Repository.FetchContext` via cooperative transport context.
+    pub fn fetchContext(
+        self: *Repository,
+        context: transport.OperationContext,
+        o: *const FetchOptions,
+    ) !void {
+        var opts = o.*;
+        opts.transport.operation_context = context;
+        return self.fetch(&opts);
+    }
 
     /// go-git `Repository.Push` — resolve remote by `o.remote_name`, then push.
     pub fn push(self: *Repository, o: *PushOptions) !void {
         try o.validate();
         var rem = try self.remote(o.remote_name);
         return rem.push(o);
+    }
+    /// go-git `Repository.PushContext` via cooperative transport context.
+    pub fn pushContext(
+        self: *Repository,
+        context: transport.OperationContext,
+        o: *const PushOptions,
+    ) !void {
+        var opts = o.*;
+        opts.transport.operation_context = context;
+        return self.push(&opts);
     }
     pub fn branch(self: *Repository, name: []const u8) !*const memory.BranchConfig {
         return crud.branch(self.storer, name);
@@ -215,9 +244,9 @@ pub const Repository = struct {
         self: *Repository,
         name: []const u8,
         remote_name: []const u8,
-        merge: []const u8,
+        merge_ref: []const u8,
     ) !void {
-        return crud.createBranch(self.storer, name, remote_name, merge);
+        return crud.createBranch(self.storer, name, remote_name, merge_ref);
     }
     pub fn deleteBranch(self: *Repository, name: []const u8) !void {
         return crud.deleteBranch(self.storer, name);
@@ -286,6 +315,106 @@ pub const Repository = struct {
     pub fn resolveRevision(self: *Repository, rev: []const u8) !plumbing.Hash {
         return facade.resolveRevision(self.storer, rev);
     }
+
+    /// go-git `Repository.Grep`. Searches commit trees and works for bare repos.
+    pub fn grep(
+        self: *Repository,
+        allocator: Allocator,
+        opts: worktree_pkg.GrepOptions,
+    ) ![]worktree_pkg.GrepResult {
+        return worktree_pkg.grepRepository(allocator, self.storer, opts);
+    }
+
+    /// Repository method form of blame for callers that have a commit hash.
+    pub fn blame(
+        self: *Repository,
+        allocator: Allocator,
+        commit_hash: Hash,
+        path: []const u8,
+    ) !BlameResult {
+        const c = try objpkg.getCommit(allocator, self.storer, commit_hash);
+        defer {
+            c.deinit();
+            allocator.destroy(c);
+        }
+        return blame_pkg.blame(allocator, c, path);
+    }
+
+    /// go-git `Repository.DeleteObject` method form.
+    pub fn deleteObject(self: *Repository, hash: Hash) !void {
+        return prune_pkg.deleteObject(self.storer, hash);
+    }
+
+    /// go-git `Repository.Prune` method form.
+    pub fn prune(self: *Repository, allocator: Allocator, opts: PruneOptions) !void {
+        return prune_pkg.prune(allocator, self.storer, opts);
+    }
+
+    // -----------------------------------------------------------------------
+    // Repack
+    // -----------------------------------------------------------------------
+
+    /// go-git `Repository.RepackObjects` over memory storage.
+    ///
+    /// Memory implements PackedObjectStorer (empty packs) but not PackfileWriter,
+    /// so this always returns `error.PackfileWriterNotSupported`. Use
+    /// `PlainRepository.repackObjects` / `repackObjectsFs` for filesystem backends.
+    pub fn repackObjects(self: *Repository, allocator: Allocator, cfg: *const RepackConfig) !void {
+        return repack_mod.repackObjects(allocator, self.storer, cfg);
+    }
+
+    // -----------------------------------------------------------------------
+    // Merge (go-git Repository.Merge — FastForwardOnly)
+    // -----------------------------------------------------------------------
+
+    /// go-git `Repository.Merge`. Only `fast_forward_merge` is supported.
+    ///
+    /// When `ref` is a fast-forward of HEAD, updates the current branch tip
+    /// (or detached HEAD) to `ref.hash`.
+    pub fn merge(
+        self: *Repository,
+        allocator: Allocator,
+        ref: plumbing.Reference,
+        opts: MergeOptions,
+    ) !void {
+        if (opts.strategy != .fast_forward_merge) {
+            return error.UnsupportedMergeStrategy;
+        }
+
+        const head_tip = try storer.resolveReference(self.storer, plumbing.HEAD);
+        const shallow_list = self.storer.shallow();
+        const earliest: ?Hash = if (shallow_list.len > 0) shallow_list[0] else null;
+
+        // isFastForward(old=head, new=ref) ⇒ ref is descendant of head.
+        const ff = try remote_mod.isFastForward(
+            allocator,
+            self.storer,
+            head_tip.hash,
+            ref.hash,
+            earliest,
+        );
+        if (!ff) return error.FastForwardMergeNotPossible;
+
+        // Update current branch tip (symbolic HEAD → branch name) or detached HEAD.
+        var tip_name = plumbing.HEAD;
+        const head_sym = try self.storer.reference(plumbing.HEAD);
+        if (head_sym.type == .symbolic) {
+            tip_name = head_sym.target;
+        }
+        try self.storer.setReference(plumbing.Reference.newHashReference(tip_name, ref.hash));
+    }
+};
+
+/// go-git `MergeStrategy`.
+pub const MergeStrategy = enum(i8) {
+    /// go-git `FastForwardMerge`.
+    fast_forward_merge = 0,
+    _,
+};
+
+/// go-git `MergeOptions`.
+pub const MergeOptions = struct {
+    strategy: MergeStrategy = .fast_forward_merge,
 };
 
 // ---------------------------------------------------------------------------
@@ -355,9 +484,9 @@ pub fn open(s: *memory.Storage, worktree: ?*fs_pkg.Mem) !Repository {
         else => |e| return e,
     };
 
-    // Load config (go-git Open always reads config; verifyExtensions is a no-op
-    // until typed gitconfig extensions are ported).
+    // Load config and enforce every extension represented by memory.Config.
     const cfg = try s.config();
+    try verifyExtensions(cfg);
     // Apply objectformat from config onto this storage (per-repo).
     if (cfg.object_format.len > 0) {
         if (std.mem.eql(u8, cfg.object_format, "sha256")) {
@@ -370,6 +499,29 @@ pub fn open(s: *memory.Storage, worktree: ?*fs_pkg.Mem) !Repository {
     }
 
     return newRepository(s, worktree);
+}
+
+/// go-git `verifyExtensions` for the repository fields modeled by
+/// `memory.Config`. Unknown raw extension keys are not retained by this storer,
+/// but repository format and objectformat are enforced here.
+pub fn verifyExtensions(cfg: *const Config) Error!void {
+    const version = cfg.repository_format_version;
+    if (version.len > 0 and
+        !std.mem.eql(u8, version, format_config.Version0) and
+        !std.mem.eql(u8, version, format_config.Version1))
+    {
+        return error.UnsupportedRepositoryFormatVersion;
+    }
+
+    if (cfg.object_format.len == 0) return;
+    if (!std.mem.eql(u8, version, format_config.Version1)) {
+        return error.UnsupportedExtensionRepositoryFormatVersion;
+    }
+    if (!std.mem.eql(u8, cfg.object_format, format_config.SHA1) and
+        !std.mem.eql(u8, cfg.object_format, format_config.SHA256))
+    {
+        return error.UnknownExtension;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -832,4 +984,187 @@ test "configScoped GlobalScope with empty env still returns local" {
     }
     try std.testing.expect(scoped.is_bare);
     try std.testing.expectEqual(@as(usize, 0), scoped.remotes.count());
+}
+
+fn storeMergeTestCommit(
+    allocator: Allocator,
+    s: *memory.Storage,
+    tree: Hash,
+    parents: []const Hash,
+    message: []const u8,
+) !Hash {
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(allocator);
+    var hex: [plumbing.MaxHexSize]u8 = undefined;
+    try body.appendSlice(allocator, "tree ");
+    try body.appendSlice(allocator, tree.string(&hex));
+    try body.append(allocator, '\n');
+    for (parents) |parent| {
+        try body.appendSlice(allocator, "parent ");
+        try body.appendSlice(allocator, parent.string(&hex));
+        try body.append(allocator, '\n');
+    }
+    try body.appendSlice(
+        allocator,
+        "author A <a@example.com> 1 +0000\ncommitter A <a@example.com> 1 +0000\n\n",
+    );
+    try body.appendSlice(allocator, message);
+    const obj = try s.newEncodedObject();
+    obj.setType(.commit);
+    _ = try obj.write(body.items);
+    return s.setEncodedObject(obj);
+}
+
+test "Repository.merge fast-forwards symbolic HEAD and rejects non-fast-forward" {
+    const allocator = std.testing.allocator;
+    const s = try memory.newStorage(allocator);
+    defer {
+        s.deinit();
+        allocator.destroy(s);
+    }
+    var r = try init(s, null);
+
+    const tree_obj = try s.newEncodedObject();
+    tree_obj.setType(.tree);
+    _ = try tree_obj.write("");
+    const tree = try s.setEncodedObject(tree_obj);
+    const base = try storeMergeTestCommit(allocator, s, tree, &.{}, "base\n");
+    const descendant = try storeMergeTestCommit(allocator, s, tree, &.{base}, "next\n");
+    const sibling = try storeMergeTestCommit(allocator, s, tree, &.{}, "sibling\n");
+    try s.setReference(Reference.newHashReference(plumbing.master, base));
+
+    try r.merge(
+        allocator,
+        Reference.newHashReference(ReferenceName.init("refs/heads/topic"), descendant),
+        .{},
+    );
+    const advanced = try r.head();
+    try std.testing.expect(advanced.hash.eql(descendant));
+    try std.testing.expectEqualStrings(plumbing.master.raw, advanced.name.raw);
+
+    try std.testing.expectError(
+        error.FastForwardMergeNotPossible,
+        r.merge(
+            allocator,
+            Reference.newHashReference(ReferenceName.init("refs/heads/other"), sibling),
+            .{},
+        ),
+    );
+    const unchanged = try r.head();
+    try std.testing.expect(unchanged.hash.eql(descendant));
+}
+
+test "Repository.merge rejects unsupported strategy without changing HEAD" {
+    const allocator = std.testing.allocator;
+    const s = try memory.newStorage(allocator);
+    defer {
+        s.deinit();
+        allocator.destroy(s);
+    }
+    var r = try init(s, null);
+    const h = plumbing.newHash("1111111111111111111111111111111111111111");
+    try s.setReference(Reference.newHashReference(plumbing.master, h));
+    try std.testing.expectError(
+        error.UnsupportedMergeStrategy,
+        r.merge(
+            allocator,
+            Reference.newHashReference(ReferenceName.init("refs/heads/topic"), h),
+            .{ .strategy = @enumFromInt(1) },
+        ),
+    );
+    const head = try r.head();
+    try std.testing.expect(head.hash.eql(h));
+}
+
+test "open verifies repository format and modeled objectformat extension" {
+    const allocator = std.testing.allocator;
+    const s = try memory.newStorage(allocator);
+    defer {
+        s.deinit();
+        allocator.destroy(s);
+    }
+    _ = try init(s, null);
+    const cfg = try s.config();
+
+    try cfg.setRepositoryFormatVersion("2");
+    try std.testing.expectError(error.UnsupportedRepositoryFormatVersion, open(s, null));
+
+    try cfg.setRepositoryFormatVersion(format_config.Version0);
+    try cfg.setObjectFormat(format_config.SHA256);
+    try std.testing.expectError(
+        error.UnsupportedExtensionRepositoryFormatVersion,
+        open(s, null),
+    );
+
+    try cfg.setRepositoryFormatVersion(format_config.Version1);
+    try cfg.setObjectFormat("unknown-hash");
+    try std.testing.expectError(error.UnknownExtension, open(s, null));
+
+    try cfg.setObjectFormat(format_config.SHA256);
+    const opened = try open(s, null);
+    try std.testing.expect(opened.storer.hash_algo == .sha256);
+}
+
+test "Repository.grep searches commit tree without worktree" {
+    const allocator = std.testing.allocator;
+    const s = try memory.newStorage(allocator);
+    defer {
+        s.deinit();
+        allocator.destroy(s);
+    }
+    var r = try init(s, null);
+
+    const blob_obj = try s.newEncodedObject();
+    blob_obj.setType(.blob);
+    _ = try blob_obj.write("first\nneedle here\nlast\n");
+    const blob = try s.setEncodedObject(blob_obj);
+
+    var tree_body: std.ArrayList(u8) = .empty;
+    defer tree_body.deinit(allocator);
+    try tree_body.appendSlice(allocator, "100644 file.txt");
+    try tree_body.append(allocator, 0);
+    try tree_body.appendSlice(allocator, blob.slice());
+    const tree_obj = try s.newEncodedObject();
+    tree_obj.setType(.tree);
+    _ = try tree_obj.write(tree_body.items);
+    const tree = try s.setEncodedObject(tree_obj);
+    const commit_hash = try storeMergeTestCommit(allocator, s, tree, &.{}, "grep\n");
+
+    const results = try r.grep(allocator, .{
+        .commit_hash = commit_hash,
+        .patterns = &.{"needle"},
+    });
+    defer worktree_pkg.freeGrepResults(allocator, results);
+    try std.testing.expectEqual(@as(usize, 1), results.len);
+    try std.testing.expectEqualStrings("file.txt", results[0].file_name);
+    try std.testing.expectEqual(@as(usize, 2), results[0].line_number);
+    try std.testing.expectEqualStrings("needle here", results[0].content);
+}
+
+test "ResetOptions.validate defaults HEAD and rejects non-commit hash" {
+    const allocator = std.testing.allocator;
+    const s = try memory.newStorage(allocator);
+    defer {
+        s.deinit();
+        allocator.destroy(s);
+    }
+    var r = try init(s, null);
+
+    const tree_obj = try s.newEncodedObject();
+    tree_obj.setType(.tree);
+    _ = try tree_obj.write("");
+    const tree = try s.setEncodedObject(tree_obj);
+    const commit_hash = try storeMergeTestCommit(allocator, s, tree, &.{}, "head\n");
+    try s.setReference(Reference.newHashReference(plumbing.master, commit_hash));
+
+    var defaults: worktree_pkg.ResetOptions = .{};
+    try defaults.validate(&r);
+    try std.testing.expect(defaults.commit.eql(commit_hash));
+
+    const blob_obj = try s.newEncodedObject();
+    blob_obj.setType(.blob);
+    _ = try blob_obj.write("not a commit");
+    const blob_hash = try s.setEncodedObject(blob_obj);
+    var invalid: worktree_pkg.ResetOptions = .{ .commit = blob_hash };
+    try std.testing.expectError(error.ObjectNotFound, invalid.validate(&r));
 }

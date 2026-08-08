@@ -2,20 +2,29 @@
 package: utils/sync
 phase: 1
 require:
-  types: []
+  types:
+    - ZlibReader
   functions:
     - GetBytesBuffer
     - PutBytesBuffer
     - GetZlibWriter
     - PutZlibWriter
+    - GetZlibReader
+    - PutZlibReader
   constants: []
   semantic:
     - sync.getBytesBuffer
     - sync.putBytesBuffer
     - sync.getZlibWriter
     - sync.putZlibWriter
+    - sync.ZlibReader
+    - sync.getZlibReader
+    - sync.putZlibReader
 zig_map:
   GetBytesBuffer: sync.getBytesBuffer
   PutBytesBuffer: sync.putBytesBuffer
   GetZlibWriter: sync.getZlibWriter
   PutZlibWriter: sync.putZlibWriter
+  ZlibReader: sync.ZlibReader
+  GetZlibReader: sync.getZlibReader
+  PutZlibReader: sync.putZlibReader

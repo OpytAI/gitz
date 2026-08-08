@@ -53,11 +53,18 @@ pub const default_remote_name = relative_url_mod.default_remote_name;
 // --- submodule.zig ---
 pub const gitmodules_file = submodule_mod.gitmodules_file;
 pub const Submodule = submodule_mod.Submodule;
+pub const OwnedRepository = submodule_mod.OwnedRepository;
 pub const Submodules = submodule_mod.Submodules;
 pub const readGitmodulesFile = submodule_mod.readGitmodulesFile;
 pub const listSubmodules = submodule_mod.listSubmodules;
 pub const getSubmodule = submodule_mod.getSubmodule;
 pub const listFromWorktree = submodule_mod.listFromWorktree;
+pub const WorktreeSubmodules = submodule_mod.WorktreeSubmodules;
+pub const submodulesForWorktree = submodule_mod.submodulesForWorktree;
+pub const WorktreeSubmodule = submodule_mod.WorktreeSubmodule;
+pub const submoduleForWorktree = submodule_mod.submoduleForWorktree;
+pub const updateFromWorktreePull = submodule_mod.updateFromWorktreePull;
+pub const bindPullOptions = submodule_mod.bindPullOptions;
 pub const expectedFromEntry = submodule_mod.expectedFromEntry;
 
 // Production root stays free of tests.zig so dependents do not pull fixtures.

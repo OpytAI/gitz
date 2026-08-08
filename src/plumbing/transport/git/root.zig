@@ -46,6 +46,7 @@ pub const BufferConn = common_mod.BufferConn;
 pub const defaultDial = common_mod.defaultDial;
 pub const bareHost = common_mod.bareHost;
 pub const Runner = common_mod.Runner;
+pub const Client = common_mod.Client;
 pub const defaultClient = common_mod.defaultClient;
 pub const newClient = common_mod.newClient;
 pub const GitCommand = common_mod.GitCommand;

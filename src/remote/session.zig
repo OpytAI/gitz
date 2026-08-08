@@ -1,11 +1,9 @@
 //! Upload-pack / receive-pack session open helpers (go-git `remote.go`
 //! `newUploadPackSession` / `newSendPackSession` / `newClient`).
 //!
-//! Prefer an embedded `server.Server` (in-process / tests). When `embedded`
-//! is null, resolve the scheme via `client.newClient` and require a
-//! `transportFromServer` registration (phase-11 in-process path).
-//! Phase 13 adds real HTTP/SSH transports that return typed sessions without
-//! casting through `*server.Server`.
+//! An embedded `server.Server` and registered file/git/http/ssh clients use the
+//! same owned transport-session interfaces. When `embedded` is null, install
+//! go-git's default protocol set lazily and resolve the endpoint scheme.
 
 const std = @import("std");
 const transport = @import("transport");
@@ -31,6 +29,7 @@ pub const SessionOpts = struct {
     client_key: []const u8 = "",
     ca_bundle: []const u8 = "",
     proxy: transport.ProxyOptions = .{},
+    operation_context: transport.OperationContext = .{},
 
     /// From shared `TransportClientOpts` (nested on Fetch/Push/List options).
     pub fn fromClient(c: TransportClientOpts) SessionOpts {
@@ -41,6 +40,7 @@ pub const SessionOpts = struct {
             .client_key = c.client_key,
             .ca_bundle = c.ca_bundle,
             .proxy = c.proxy,
+            .operation_context = c.operation_context,
         };
     }
 
@@ -53,77 +53,32 @@ pub const SessionOpts = struct {
     }
 };
 
-/// @deprecated Prefer `SessionOpts.fromClient`. Kept as a free function for
-/// call sites that pass bare fields.
-pub fn sessionOptsFrom(
-    auth: ?AuthMethod,
-    insecure_skip_tls: bool,
-    client_cert: []const u8,
-    client_key: []const u8,
-    ca_bundle: []const u8,
-    proxy: transport.ProxyOptions,
-) SessionOpts {
-    return SessionOpts.fromClient(.{
-        .auth = auth,
-        .insecure_skip_tls = insecure_skip_tls,
-        .client_cert = client_cert,
-        .client_key = client_key,
-        .ca_bundle = ca_bundle,
-        .proxy = proxy,
-    });
-}
-
 // ---------------------------------------------------------------------------
 // Server as client-registry Transport
 // ---------------------------------------------------------------------------
 
 /// Wrap `*server.Server` as a `transport.Transport` for `client.installProtocol`.
 ///
-/// Vtable session hooks return null; typed sessions open via `*server.Server`.
 pub fn transportFromServer(srv: *server.Server) transport.Transport {
-    return .{
-        .ptr = srv,
-        .vtable = &server_transport_vtable,
-    };
+    return srv.asTransport();
 }
-
-fn serverNewUploadPackSession(
-    _: *anyopaque,
-    _: *const Endpoint,
-    _: ?AuthMethod,
-) anyerror!?transport.SessionHandle {
-    return null;
-}
-
-fn serverNewReceivePackSession(
-    _: *anyopaque,
-    _: *const Endpoint,
-    _: ?AuthMethod,
-) anyerror!?transport.SessionHandle {
-    return null;
-}
-
-const server_transport_vtable = transport.Transport.VTable{
-    .newUploadPackSession = serverNewUploadPackSession,
-    .newReceivePackSession = serverNewReceivePackSession,
-};
 
 // ---------------------------------------------------------------------------
 // Resolve Server from embedded override or client registry
 // ---------------------------------------------------------------------------
 
-fn resolveServer(
+fn resolveTransport(
+    allocator: Allocator,
     ep: *const Endpoint,
     embedded: ?*server.Server,
-) (transport.Error || error{MalformedClient})!*server.Server {
-    if (embedded) |srv| return srv;
-    const t = try client.newClient(ep);
-    if (t.vtable != &server_transport_vtable) return error.MalformedClient;
-    return @ptrCast(@alignCast(t.ptr));
+) !transport.Transport {
+    if (embedded) |srv| return transportFromServer(srv);
+    try client.installDefaults(allocator);
+    return client.newClient(ep);
 }
 
 /// Single-threaded host Io for scheme-less path endpoints (file:// absolute).
-fn singleThreadedIo() std.Io {
+pub fn defaultIo() std.Io {
     // Threaded must live for the duration of open*; callers using this helper
     // only need Io during endpoint construction. We use a threadlocal so the
     // Threaded storage outlives the temporary Io handle for the call stack.
@@ -139,19 +94,31 @@ fn singleThreadedIo() std.Io {
 
 /// go-git upload-pack session opened for Remote fetch/list.
 pub const SessionUpload = struct {
-    /// Owned endpoint used to open the session.
-    endpoint: Endpoint,
-    sess: server.UploadPackSession,
+    allocator: Allocator,
+    /// Heap-owned so HTTP redirect/session pointers remain stable after return.
+    endpoint: *Endpoint,
+    sess: transport.UploadPackSession,
+    operation_context: transport.OperationContext,
 
     pub fn close(self: *SessionUpload) void {
         self.sess.close();
         self.endpoint.deinit();
+        self.allocator.destroy(self.endpoint);
         self.* = undefined;
     }
 
     /// Caller owns the returned pointer: free with `packp.freeAdvRefs`.
     pub fn advertisedReferences(self: *SessionUpload) !*packp.AdvRefs {
-        return self.sess.advertisedReferences();
+        return self.sess.advertisedReferencesContext(self.operation_context);
+    }
+
+    /// Cooperative cancellation/deadline check at transport operation
+    /// boundaries. It does not interrupt an already-blocked OS call.
+    pub fn advertisedReferencesContext(
+        self: *SessionUpload,
+        ctx: transport.OperationContext,
+    ) !*packp.AdvRefs {
+        return self.sess.advertisedReferencesContext(ctx);
     }
 
     /// Caller owns the returned pointer: free with `packp.freeUploadPackResponse`.
@@ -159,7 +126,15 @@ pub const SessionUpload = struct {
         self: *SessionUpload,
         req: *const packp.UploadPackRequest,
     ) !*packp.UploadPackResponse {
-        return self.sess.uploadPack(req);
+        return self.sess.uploadPackContext(self.operation_context, req);
+    }
+
+    pub fn uploadPackContext(
+        self: *SessionUpload,
+        ctx: transport.OperationContext,
+        req: *const packp.UploadPackRequest,
+    ) !*packp.UploadPackResponse {
+        return self.sess.uploadPackContext(ctx, req);
     }
 
     pub fn setAuth(self: *SessionUpload, auth: ?AuthMethod) !void {
@@ -177,15 +152,20 @@ pub fn openUploadPack(
     opts: SessionOpts,
     embedded: ?*server.Server,
 ) !SessionUpload {
-    var ep = try transport.newEndpoint(allocator, io, url);
+    try opts.operation_context.check();
+    const ep = try allocator.create(Endpoint);
+    errdefer allocator.destroy(ep);
+    ep.* = try transport.newEndpoint(allocator, io, url);
     errdefer ep.deinit();
-    opts.applyToEndpoint(&ep);
+    opts.applyToEndpoint(ep);
 
-    const srv = try resolveServer(&ep, embedded);
-    const sess = try srv.newUploadPackSession(&ep, opts.auth);
+    const backend = try resolveTransport(allocator, ep, embedded);
+    const sess = try backend.newUploadPackSession(ep, opts.auth);
     return .{
+        .allocator = allocator,
         .endpoint = ep,
         .sess = sess,
+        .operation_context = opts.operation_context,
     };
 }
 
@@ -196,7 +176,7 @@ pub fn openUploadPackUrl(
     opts: SessionOpts,
     embedded: ?*server.Server,
 ) !SessionUpload {
-    return openUploadPack(allocator, singleThreadedIo(), url, opts, embedded);
+    return openUploadPack(allocator, defaultIo(), url, opts, embedded);
 }
 
 // ---------------------------------------------------------------------------
@@ -206,25 +186,43 @@ pub fn openUploadPackUrl(
 /// go-git receive-pack session opened for Remote push
 /// (`newSendPackSession` in go-git naming).
 pub const SessionReceive = struct {
-    endpoint: Endpoint,
-    sess: server.ReceivePackSession,
+    allocator: Allocator,
+    endpoint: *Endpoint,
+    sess: transport.ReceivePackSession,
+    operation_context: transport.OperationContext,
 
     pub fn close(self: *SessionReceive) void {
         self.sess.close();
         self.endpoint.deinit();
+        self.allocator.destroy(self.endpoint);
         self.* = undefined;
     }
 
     /// Caller owns the returned pointer: free with `packp.freeAdvRefs`.
     pub fn advertisedReferences(self: *SessionReceive) !*packp.AdvRefs {
-        return self.sess.advertisedReferences();
+        return self.sess.advertisedReferencesContext(self.operation_context);
+    }
+
+    pub fn advertisedReferencesContext(
+        self: *SessionReceive,
+        ctx: transport.OperationContext,
+    ) !*packp.AdvRefs {
+        return self.sess.advertisedReferencesContext(ctx);
     }
 
     pub fn receivePackOutcome(
         self: *SessionReceive,
         req: *const packp.ReferenceUpdateRequest,
-    ) !server.ReceivePackOutcome {
-        return self.sess.receivePackOutcome(req);
+    ) !transport.ReceivePackOutcome {
+        return self.sess.receivePackContext(self.operation_context, req);
+    }
+
+    pub fn receivePackOutcomeContext(
+        self: *SessionReceive,
+        ctx: transport.OperationContext,
+        req: *const packp.ReferenceUpdateRequest,
+    ) !transport.ReceivePackOutcome {
+        return self.sess.receivePackContext(ctx, req);
     }
 
     pub fn setAuth(self: *SessionReceive, auth: ?AuthMethod) !void {
@@ -240,15 +238,20 @@ pub fn openReceivePack(
     opts: SessionOpts,
     embedded: ?*server.Server,
 ) !SessionReceive {
-    var ep = try transport.newEndpoint(allocator, io, url);
+    try opts.operation_context.check();
+    const ep = try allocator.create(Endpoint);
+    errdefer allocator.destroy(ep);
+    ep.* = try transport.newEndpoint(allocator, io, url);
     errdefer ep.deinit();
-    opts.applyToEndpoint(&ep);
+    opts.applyToEndpoint(ep);
 
-    const srv = try resolveServer(&ep, embedded);
-    const sess = try srv.newReceivePackSession(&ep, opts.auth);
+    const backend = try resolveTransport(allocator, ep, embedded);
+    const sess = try backend.newReceivePackSession(ep, opts.auth);
     return .{
+        .allocator = allocator,
         .endpoint = ep,
         .sess = sess,
+        .operation_context = opts.operation_context,
     };
 }
 
@@ -259,7 +262,7 @@ pub fn openReceivePackUrl(
     opts: SessionOpts,
     embedded: ?*server.Server,
 ) !SessionReceive {
-    return openReceivePack(allocator, singleThreadedIo(), url, opts, embedded);
+    return openReceivePack(allocator, defaultIo(), url, opts, embedded);
 }
 
 test "SessionOpts defaults" {
@@ -280,4 +283,23 @@ test "SessionOpts.fromClient maps fields" {
     try std.testing.expectEqualStrings("cert", o.client_cert);
     try std.testing.expectEqualStrings("key", o.client_key);
     try std.testing.expectEqualStrings("ca", o.ca_bundle);
+}
+
+test "open session observes cancellation before endpoint or dial" {
+    const State = struct {
+        fn cancelled(_: ?*anyopaque) bool {
+            return true;
+        }
+    };
+    const opts = SessionOpts{
+        .operation_context = .{ .cancelled_fn = State.cancelled },
+    };
+    try std.testing.expectError(
+        error.Cancelled,
+        openUploadPack(std.testing.allocator, std.testing.io, "://invalid", opts, null),
+    );
+    try std.testing.expectError(
+        error.Cancelled,
+        openReceivePack(std.testing.allocator, std.testing.io, "://invalid", opts, null),
+    );
 }

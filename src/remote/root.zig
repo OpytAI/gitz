@@ -42,7 +42,6 @@ pub const freeReferences = remote_mod.freeReferences;
 pub const SessionOpts = session_mod.SessionOpts;
 pub const SessionUpload = session_mod.SessionUpload;
 pub const SessionReceive = session_mod.SessionReceive;
-pub const sessionOptsFrom = session_mod.sessionOptsFrom;
 pub const transportFromServer = session_mod.transportFromServer;
 pub const openUploadPack = session_mod.openUploadPack;
 pub const openUploadPackUrl = session_mod.openUploadPackUrl;

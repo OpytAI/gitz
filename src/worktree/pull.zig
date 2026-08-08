@@ -18,6 +18,7 @@ const memory = @import("memory");
 const remote = @import("remote");
 const server = @import("server");
 const sync = @import("utils/sync");
+const transport = @import("transport");
 
 const worktree_mod = @import("worktree.zig");
 const options_mod = @import("options.zig");
@@ -122,6 +123,31 @@ pub fn pull(w: *Worktree, o: *PullOptions) !void {
         .commit = ref.hash,
         .mode = .merge,
     });
+
+    if (o.recurse_submodules > 0) {
+        const updater = o.submodule_updater orelse return error.SubmoduleUpdateNotConfigured;
+        try updater.update(
+            w.allocator,
+            w.storer,
+            w.filesystem,
+            w.embedded,
+            o.recurse_submodules,
+            0,
+            o.transport.auth,
+            o.transport.operation_context,
+        );
+    }
+}
+
+/// Package-level go-git `PullContext` equivalent.
+pub fn pullContext(
+    w: *Worktree,
+    context: transport.OperationContext,
+    o: *const PullOptions,
+) !void {
+    var opts = o.*;
+    opts.transport.operation_context = context;
+    return pull(w, &opts);
 }
 
 // go-git `(*Worktree).updateHEAD` — move the current branch tip (or detached HEAD).
@@ -240,8 +266,33 @@ test "pull via MapLoader embedded fetches and updates branch tip" {
     defer mem_fs.deinit();
 
     var w = worktree_mod.newWorktreeEmbedded(allocator, local_sto, &mem_fs, &client);
-    var o: PullOptions = .{};
+    const Hook = struct {
+        fn update(
+            context: ?*anyopaque,
+            _: Allocator,
+            _: *memory.Storage,
+            _: *@import("fs").Mem,
+            _: ?*server.Server,
+            recurse: u32,
+            _: i32,
+            _: ?@import("transport").AuthMethod,
+            _: @import("transport").OperationContext,
+        ) anyerror!void {
+            const called: *bool = @ptrCast(@alignCast(context.?));
+            try std.testing.expectEqual(@as(u32, 2), recurse);
+            called.* = true;
+        }
+    };
+    var submodules_updated = false;
+    var o: PullOptions = .{
+        .recurse_submodules = 2,
+        .submodule_updater = .{
+            .context = &submodules_updated,
+            .update_fn = Hook.update,
+        },
+    };
     try pull(&w, &o);
+    try std.testing.expect(submodules_updated);
 
     const master = try local_sto.reference(plumbing.master);
     try std.testing.expect(master.hash.eql(remote_head));

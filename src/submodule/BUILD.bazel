@@ -21,9 +21,11 @@ _DEPS = [
     "//src/storage/memory",
     "//src/fs",
     "//src/config",
-    "//src/worktree",
     "//src/remote",
     "//src/internal/url",
+    "//src/worktree", # checkout materialization only; worktree must not depend on submodule
+    "//src/repo",
+    "//src/internal/pathutil",
 ]
 
 _TEST_DEPS = [

@@ -4,6 +4,8 @@
 
 const std = @import("std");
 const Reader = std.Io.Reader;
+const Allocator = std.mem.Allocator;
+const plumbing = @import("plumbing");
 
 /// Returned when a Git-format variable-width integer would not fit into an
 /// `i64` because the input declares more continuation bytes than the type can
@@ -54,9 +56,48 @@ pub fn readUint32(r: *Reader) Reader.Error!u32 {
     return r.takeInt(u32, .big);
 }
 
+/// Reads 2 bytes as a big-endian `u16` (go-git `ReadUint16`).
+pub fn readUint16(r: *Reader) Reader.Error!u16 {
+    return r.takeInt(u16, .big);
+}
+
 /// Reads 8 bytes as a big-endian `u64`.
 pub fn readUint64(r: *Reader) Reader.Error!u64 {
     return r.takeInt(u64, .big);
+}
+
+/// Read an object id using the active repository hash width.
+pub fn readHash(r: *Reader) Reader.Error!plumbing.Hash {
+    var raw: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
+    const n = plumbing.digestSize();
+    @memcpy(raw[0..n], try r.take(n));
+    return plumbing.Hash.fromBytes(raw[0..n]);
+}
+
+/// Read through `delim`, returning owned bytes without the delimiter.
+/// End-of-stream before the delimiter discards the partial value, like
+/// go-git `ReadUntil`.
+pub fn readUntil(allocator: Allocator, r: *Reader, delim: u8) (Allocator.Error || Reader.Error)![]u8 {
+    var value: std.ArrayList(u8) = .empty;
+    errdefer value.deinit(allocator);
+    while (true) {
+        const b = try r.takeByte();
+        if (b == delim) return try value.toOwnedSlice(allocator);
+        try value.append(allocator, b);
+    }
+}
+
+/// Detect binary data using Git's 8000-byte NUL sniff.
+pub fn isBinary(r: *Reader) Reader.Error!bool {
+    var count: usize = 0;
+    while (count < 8000) : (count += 1) {
+        const b = r.takeByte() catch |err| switch (err) {
+            error.EndOfStream => return false,
+            else => |e| return e,
+        };
+        if (b == 0) return true;
+    }
+    return false;
 }
 
 test "readVariableWidthInt short" {
@@ -109,4 +150,25 @@ test "readUint32 big-endian" {
 test "readUint64 big-endian" {
     var r = Reader.fixed(&[_]u8{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef });
     try std.testing.expectEqual(@as(u64, 0x0123456789abcdef), try readUint64(&r));
+}
+
+test "readUint16, readUntil, readHash, and isBinary" {
+    var ints = Reader.fixed(&.{ 0x12, 0x34 });
+    try std.testing.expectEqual(@as(u16, 0x1234), try readUint16(&ints));
+
+    var delimited = Reader.fixed("refs/heads/main\x00tail");
+    const value = try readUntil(std.testing.allocator, &delimited, 0);
+    defer std.testing.allocator.free(value);
+    try std.testing.expectEqualStrings("refs/heads/main", value);
+    try std.testing.expectEqual(@as(u8, 't'), try delimited.takeByte());
+
+    var oid_reader = Reader.fixed(&[_]u8{0xab} ** plumbing.Size);
+    const oid = try readHash(&oid_reader);
+    try std.testing.expectEqual(@as(u8, 0xab), oid.bytes[0]);
+    try std.testing.expectEqual(@as(u8, 0xab), oid.bytes[plumbing.Size - 1]);
+
+    var text = Reader.fixed("plain text");
+    try std.testing.expect(!try isBinary(&text));
+    var binary = Reader.fixed("a\x00b");
+    try std.testing.expect(try isBinary(&binary));
 }

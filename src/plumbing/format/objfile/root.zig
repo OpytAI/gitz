@@ -113,6 +113,7 @@ fn testWriter(
 // go-git `SuiteReader.TestReadObjfile`
 test "TestReadObjfile" {
     const gpa = std.testing.allocator;
+    defer sync.deinitPools(gpa);
     for (fixtures, 0..) |fx, i| {
         _ = i;
         const data = try decodeB64(gpa, fx.data_b64);
@@ -127,6 +128,7 @@ test "TestReadObjfile" {
 // go-git `SuiteReader.TestReadEmptyObjfile`
 test "TestReadEmptyObjfile" {
     const gpa = std.testing.allocator;
+    defer sync.deinitPools(gpa);
     var src: std.Io.Reader = .fixed(&[_]u8{});
     // go-git: NewReader returns non-nil error
     try std.testing.expectError(error.ZLib, Reader.open(gpa, &src));
@@ -135,6 +137,7 @@ test "TestReadEmptyObjfile" {
 // go-git `SuiteReader.TestReadGarbage`
 test "TestReadGarbage" {
     const gpa = std.testing.allocator;
+    defer sync.deinitPools(gpa);
     var src: std.Io.Reader = .fixed("!@#$RO!@NROSADfinq@o#irn@oirfn");
     // go-git: NewReader returns non-nil error
     try std.testing.expectError(error.ZLib, Reader.open(gpa, &src));
@@ -143,6 +146,7 @@ test "TestReadGarbage" {
 // go-git `SuiteReader.TestReadCorruptZLib`
 test "TestReadCorruptZLib" {
     const gpa = std.testing.allocator;
+    defer sync.deinitPools(gpa);
     // Same base64 as reader_test.go TestReadCorruptZLib
     const data = try decodeB64(gpa, "eAFLysaalPUjBgAAAJsAHw");
     defer gpa.free(data);
@@ -163,6 +167,7 @@ test "TestReadCorruptZLib" {
 // go-git `SuiteReader.TestReaderReadBeforeHeader`
 test "TestReaderReadBeforeHeader" {
     const gpa = std.testing.allocator;
+    defer sync.deinitPools(gpa);
     const data = try decodeB64(gpa, fixtures[0].data_b64);
     defer gpa.free(data);
     var src: std.Io.Reader = .fixed(data);
@@ -180,6 +185,7 @@ test "TestReaderReadBeforeHeader" {
 // go-git `SuiteReader.TestReaderReadAfterHeaderError`
 test "TestReaderReadAfterHeaderError" {
     const gpa = std.testing.allocator;
+    defer sync.deinitPools(gpa);
     // Corrupt zlib that may open but fails Header (reader_test.go)
     const data = try decodeB64(gpa, "eAFLysaalPUjBgAAAJsAHw");
     defer gpa.free(data);

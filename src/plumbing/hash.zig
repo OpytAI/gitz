@@ -97,6 +97,40 @@ pub const Hash = struct {
     }
 };
 
+/// go-git `HashSlice`: a sortable view over object ids.
+///
+/// Zig slices do not support attaching methods directly, so the port uses a
+/// small non-owning wrapper. Ordering compares the complete, zero-padded hash
+/// storage and therefore stays stable when the active object format changes.
+pub const HashSlice = struct {
+    items: []Hash,
+
+    pub fn init(items: []Hash) HashSlice {
+        return .{ .items = items };
+    }
+
+    pub fn len(self: HashSlice) usize {
+        return self.items.len;
+    }
+
+    pub fn less(self: HashSlice, i: usize, j: usize) bool {
+        return std.mem.order(u8, &self.items[i].bytes, &self.items[j].bytes) == .lt;
+    }
+
+    pub fn swap(self: HashSlice, i: usize, j: usize) void {
+        std.mem.swap(Hash, &self.items[i], &self.items[j]);
+    }
+};
+
+/// go-git `HashesSort`: sort object ids in increasing byte order.
+pub fn hashesSort(items: []Hash) void {
+    std.mem.sort(Hash, items, {}, struct {
+        fn lessThan(_: void, a: Hash, b: Hash) bool {
+            return std.mem.order(u8, &a.bytes, &b.bytes) == .lt;
+        }
+    }.lessThan);
+}
+
 /// Zero OID (go-git `ZeroHash`).
 pub const ZeroHash: Hash = .{};
 
@@ -244,6 +278,24 @@ test "parseHash requires active hex width" {
         error.InvalidHash,
         parseHash("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"),
     );
+}
+
+test "HashSlice and hashesSort use increasing full hash order" {
+    var values = [_]Hash{
+        Hash.fromBytes(&.{ 0x02 }),
+        Hash.fromBytes(&.{ 0x01, 0xff }),
+        Hash.fromBytes(&.{ 0x01, 0x01 }),
+    };
+    var view = HashSlice.init(&values);
+    try std.testing.expectEqual(@as(usize, 3), view.len());
+    try std.testing.expect(view.less(1, 0));
+    view.swap(0, 2);
+    try std.testing.expectEqual(@as(u8, 0x01), values[0].bytes[0]);
+
+    hashesSort(&values);
+    try std.testing.expectEqualSlices(u8, &.{ 0x01, 0x01 }, values[0].bytes[0..2]);
+    try std.testing.expectEqualSlices(u8, &.{ 0x01, 0xff }, values[1].bytes[0..2]);
+    try std.testing.expectEqual(@as(u8, 0x02), values[2].bytes[0]);
 }
 
 test "parseHashAny accepts 40 and 64 hex" {

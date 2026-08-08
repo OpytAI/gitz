@@ -65,6 +65,7 @@ pub const CommandStatus = report_status_mod.CommandStatus;
 
 // --- request / response types ---
 pub const AdvRefs = advrefs_mod.AdvRefs;
+pub const Depth = ulreq_mod.Depth;
 pub const UploadRequest = ulreq_mod.UploadRequest;
 pub const UploadHaves = uppackreq_mod.UploadHaves;
 pub const UploadPackRequest = uppackreq_mod.UploadPackRequest;
@@ -72,6 +73,7 @@ pub const UploadPackResponse = uppackresp_mod.UploadPackResponse;
 pub const ReferenceUpdateRequest = updreq_mod.ReferenceUpdateRequest;
 pub const Command = updreq_mod.Command;
 pub const Action = updreq_mod.Action;
+pub const Option = updreq_mod.Option;
 pub const newReferenceUpdateRequest = updreq_mod.newReferenceUpdateRequest;
 pub const newReferenceUpdateRequestFromCapabilities = updreq_mod.newReferenceUpdateRequestFromCapabilities;
 

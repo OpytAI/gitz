@@ -8,6 +8,7 @@ zig_library(
         "read.zig",
         "write.zig",
     ],
+    deps = ["//src/plumbing"],
     visibility = ["//visibility:public"],
 )
 
@@ -19,6 +20,7 @@ zig_test(
         "read.zig",
         "write.zig",
     ],
+    deps = ["//src/plumbing"],
 )
 
 # Sources for //check file/API inventory (parent globs do not cross package borders).

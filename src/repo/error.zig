@@ -43,4 +43,20 @@ pub const Error = error{
     InvalidObjectFormat,
     /// `.git` file is not a valid `gitdir: ` pointer.
     InvalidGitDirFile,
+    /// go-git `ErrPackedObjectsNotSupported`.
+    PackedObjectsNotSupported,
+    /// Storer does not implement PackfileWriter (required by RepackObjects).
+    PackfileWriterNotSupported,
+    /// go-git `ErrUnsupportedMergeStrategy`.
+    UnsupportedMergeStrategy,
+    /// go-git `ErrFastForwardMergeNotPossible`.
+    FastForwardMergeNotPossible,
+    /// go-git `ErrUnsupportedExtensionRepositoryFormatVersion`.
+    UnsupportedExtensionRepositoryFormatVersion,
+    /// go-git `ErrUnsupportedRepositoryFormatVersion`.
+    UnsupportedRepositoryFormatVersion,
+    /// go-git `ErrUnknownExtension` for an unsupported modeled extension.
+    UnknownExtension,
+    /// go-git `ErrRepositoryIncomplete` for unusable linked-worktree metadata.
+    RepositoryIncomplete,
 };

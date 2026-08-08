@@ -4,20 +4,36 @@ phase: 1
 require:
   types:
     - Hash
+    - HashSlice
+    - Revision
     - ObjectType
     - MemoryObject
     - Reference
-  functions: []
+    - PermanentError
+    - UnexpectedError
+  functions:
+    - hashesSort
+    - newPermanentError
+    - newUnexpectedError
   constants:
     - ZeroHash
   semantic:
     - plumbing.Hash
+    - plumbing.HashSlice
+    - plumbing.Revision
     - plumbing.ObjectType
     - plumbing.MemoryObject
     - plumbing.Reference
     - plumbing.ZeroHash
 zig_map:
   Hash: plumbing.Hash
+  HashSlice: plumbing.HashSlice
+  Revision: plumbing.Revision
+  PermanentError: plumbing.PermanentError
+  UnexpectedError: plumbing.UnexpectedError
+  HashesSort: plumbing.hashesSort
+  NewPermanentError: plumbing.newPermanentError
+  NewUnexpectedError: plumbing.newUnexpectedError
   ObjectType: plumbing.ObjectType
   MemoryObject: plumbing.MemoryObject
   Reference: plumbing.Reference

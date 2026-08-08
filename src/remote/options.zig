@@ -31,6 +31,9 @@ pub const TransportClientOpts = struct {
     client_key: []const u8 = "",
     ca_bundle: []const u8 = "",
     proxy: ProxyOptions = .{},
+    /// Cooperative cancellation/deadline hook checked before advertised-ref
+    /// and pack operations. Blocking OS calls still require an I/O deadline.
+    operation_context: transport.OperationContext = .{},
 };
 
 /// go-git `TagMode`.
@@ -46,13 +49,13 @@ pub const TagMode = enum {
 };
 
 /// go-git `PeelingOption` for `ListOptions`.
-pub const PeelingOption = enum {
+pub const PeelingOption = enum(u8) {
     /// Ignore peeled refs (go-git default for plain list).
-    ignore_peeled,
-    /// Append peeled refs after regular refs.
-    append_peeled,
+    ignore_peeled = 0,
     /// Only peeled refs.
-    only_peeled,
+    only_peeled = 1,
+    /// Append peeled refs after regular refs.
+    append_peeled = 2,
 };
 
 /// go-git `ForceWithLease`.
@@ -176,6 +179,12 @@ test "ListOptions effectiveTimeoutSec" {
     try std.testing.expectEqual(@as(i32, 30), (ListOptions{ .timeout_sec = 30 }).effectiveTimeoutSec());
 }
 
+test "PeelingOption values match go-git" {
+    try std.testing.expectEqual(@as(u8, 0), @intFromEnum(PeelingOption.ignore_peeled));
+    try std.testing.expectEqual(@as(u8, 1), @intFromEnum(PeelingOption.only_peeled));
+    try std.testing.expectEqual(@as(u8, 2), @intFromEnum(PeelingOption.append_peeled));
+}
+
 test "TransportClientOpts nested on options" {
     var fo: FetchOptions = .{
         .transport = .{
@@ -195,4 +204,19 @@ test "TransportClientOpts nested on options" {
 
     const lo = ListOptions{ .transport = .{ .client_cert = "list" } };
     try std.testing.expectEqualStrings("list", lo.transport.client_cert);
+}
+
+test "TransportClientOpts carries operation cancellation" {
+    const State = struct {
+        cancelled: bool,
+        fn check(ptr: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(ptr.?));
+            return self.cancelled;
+        }
+    };
+    var state = State{ .cancelled = true };
+    const opts = TransportClientOpts{
+        .operation_context = .{ .ptr = &state, .cancelled_fn = State.check },
+    };
+    try std.testing.expectError(error.Cancelled, opts.operation_context.check());
 }

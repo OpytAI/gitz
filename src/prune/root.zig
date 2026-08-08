@@ -39,6 +39,7 @@ const prune_mod = @import("prune.zig");
 
 // --- object_walker.zig ---
 pub const SeenSet = object_walker.SeenSet;
+pub const ObjectWalkerFor = object_walker.ObjectWalkerFor;
 pub const ObjectWalker = object_walker.ObjectWalker;
 pub const newObjectWalker = object_walker.newObjectWalker;
 

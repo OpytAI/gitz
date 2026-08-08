@@ -58,7 +58,7 @@ pub const ReceivePackSession = struct {
         if (res.body.len == 0) return null;
 
         var reader: std.Io.Reader = .fixed(res.body);
-        ioutil.nonEmptyReader(&reader) catch |err| {
+        _ = ioutil.nonEmptyReader(&reader) catch |err| {
             if (err == error.EmptyReader) return null;
             return err;
         };

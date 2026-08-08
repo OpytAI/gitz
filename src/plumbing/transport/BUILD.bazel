@@ -15,6 +15,7 @@ zig_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/plumbing",
+        "//src/plumbing/protocol/packp",
         "//src/plumbing/protocol/packp/capability",
     ],
 )
@@ -26,6 +27,7 @@ zig_test(
     srcs = _SRCS,
     deps = [
         "//src/plumbing",
+        "//src/plumbing/protocol/packp",
         "//src/plumbing/protocol/packp/capability",
     ],
 )

@@ -32,12 +32,21 @@ const ObjectLru = cache_pkg.ObjectLru;
 const Mem = fs_pkg.Mem;
 const Os = fs_pkg.Os;
 
-pub const Options = struct {
-    exclusive_access: bool = false,
-    keep_descriptors: bool = false,
-    max_open_descriptors: i32 = 0,
-    large_object_threshold: i64 = 0,
-};
+/// go-git `filesystem.Options`, specialised to the backend filesystem type.
+/// `alternates_fs` may point outside the primary backend's chroot.
+pub fn OptionsFor(comptime Fs: type) type {
+    return struct {
+        exclusive_access: bool = false,
+        keep_descriptors: bool = false,
+        max_open_descriptors: i32 = 0,
+        large_object_threshold: i64 = 0,
+        alternates_fs: ?*Fs = null,
+    };
+}
+
+/// Default Mem options, retained for existing callers.
+pub const Options = OptionsFor(Mem);
+pub const OptionsOs = OptionsFor(Os);
 
 pub const implements_transactioner = false;
 pub const implements_packfile_writer = true;
@@ -378,7 +387,7 @@ pub fn newStorageOsWithOptions(
     allocator: Allocator,
     os_fs: *Os,
     object_cache: ?*ObjectLru,
-    ops: Options,
+    ops: OptionsFor(Os),
 ) Allocator.Error!*StorageOs {
     return newStorageWithOptionsFor(Os, allocator, os_fs, object_cache, ops);
 }
@@ -399,7 +408,7 @@ pub fn newStorageWithOptionsFor(
     allocator: Allocator,
     backend: *Fs,
     object_cache: ?*ObjectLru,
-    ops: Options,
+    ops: OptionsFor(Fs),
 ) Allocator.Error!*Storage(Fs) {
     const DotGit = dotgit.DotGitFor(Fs);
     const StorageT = Storage(Fs);
@@ -413,6 +422,7 @@ pub fn newStorageWithOptionsFor(
     dir.* = DotGit.init(allocator, backend, .{
         .exclusive_access = ops.exclusive_access,
         .keep_descriptors = ops.keep_descriptors,
+        .alternates_fs = ops.alternates_fs,
     });
     errdefer {
         dir.deinit();

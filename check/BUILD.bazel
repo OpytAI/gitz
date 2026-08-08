@@ -106,7 +106,8 @@ test_suite(
     ],
 )
 
-# Phase 1–13 stubs. Green //check:phase_N alone is NOT proof of phase-N packages.
+# Phase 1–13 chained suites. Green //check:phase_N alone is NOT proof of
+# phase-N packages unless current_phase makes those packages due.
 # Merge-complete means: suite green AND inventories/packages.yaml current_phase
 # bumped so file/api inventory require non-hollow packages for phase <= N.
 # Expand each suite with package unit tests as phases land.
@@ -387,4 +388,3 @@ test_suite(
     name = "all",
     tests = [":phase_13"],
 )
-

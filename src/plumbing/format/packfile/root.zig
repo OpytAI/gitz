@@ -90,6 +90,7 @@ const delta_index_mod = @import("delta_index.zig");
 const diff_delta_mod = @import("diff_delta.zig");
 const delta_selector_mod = @import("delta_selector.zig");
 const encoder_mod = @import("encoder.zig");
+const fsobject_mod = @import("fsobject.zig");
 
 pub const Error = error_mod.Error;
 
@@ -115,6 +116,10 @@ pub const writePackfileToObjectStorage = common_mod.writePackfileToObjectStorage
 
 pub const Packfile = packfile_mod.Packfile;
 pub const ObjectIterator = packfile_mod.ObjectIterator;
+pub const FSObjectFor = fsobject_mod.FSObjectFor;
+pub const FSObject = fsobject_mod.FSObject;
+pub const FSObjectOs = fsobject_mod.FSObjectOs;
+pub const FSObjectReader = fsobject_mod.FSObjectReader;
 
 // --- Write path (phase 5) ---
 pub const ObjectToPack = object_to_pack_mod.ObjectToPack;
@@ -146,6 +151,7 @@ test {
     _ = @import("diff_delta.zig");
     _ = @import("delta_selector.zig");
     _ = @import("encoder.zig");
+    _ = @import("fsobject.zig");
     _ = @import("encoder_advanced.zig");
     _ = @import("basic_pack.zig");
     _ = @import("ref_delta_pack.zig");

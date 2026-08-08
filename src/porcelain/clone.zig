@@ -19,6 +19,9 @@ const remote_pkg = @import("remote");
 const server = @import("server");
 const repo = @import("repo");
 const worktree = @import("worktree");
+const transport = @import("transport");
+const submodule = @import("submodule");
+const utils_sync = @import("utils/sync");
 
 const error_mod = @import("error.zig");
 
@@ -71,6 +74,19 @@ pub fn clone(
     return cloneInner(allocator, s, worktree_fs, opts, null);
 }
 
+/// go-git `CloneContext` using cooperative synchronous transport context.
+pub fn cloneContext(
+    context: transport.OperationContext,
+    allocator: Allocator,
+    s: *memory.Storage,
+    worktree_fs: ?*Mem,
+    opts: *const CloneOptions,
+) !Repository {
+    var options = opts.*;
+    options.transport.operation_context = context;
+    return clone(allocator, s, worktree_fs, &options);
+}
+
 /// Like `clone`, but binds an in-process `server.Server` as the transport client
 /// (MapLoader tests — same pattern as `remote.newRemoteEmbedded`).
 pub fn cloneEmbedded(
@@ -81,6 +97,19 @@ pub fn cloneEmbedded(
     srv: *server.Server,
 ) !Repository {
     return cloneInner(allocator, s, worktree_fs, opts, srv);
+}
+
+pub fn cloneEmbeddedContext(
+    context: transport.OperationContext,
+    allocator: Allocator,
+    s: *memory.Storage,
+    worktree_fs: ?*Mem,
+    opts: *const CloneOptions,
+    srv: *server.Server,
+) !Repository {
+    var options = opts.*;
+    options.transport.operation_context = context;
+    return cloneEmbedded(allocator, s, worktree_fs, &options, srv);
 }
 
 /// go-git `PlainClone` hermetic equivalent over `fs.Mem`.
@@ -94,6 +123,19 @@ pub fn plainClone(
     opts: *CloneOptions,
 ) !OwnedRepository {
     return plainCloneInner(allocator, path_fs, is_bare, opts, null);
+}
+
+/// go-git `PlainCloneContext` hermetic equivalent.
+pub fn plainCloneContext(
+    context: transport.OperationContext,
+    allocator: Allocator,
+    path_fs: *Mem,
+    is_bare: bool,
+    opts: *const CloneOptions,
+) !OwnedRepository {
+    var options = opts.*;
+    options.transport.operation_context = context;
+    return plainClone(allocator, path_fs, is_bare, &options);
 }
 
 /// `plainClone` with embedded MapLoader server.
@@ -165,6 +207,11 @@ pub fn cloneInto(
         opts.mirror,
     );
 
+    // go-git Shared: objects/info/alternates to local source before fetch.
+    if (opts.shared) {
+        try setupSharedMemory(r, opts.url);
+    }
+
     const branch_info = try fetchAndUpdateReferences(r, allocator, opts, embedded);
     defer if (branch_info.merge_owned) |m| allocator.free(m);
 
@@ -184,6 +231,325 @@ pub fn cloneInto(
             try r.createBranch(branch_name, remote_name, merge);
         }
     }
+
+    // go-git updateSubmodules after clone when RecurseSubmodules != NoRecurse.
+    if (opts.recurse_submodules > 0 and r.wt != null) {
+        try updateSubmodulesAfterClone(r, allocator, opts, embedded);
+    }
+}
+
+/// Context form for cloning into an already initialized Repository.
+pub fn cloneIntoContext(
+    context: transport.OperationContext,
+    r: *Repository,
+    allocator: Allocator,
+    opts: *const CloneOptions,
+    embedded: ?*server.Server,
+) !void {
+    var options = opts.*;
+    options.transport.operation_context = context;
+    return cloneInto(r, allocator, &options, embedded);
+}
+
+/// go-git post-clone submodule init+update (memory Host path).
+fn updateSubmodulesAfterClone(
+    r: *Repository,
+    allocator: Allocator,
+    opts: *const CloneOptions,
+    embedded: ?*server.Server,
+) !void {
+    const wt_fs = r.wt orelse return;
+    var h = submodule.Host.init(allocator, r.storer, wt_fs);
+    defer h.deinit();
+
+    var list = try submodule.listSubmodules(&h, null);
+    defer list.free(allocator);
+
+    // go-git ShallowSubmodules always limits each submodule fetch to depth 1;
+    // it does not inherit the superproject clone depth.
+    const depth: i32 = if (opts.shallow_submodules) 1 else 0;
+    const o = submodule.SubmoduleUpdateOptions{
+        .init = true,
+        .no_fetch = false,
+        .recurse_submodules = opts.recurse_submodules,
+        .depth = depth,
+        .auth = opts.transport.auth,
+        .operation_context = opts.transport.operation_context,
+        .embedded = embedded,
+    };
+    try list.update(&o);
+}
+
+// ---------------------------------------------------------------------------
+// Shared (go-git CloneOptions.Shared / objects/info/alternates)
+// ---------------------------------------------------------------------------
+
+/// go-git Shared setup for memory-backed clone.
+///
+/// Non-local URL → `AlternatePathNotSupported`.
+/// Memory `AddAlternate` is not supported, so this path returns an honest
+/// error. Use `setupSharedFilesystem` with a filesystem-backed destination.
+fn setupSharedMemory(r: *Repository, url: []const u8) !void {
+    if (!transport.isLocalEndpoint(url)) {
+        return error.AlternatePathNotSupported;
+    }
+    r.storer.addAlternate(url) catch |err| switch (err) {
+        error.NotSupported => return error.AlternatePathNotSupported,
+        else => |e| return e,
+    };
+}
+
+/// go-git Shared setup for filesystem-backed storage (writes real alternates).
+///
+/// Opens `source_root` with PlainOpen, appends `/.git` when non-bare, then
+/// `AddAlternate` on `dest` (any storer with `addAlternate`, e.g. PlainRepository.storer).
+pub fn setupSharedFilesystem(
+    allocator: Allocator,
+    dest: anytype,
+    source_root: *Mem,
+    source_path: []const u8,
+) !void {
+    var src = try repo.plainOpen(allocator, source_root);
+    defer src.deinit();
+
+    const cfg = try src.config();
+    var path_buf: [1024]u8 = undefined;
+    const altpath: []const u8 = if (!cfg.is_bare) blk: {
+        if (source_path.len + 1 + repo.git_dir_name.len > path_buf.len)
+            return error.OutOfMemory;
+        @memcpy(path_buf[0..source_path.len], source_path);
+        path_buf[source_path.len] = '/';
+        @memcpy(path_buf[source_path.len + 1 ..][0..repo.git_dir_name.len], repo.git_dir_name);
+        break :blk path_buf[0 .. source_path.len + 1 + repo.git_dir_name.len];
+    } else source_path;
+
+    try dest.addAlternate(altpath);
+}
+
+/// Clone a local repository into filesystem storage using a real Git alternate.
+///
+/// This is the filesystem counterpart of `plainClone` for `CloneOptions.shared`.
+/// `alternates_fs` is the filesystem namespace in which `source_path` is
+/// resolved. `source_path` names the repository root; `.git` is appended for
+/// a non-bare source. The caller must keep `alternates_fs` alive for the result.
+/// Checkout is deliberately rejected: the current checkout engine accepts
+/// memory storage, while this path returns filesystem storage.
+pub fn plainCloneSharedFilesystem(
+    allocator: Allocator,
+    destination_fs: *Mem,
+    source_fs: *Mem,
+    alternates_fs: *Mem,
+    source_path: []const u8,
+    is_bare: bool,
+    opts: *CloneOptions,
+) !repo.PlainRepository {
+    try opts.validate();
+    if (!opts.shared) return error.SharedCloneRequired;
+    try sharedRequiresLocalEndpoint(opts.url);
+    if (!opts.mirror and (opts.single_branch or !opts.reference_name.eql(plumbing.HEAD) or
+        opts.depth != 0 or opts.recurse_submodules != 0 or opts.shallow_submodules))
+        return error.SharedCloneOptionNotSupported;
+
+    var bare = is_bare or opts.bare;
+    if (opts.mirror) bare = true;
+    if (!bare and !opts.no_checkout) return error.SharedCheckoutNotSupported;
+
+    var source = try repo.plainOpen(allocator, source_fs);
+    defer source.deinit();
+
+    var destination = try repo.plainInitWithOptions(allocator, destination_fs, .{
+        .bare = bare,
+        .object_format = if (source.storer.hashAlgo() == .sha256) "sha256" else "",
+        .alternates_fs = alternates_fs,
+    });
+    errdefer destination.deinit();
+
+    try setupSharedFilesystem(
+        allocator,
+        destination.storer,
+        source_fs,
+        source_path,
+    );
+
+    // A local shared clone still fetches refs; only object contents are
+    // borrowed through the alternate object database. Mirror preserves names.
+    // A regular clone maps branches to remote-tracking refs, then checks out
+    // the advertised HEAD as the local branch (without materialising files).
+    var refs = try source.storer.iterReferences();
+    defer refs.deinit();
+    while (true) {
+        const ref = refs.next() catch |err| switch (err) {
+            error.EndOfStream => break,
+        };
+        if (opts.mirror) {
+            try destination.storer.setReference(ref);
+        } else if (ref.name.isBranch()) {
+            const tracking_name = try std.fmt.allocPrint(
+                allocator,
+                "refs/remotes/{s}/{s}",
+                .{ opts.remote_name, ref.name.short() },
+            );
+            defer allocator.free(tracking_name);
+            try destination.storer.setReference(Reference.newHashReference(
+                ReferenceName.init(tracking_name),
+                ref.hash,
+            ));
+        } else if (ref.name.isTag() and opts.tags != .none) {
+            try destination.storer.setReference(ref);
+        }
+    }
+
+    if (!opts.mirror) {
+        const source_head = try source.reference(plumbing.HEAD, false);
+        defer source.freeReference(source_head);
+        const resolved_head = try source.head();
+        defer source.freeReference(resolved_head);
+        if (source_head.type == .symbolic and source_head.target.isBranch()) {
+            try destination.storer.setReference(Reference.newHashReference(
+                source_head.target,
+                resolved_head.hash,
+            ));
+            try destination.storer.setReference(Reference.newSymbolicReference(
+                plumbing.HEAD,
+                source_head.target,
+            ));
+        } else {
+            try destination.storer.setReference(Reference.newHashReference(
+                plumbing.HEAD,
+                resolved_head.hash,
+            ));
+        }
+    }
+
+    const specs = try cloneRefSpec(allocator, opts);
+    defer freeStringSlice(allocator, specs);
+    const cfg = try destination.config();
+    try cfg.putRemoteFull(
+        opts.remote_name,
+        &[_][]const u8{opts.url},
+        specs,
+        opts.mirror,
+    );
+    if (!opts.mirror) {
+        const source_head = try source.reference(plumbing.HEAD, false);
+        defer source.freeReference(source_head);
+        if (source_head.type == .symbolic and source_head.target.isBranch()) {
+            try cfg.putBranch(
+                source_head.target.short(),
+                opts.remote_name,
+                source_head.target.raw,
+            );
+        }
+    }
+    try destination.setConfig(cfg);
+    return destination;
+}
+
+/// Validate Shared URL is a local path (go-git `IsLocalEndpoint`).
+pub fn sharedRequiresLocalEndpoint(url: []const u8) !void {
+    if (!transport.isLocalEndpoint(url)) return error.AlternatePathNotSupported;
+}
+
+test "setupSharedFilesystem wires readable alternate object database" {
+    const filesystem = @import("filesystem");
+    const gpa = std.testing.allocator;
+    defer utils_sync.deinitPools(gpa);
+
+    var root_fs = try Mem.init(gpa);
+    defer root_fs.deinit();
+    try root_fs.mkdirAll("source", fs_pkg.Mode.dir);
+    try root_fs.mkdirAll("destination", fs_pkg.Mode.dir);
+
+    var source_fs = try root_fs.chroot("source");
+    defer source_fs.deinit();
+    var destination_fs = try root_fs.chroot("destination");
+    defer destination_fs.deinit();
+
+    var source_repo = try repo.plainInit(gpa, &source_fs, false);
+    defer source_repo.deinit();
+    const blob = try source_repo.storer.newEncodedObject();
+    blob.setType(.blob);
+    _ = try blob.write("shared-object");
+    const blob_hash = try source_repo.storer.setEncodedObject(blob);
+
+    // Initialize the destination layout, then reopen its gitdir with the root
+    // filesystem as the alternate-path resolver (equivalent to an OS root).
+    {
+        var initialized = try repo.plainInit(gpa, &destination_fs, false);
+        initialized.deinit();
+    }
+    var destination_dot = try destination_fs.chroot(repo.git_dir_name);
+    defer destination_dot.deinit();
+    const destination = try filesystem.newStorageWithOptions(
+        gpa,
+        &destination_dot,
+        null,
+        .{ .alternates_fs = &root_fs },
+    );
+    defer {
+        destination.deinit();
+        gpa.destroy(destination);
+    }
+
+    try setupSharedFilesystem(gpa, destination, &source_fs, "source");
+    // These probes prove the alternate object database is usable without
+    // materializing a returned MemoryObject in this ownership-focused test.
+    // The hash was computed from the known content above, and the size check
+    // distinguishes the addressed object from a mere path/layout success.
+    try destination.hasEncodedObject(blob_hash);
+    try std.testing.expectEqual(
+        @as(i64, "shared-object".len),
+        try destination.encodedObjectSize(blob_hash),
+    );
+}
+
+test "plainCloneSharedFilesystem copies refs and borrows objects" {
+    const gpa = std.testing.allocator;
+    defer utils_sync.deinitPools(gpa);
+
+    var root_fs = try Mem.init(gpa);
+    defer root_fs.deinit();
+    try root_fs.mkdirAll("source", fs_pkg.Mode.dir);
+    try root_fs.mkdirAll("destination", fs_pkg.Mode.dir);
+    var source_fs = try root_fs.chroot("source");
+    defer source_fs.deinit();
+    var destination_fs = try root_fs.chroot("destination");
+    defer destination_fs.deinit();
+
+    var source = try repo.plainInit(gpa, &source_fs, false);
+    defer source.deinit();
+    const blob = try source.storer.newEncodedObject();
+    blob.setType(.blob);
+    _ = try blob.write("alternate-only");
+    const hash = try source.storer.setEncodedObject(blob);
+    try source.storer.setReference(Reference.newHashReference(plumbing.master, hash));
+
+    var options: CloneOptions = .{
+        .url = "source",
+        .shared = true,
+        .bare = true,
+    };
+    var cloned = try plainCloneSharedFilesystem(
+        gpa,
+        &destination_fs,
+        &source_fs,
+        &root_fs,
+        "source",
+        true,
+        &options,
+    );
+    defer cloned.deinit();
+
+    const master = try cloned.reference(plumbing.master, false);
+    defer cloned.freeReference(master);
+    try std.testing.expect(master.hash.eql(hash));
+    try cloned.storer.hasEncodedObject(hash);
+    try std.testing.expectEqual(
+        @as(i64, "alternate-only".len),
+        try cloned.storer.encodedObjectSize(hash),
+    );
+    const cfg = try cloned.config();
+    try std.testing.expect(cfg.remotes.get("origin") != null);
 }
 
 // ---------------------------------------------------------------------------

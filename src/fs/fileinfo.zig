@@ -19,6 +19,9 @@ pub const FileInfo = struct {
     mode: u32 = 0,
     /// Modification time as Unix seconds (0 if unknown).
     mtime_sec: i64 = 0,
+    atime_sec: i64 = 0,
+    uid: i64 = 0,
+    gid: i64 = 0,
 
     pub fn isDir(self: FileInfo) bool {
         return self.mode & 0o170000 == 0o040000;

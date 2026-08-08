@@ -3,16 +3,15 @@
 //! Inflates a zlib stream, parses the `type SP size NUL` header, then yields
 //! object content. Streaming content is hashed with `plumbing.Hasher`.
 //!
-//! Zlib inflate uses `std.compress.flate.Decompress` with container `.zlib`
-//! (Zig 0.16 has no `std.compress.zlib`). There is no pooled zlib reader in
-//! `//src/utils/sync` yet — only `getZlibWriter` — so the window is owned here.
+//! Zlib inflate uses the pooled reader in `//src/utils/sync`. The pool retains
+//! the history window and resets the inflater for each loose object.
 
 const std = @import("std");
-const flate = std.compress.flate;
 const Allocator = std.mem.Allocator;
 const IoReader = std.Io.Reader;
 
 const plumbing = @import("plumbing");
+const sync = @import("utils/sync");
 
 const ObjectType = plumbing.ObjectType;
 const Hash = plumbing.Hash;
@@ -25,10 +24,7 @@ const Error = @import("error.zig").Error;
 ///
 /// go-git: `type Reader struct` / `NewReader` / methods on `*Reader`.
 pub const Reader = struct {
-    allocator: Allocator,
-    decompress: flate.Decompress,
-    /// History window for inflate (`flate.max_window_len`). Freed in `close`.
-    window: []u8,
+    zlib: *sync.ZlibReader,
     hasher: Hasher = undefined,
     /// True after a successful `header` call (go-git: `multi != nil`).
     header_ready: bool = false,
@@ -39,18 +35,16 @@ pub const Reader = struct {
     /// Validates the zlib framing eagerly so empty/garbage input fails here
     /// (go-git `zlib.NewReader` / `Reset` behaviour via `packfile.ErrZLib`).
     pub fn open(allocator: Allocator, r: *IoReader) (Error || error{OutOfMemory})!Reader {
-        const window = try allocator.alloc(u8, flate.max_window_len);
-        errdefer allocator.free(window);
+        const zlib = try sync.getZlibReader(allocator, r);
+        errdefer sync.putZlibReader(zlib);
 
         var reader: Reader = .{
-            .allocator = allocator,
-            .decompress = flate.Decompress.init(r, .zlib, window),
-            .window = window,
+            .zlib = zlib,
         };
 
         // Force zlib header (and first content byte) so open fails on empty
         // or garbage streams — matching go-git NewReader error path.
-        _ = reader.decompress.reader.peekByte() catch return error.ZLib;
+        _ = reader.zlib.reader().peekByte() catch return error.ZLib;
 
         return reader;
     }
@@ -84,7 +78,7 @@ pub const Reader = struct {
         if (!self.header_ready) return error.HeaderNotRead;
         if (p.len == 0) return 0;
 
-        const n = self.decompress.reader.readSliceShort(p) catch return error.ZLib;
+        const n = self.zlib.reader().readSliceShort(p) catch return error.ZLib;
         if (n == 0) return error.EndOfStream;
         self.hasher.update(p[0..n]);
         return n;
@@ -99,16 +93,12 @@ pub const Reader = struct {
         return h.sum();
     }
 
-    /// Releases the inflate window. Does not close the underlying reader.
-    /// go-git `(*Reader).Close` (returns the pooled zlib reader there; here
-    /// frees the owned window). Always succeeds.
+    /// Returns the inflater and its history window to the pool. Does not close
+    /// the underlying reader. Always succeeds.
     pub fn close(self: *Reader) void {
         if (self.closed) return;
         self.closed = true;
-        if (self.window.len != 0) {
-            self.allocator.free(self.window);
-            self.window = &.{};
-        }
+        sync.putZlibReader(self.zlib);
     }
 
     fn prepareForRead(self: *Reader, t: ObjectType, size: i64) void {
@@ -124,7 +114,7 @@ pub const Reader = struct {
     fn readUntil(self: *Reader, delim: u8, buf: []u8) Error![]u8 {
         var n: usize = 0;
         while (true) {
-            const b = self.decompress.reader.takeByte() catch return error.Header;
+            const b = self.zlib.reader().takeByte() catch return error.Header;
             if (b == delim) return buf[0..n];
             if (n >= buf.len) return error.Header;
             buf[n] = b;

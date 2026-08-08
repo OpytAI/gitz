@@ -12,6 +12,7 @@ const Allocator = std.mem.Allocator;
 const Error = error_mod.Error;
 const FileInfo = fileinfo_mod.FileInfo;
 const O = root_mod.O;
+const Capability = root_mod.Capability;
 
 const NodeKind = enum { file, dir, symlink };
 
@@ -19,6 +20,10 @@ const Node = struct {
     kind: NodeKind,
     mode: u32,
     data: std.ArrayList(u8) = .empty,
+    uid: i64 = 0,
+    gid: i64 = 0,
+    atime_sec: i64 = 0,
+    mtime_sec: i64 = 0,
     /// basename → absolute child path (both strings owned by this node map / store).
     children: std.StringArrayHashMapUnmanaged([]const u8) = .empty,
 
@@ -127,6 +132,39 @@ pub const Mem = struct {
 
     pub fn root(self: *const Mem) []const u8 {
         return self.root_path;
+    }
+
+    pub fn capabilities(_: *const Mem) Capability {
+        return root_mod.AllCapabilities;
+    }
+
+    pub fn chmod(self: *Mem, filename: []const u8, mode: u32) (Allocator.Error || Error)!void {
+        const abs = try self.toAbs(filename);
+        defer self.allocator.free(abs);
+        const node = self.nodes().get(abs) orelse return error.NotExist;
+        node.mode = (node.mode & 0o170000) | (mode & 0o7777);
+    }
+
+    pub fn lchown(self: *Mem, filename: []const u8, uid: i64, gid: i64) (Allocator.Error || Error)!void {
+        const abs = try self.toAbs(filename);
+        defer self.allocator.free(abs);
+        const node = self.nodes().get(abs) orelse return error.NotExist;
+        node.uid = uid;
+        node.gid = gid;
+    }
+
+    pub fn chown(self: *Mem, filename: []const u8, uid: i64, gid: i64) (Allocator.Error || Error)!void {
+        // Mem has no inode indirection for symlink targets. Match lchown for
+        // stored metadata while preserving a distinct billy method.
+        return self.lchown(filename, uid, gid);
+    }
+
+    pub fn chtimes(self: *Mem, filename: []const u8, atime_sec: i64, mtime_sec: i64) (Allocator.Error || Error)!void {
+        const abs = try self.toAbs(filename);
+        defer self.allocator.free(abs);
+        const node = self.nodes().get(abs) orelse return error.NotExist;
+        node.atime_sec = atime_sec;
+        node.mtime_sec = mtime_sec;
     }
 
     /// Join path elements (always `/` separator; cleans `.` / `..`).
@@ -300,6 +338,10 @@ pub const Mem = struct {
                 .dir => 0,
             },
             .mode = node.mode,
+            .mtime_sec = node.mtime_sec,
+            .atime_sec = node.atime_sec,
+            .uid = node.uid,
+            .gid = node.gid,
         };
     }
 
@@ -701,6 +743,25 @@ test "Mem round-trip file" {
     }
     const st = try fs.stat("objects/pack/foo");
     try std.testing.expectEqual(@as(i64, 5), st.size);
+}
+
+test "Mem Change metadata and capabilities" {
+    const allocator = std.testing.allocator;
+    var mem = try Mem.init(allocator);
+    defer mem.deinit();
+    var file = try mem.create("meta");
+    try file.close();
+
+    try mem.chmod("meta", 0o600);
+    try mem.chown("meta", 123, 456);
+    try mem.chtimes("meta", 11, 22);
+    const info = try mem.stat("meta");
+    try std.testing.expectEqual(@as(u32, 0o600), info.mode & 0o777);
+    try std.testing.expectEqual(@as(i64, 123), info.uid);
+    try std.testing.expectEqual(@as(i64, 456), info.gid);
+    try std.testing.expectEqual(@as(i64, 11), info.atime_sec);
+    try std.testing.expectEqual(@as(i64, 22), info.mtime_sec);
+    try std.testing.expect(root_mod.capabilityCheck(&mem, root_mod.AllCapabilities));
 }
 
 test "Mem readDir sorted" {

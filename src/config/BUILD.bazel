@@ -9,6 +9,7 @@ _SRCS = [
     "optbool.zig",
     "owned.zig",
     "refspec.zig",
+    "storer.zig",
     "url.zig",
 ]
 

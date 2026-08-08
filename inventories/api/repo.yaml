@@ -8,6 +8,7 @@
 # Phase 12 Worktree glue: Repository.worktree / worktreeEmbedded (+ free
 # functions worktreeOf / worktreeEmbedded) over //src/worktree; worktreeFs is
 # the FS-only probe. Field is `wt` (go-git `r.wt`).
+# Phase 13: RepackObjects / RepackConfig (full FS path; memory PackfileWriterNotSupported).
 # Full Worktree engine lives in git/worktree. PlainClone / Clone: git/porcelain.
 # Deferred: EnableDotGitCommonDir (stub flag).
 package: git/repository
@@ -28,6 +29,11 @@ require:
     - FetchOptions
     - PushOptions
     - ListOptions
+    - RepackConfig
+    - MergeStrategy
+    - MergeOptions
+    - PruneOptions
+    - BlameResult
   functions:
     - newRepository
     - init
@@ -43,6 +49,9 @@ require:
     - plainOpenWithOptions
     - worktreeOf
     - worktreeEmbedded
+    - repackObjects
+    - repackObjectsFs
+    - verifyExtensions
   constants:
     - git_dir_name
   semantic:
@@ -64,7 +73,9 @@ require:
     - Repository.createRemoteAnonymous
     - Repository.deleteRemote
     - Repository.fetch
+    - Repository.fetchContext
     - Repository.push
+    - Repository.pushContext
     - Repository.branch
     - Repository.createBranch
     - Repository.deleteBranch
@@ -86,6 +97,23 @@ require:
     - Repository.notes
     - Repository.log
     - Repository.resolveRevision
+    - Repository.repackObjects
+    - Repository.merge
+    - Repository.grep
+    - Repository.prune
+    - Repository.deleteObject
+    - Repository.blame
+    - MergeStrategy
+    - MergeOptions
+    - PruneOptions
+    - BlameResult
+    - verifyExtensions
+    - PlainRepository.repackObjects
+    - RepackConfig
+    - RepackConfig.use_ref_deltas
+    - RepackConfig.only_delete_packs_older_than
+    - PackedObjectsNotSupported
+    - PackfileWriterNotSupported
     - newRepository
     - init
     - initWithOptions
@@ -125,6 +153,9 @@ require:
     - worktreeEmbedded
     - WorktreeNotProvided
     - IsBareRepository
+    # Phase 13 repack
+    - repackObjects
+    - repackObjectsFs
 zig_map:
   Repository: Repository
   InitOptions: InitOptions
@@ -160,3 +191,12 @@ zig_map:
   Repository.worktreeEmbedded: worktreeEmbedded
   ErrWorktreeNotProvided: WorktreeNotProvided
   ErrIsBareRepository: IsBareRepository
+  RepackConfig: RepackConfig
+  MergeStrategy: MergeStrategy
+  MergeOptions: MergeOptions
+  PruneOptions: PruneOptions
+  BlameResult: BlameResult
+  VerifyExtensions: verifyExtensions
+  RepackObjects: repackObjects
+  Repository.RepackObjects: repackObjects
+  ErrPackedObjectsNotSupported: PackedObjectsNotSupported

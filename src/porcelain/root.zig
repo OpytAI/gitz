@@ -19,10 +19,15 @@ pub const CloneOptions = worktree.CloneOptions;
 pub const OwnedRepository = clone_mod.OwnedRepository;
 
 pub const clone = clone_mod.clone;
+pub const cloneContext = clone_mod.cloneContext;
 pub const cloneEmbedded = clone_mod.cloneEmbedded;
+pub const cloneEmbeddedContext = clone_mod.cloneEmbeddedContext;
 pub const plainClone = clone_mod.plainClone;
+pub const plainCloneContext = clone_mod.plainCloneContext;
 pub const plainCloneEmbedded = clone_mod.plainCloneEmbedded;
+pub const plainCloneSharedFilesystem = clone_mod.plainCloneSharedFilesystem;
 pub const cloneInto = clone_mod.cloneInto;
+pub const cloneIntoContext = clone_mod.cloneIntoContext;
 
 test {
     _ = @import("error.zig");

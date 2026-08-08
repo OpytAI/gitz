@@ -15,8 +15,17 @@ const remote_mod = @import("remote.zig");
 const crud = @import("crud.zig");
 const plain = @import("plain.zig");
 const worktree_api = @import("worktree_api.zig");
+const repack_mod = @import("repack.zig");
 
 pub const Error = error_mod.Error;
+
+pub const RepackConfig = repack_mod.RepackConfig;
+pub const repackObjects = repack_mod.repackObjects;
+pub const repackObjectsFs = repack_mod.repackObjectsFs;
+pub const MergeStrategy = repository.MergeStrategy;
+pub const MergeOptions = repository.MergeOptions;
+pub const PruneOptions = repository.PruneOptions;
+pub const BlameResult = repository.BlameResult;
 
 pub const Repository = repository.Repository;
 pub const InitOptions = repository.InitOptions;
@@ -25,6 +34,7 @@ pub const newRepository = repository.newRepository;
 pub const init = repository.init;
 pub const initWithOptions = repository.initWithOptions;
 pub const open = repository.open;
+pub const verifyExtensions = repository.verifyExtensions;
 pub const configScopedFromLocal = repository.configScopedFromLocal;
 pub const cloneMemoryConfig = repository.cloneMemoryConfig;
 pub const mergeGitconfigIntoMemory = repository.mergeGitconfigIntoMemory;
@@ -80,4 +90,5 @@ test {
     _ = crud;
     _ = plain;
     _ = worktree_api;
+    _ = repack_mod;
 }

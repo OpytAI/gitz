@@ -9,6 +9,7 @@ require:
     - OsRoundTripper
     - RoundTripper
     - MockRoundTripper
+    - ClientCertificateCapability
   functions:
     - newClient
     - defaultClient
@@ -26,6 +27,9 @@ require:
     - RoundTripper
     - insecure_skip_tls
     - roundTripInsecureHttps
+    - ClientCertificateCapability
+    - clientCertificateCapability
+    - ClientCertificateUnsupported
 zig_map:
   BasicAuth: BasicAuth
   TokenAuth: TokenAuth
@@ -33,3 +37,5 @@ zig_map:
   NewClient: newClient
   OsRoundTripper: OsRoundTripper
   RoundTripper: RoundTripper
+  ClientCertificateCapability: ClientCertificateCapability
+  ClientCertificateCapabilityValue: clientCertificateCapability

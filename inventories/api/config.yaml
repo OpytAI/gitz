@@ -26,6 +26,7 @@ require:
     - matchAny
     - findLongestInsteadOfMatch
     - unmarshalSubmodules
+    - ConfigStorer
   constants:
     - default_fetch_ref_spec
     - default_push_ref_spec
@@ -56,6 +57,7 @@ require:
     - readConfig
     - loadConfig
     - paths
+    - ConfigStorer
 zig_map:
   NewConfig: newConfig
   ReadConfig: readConfig
@@ -76,3 +78,4 @@ zig_map:
   DefaultPackWindow: default_pack_window
   MatchAny: matchAny
   FindLongestInsteadOfMatch: findLongestInsteadOfMatch
+  ConfigStorer: ConfigStorer

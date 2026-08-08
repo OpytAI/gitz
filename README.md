@@ -1,63 +1,113 @@
 # gitz
 
-Git in Zig. A full port of [go-git](https://github.com/go-git/go-git).
+**Git for Zig — and for places Go and C cannot go lightly.**
 
-**License:** Apache License 2.0 — see [`LICENSE`](LICENSE).
+A pure-Zig Git library: a deliberate, full-surface port of [go-git](https://github.com/go-git/go-git) **v5.19.2**, built to run as a normal native library and as a first-class **WebAssembly** citizen.
 
-## Layout
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
+[![Zig 0.16](https://img.shields.io/badge/Zig-0.16-f7a41d)](https://ziglang.org/)
+[![go-git pin v5.19.2](https://img.shields.io/badge/go--git-v5.19.2-00ADD8)](GO_GIT_PIN.md)
+[![opyt.cloud](https://img.shields.io/badge/opyt.cloud-gitz-f5c542)](https://opyt.cloud)
 
-This workspace uses a bare repository and worktrees. See `AGENTS.md` at the workspace root and in this tree.
+[Why gitz](#why-gitz) · [What you get](#what-you-get) · [Status](#status) · [Build](#build) · [For contributors](#for-contributors) · [License](#license)
 
-| Path | Role |
-|------|------|
-| `gitz.git/` | Bare repository |
-| `gitz-master/` | `master` worktree |
-| `gitz-develop/` | `develop` worktree |
-| `go-git/` | Pinned go-git reference clone (sibling; not part of this repo) |
+---
+
+## Why gitz
+
+We needed **Git inside WebAssembly**.
+
+The usual answers do not fit that goal well:
+
+| Option | Problem for us |
+|--------|----------------|
+| **[libgit2](https://libgit2.org/)** | Capable, but its license is not permissive enough for every product we care about. |
+| **[go-git](https://github.com/go-git/go-git)** | Feature-rich and approachable, yet a Go binary drags a large runtime. In our measurements the Go path sat around **~20 MiB**, versus roughly **0.635 MiB** for a libgit2-class native link — a non-starter for lean Wasm embeds. |
+| **[gitoxide](https://github.com/GitoxideLabs/gitoxide)** | Excellent Rust engineering, but heavy and awkward to get into a clean Wasm target for our stack. |
+
+Separately, we rewrote a POSIX-shaped image from Go to Zig and watched footprint collapse from **~20 MiB to ~2.2 MiB**. That made the question hard to ignore: **what if Git itself were Zig?**
+
+There are incomplete, often AI-scaffolded Zig Git experiments. We wanted something we could treat as a **standard**: same behaviors as a mature library, not a greenfield partial clone of Git.
+
+**go-git** is that standard for us. Despite Go’s runtime weight, its model is complete enough to port against (plumbing and porcelain, storers, transports, worktree). Go is a small language, so Go→Zig translation stays mechanical: packages map cleanly, tests map cleanly, and we can keep **behavioral fidelity** without inventing a different Git.
+
+**gitz** is that port — pure Zig, Bazel-hermetic Zig **0.16**, Apache-2.0, aimed at **native and Wasm** without a GC runtime tax.
+
+---
+
+## What you get
+
+- **Library, not a CLI** — embed Git operations in your process (or Wasm module).
+- **go-git-shaped surface** — repository, remote fetch/push, worktree checkout/status/commit, pack protocol, file/git/http/ssh transports, submodules, blame, prune, and the format stack (pack, index, commit-graph, …).
+- **Extensible storage** — memory and filesystem backends; in-process server for tests and hermetic remotes.
+- **No C dependency wall** — collision-detecting SHA-1 and crypto paths in pure Zig where the port requires it.
+
+Pin and policy: **[`GO_GIT_PIN.md`](GO_GIT_PIN.md)** (go-git **v5.19.2**).
+
+---
+
+## Status
+
+gitz is under active development. The `develop` branch tracks a phase-gated port of go-git **v5.19.2**. Automated gates (`//check:…`) enforce package inventories and goldens as surface lands.
+
+For architecture and phase detail (contributor-oriented):
+
+| Doc | Role |
+|-----|------|
+| [`PORT_STRATEGY.md`](PORT_STRATEGY.md) | How we port (Zig seams, layers, non-goals) |
+| [`PHASE_PLAN.md`](PHASE_PLAN.md) | Phases, packages, Bazel gates |
+| [`docs/GATES.md`](docs/GATES.md) | Adding packages/goldens and running gates |
+
+---
 
 ## Build
 
-Bazel + **rules_zig 0.16** with hermetic **Zig 0.16.0** (not system `zig`).
+**Bazel** + **rules_zig** with hermetic **Zig 0.16.0** (not a system `zig` install).
 
-From this worktree (`gitz-develop` or `gitz-master`):
+From a checkout of this repository:
 
 ```bash
 bazel build //...
 bazel test //...
 ```
 
-`.bazelrc` already sets:
-
-- `startup --output_user_root=/mnt/workspace/gitz/bazel-cache` (Bazel disk cache)
-- Zig compiler cache under `/tmp/gitz-zig-cache` (writable in linux-sandbox via `/tmp` mount)
-
-If you invoke Bazel without this workspace’s `.bazelrc`, pass the output root explicitly (see `AGENTS.md`).
-
-Smoke and acceptance targets:
+Useful targets:
 
 | Target | Role |
 |--------|------|
-| `//src:gitz` | Core library root |
+| `//src:gitz` | Core library |
 | `//src:gitz_test` | Root unit tests |
 | `//:gitz` | Alias to `//src:gitz` |
-| `//check:phase_g` | Phase G guardrails (inventories, goldens, metrics) |
+| `//check:all` | Full inventory / golden / package gate suite |
 
-After Phase G, acceptance is **only** via Bazel (`docs/GATES.md`):
+If your environment uses a custom Bazel output root, see workspace `.bazelrc` and contributor notes in [`AGENTS.md`](AGENTS.md).
+
+---
+
+## For contributors
+
+We port **behavior and package seams**, not Go’s method soup. Prefer explicit allocators, error sets, and small traits; match go-git incompleteness unless a change deliberately expands past the pin.
 
 ```bash
-bazel test //check:phase_g
+# Full gate (preferred acceptance signal)
+bazel test //check:all
+
+# Package-focused work
+bazel test //src/worktree:worktree_test
+bazel test //src/remote:remote_test
 ```
 
-## Reference pin
+Layout of this monorepo-style workspace (when using the bare + worktree layout):
 
-See `GO_GIT_PIN.md` (go-git **v5.19.2**).
+| Path | Role |
+|------|------|
+| This tree | Product source (`src/`, `check/`, inventories) |
+| Sibling `go-git/` | Pinned reference clone (not shipped in the product tree) |
 
-## Port plan
+---
 
-| Doc | Role |
-|-----|------|
-| [`PHASE_PLAN.md`](PHASE_PLAN.md) | Ordered phases, packages, Bazel gates, parallel slices |
-| [`PORT_STRATEGY.md`](PORT_STRATEGY.md) | Architecture, guardrail design, Zig seams |
-| [`docs/GATES.md`](docs/GATES.md) | How to add packages/goldens and run phase gates |
+## License
 
-**Next phase:** Phase 1 — foundation (`plumbing/hash`, plumbing root, filemode, utils/binary, …).
+Apache License 2.0 — see [`LICENSE`](LICENSE).
+
+Copyright August 2026 opyt.cloud.

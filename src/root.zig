@@ -216,7 +216,6 @@ test "phase11 remote surface" {
     _ = remote.ForceWithLease;
     _ = remote.PushOption;
     _ = remote.SessionOpts;
-    _ = remote.sessionOptsFrom;
     _ = remote.openUploadPack;
     _ = remote.openReceivePack;
     try std.testing.expectEqualStrings("origin", remote.default_remote_name);

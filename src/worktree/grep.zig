@@ -8,6 +8,7 @@ const std = @import("std");
 const plumbing = @import("plumbing");
 const objpkg = @import("object");
 const storer = @import("storer");
+const memory = @import("memory");
 
 const worktree_mod = @import("worktree.zig");
 const options_mod = @import("options.zig");
@@ -41,39 +42,49 @@ pub fn freeGrepResults(allocator: Allocator, results: []GrepResult) void {
 
 /// go-git `(*Worktree).Grep`.
 pub fn grep(w: *Worktree, o: GrepOptions) ![]GrepResult {
+    return grepRepository(w.allocator, w.storer, o);
+}
+
+/// go-git `(*Repository).Grep` core. This does not require a worktree and is
+/// therefore valid for bare repositories.
+pub fn grepRepository(
+    allocator: Allocator,
+    sto: *memory.Storage,
+    o: GrepOptions,
+) ![]GrepResult {
     var opts = o;
-    try opts.validate(w.storer);
+    try opts.validate(sto);
 
     var commit_hash: Hash = undefined;
     var tree_name: []const u8 = undefined;
 
     if (opts.reference_name.raw.len > 0) {
-        const ref = try storer.resolveReference(w.storer, opts.reference_name);
+        const ref = try storer.resolveReference(sto, opts.reference_name);
         commit_hash = ref.hash;
-        tree_name = try w.allocator.dupe(u8, opts.reference_name.raw);
+        tree_name = try allocator.dupe(u8, opts.reference_name.raw);
     } else {
         commit_hash = opts.commit_hash;
         var hex_buf: [plumbing.MaxHexSize]u8 = undefined;
         const hex = commit_hash.string(&hex_buf);
-        tree_name = try w.allocator.dupe(u8, hex);
+        tree_name = try allocator.dupe(u8, hex);
     }
-    defer w.allocator.free(tree_name);
+    defer allocator.free(tree_name);
 
     // Compile patterns once.
-    const compiled = try compileAll(w.allocator, opts.patterns);
-    defer freeCompiled(w.allocator, compiled);
-    const path_compiled = try compileAll(w.allocator, opts.path_specs);
-    defer freeCompiled(w.allocator, path_compiled);
+    const compiled = try compileAll(allocator, opts.patterns);
+    defer freeCompiled(allocator, compiled);
+    const path_compiled = try compileAll(allocator, opts.path_specs);
+    defer freeCompiled(allocator, path_compiled);
 
-    const commit = try objpkg.getCommit(w.allocator, w.storer, commit_hash);
+    const commit = try objpkg.getCommit(allocator, sto, commit_hash);
     defer {
         commit.deinit();
-        w.allocator.destroy(commit);
+        allocator.destroy(commit);
     }
 
     var file_iter = try commit.files();
     return try findMatchInFiles(
-        w.allocator,
+        allocator,
         &file_iter,
         tree_name,
         compiled,
