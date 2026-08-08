@@ -293,12 +293,13 @@ in-process `server` + `MapLoader` (no real internet). `Repository.fetch` /
 |------|-----|--------|
 | Handle | `Remote`, `newRemote`, `newRemoteEmbedded` | Public fields; `embedded` binds in-process `server.Server` |
 | Display | `Remote.string`, `Remote.name` | go-git `String`; config via public `.config` |
-| List | `Remote.list` + `ListOptions` / `PeelingOption` | Owned `[]Reference`; free with `freeReferences` |
-| Fetch | `Remote.fetch` + `FetchOptions` / `TagMode` | Pack ingest, tracking refs, `updateShallow`, prune |
-| Push | `Remote.push` + `PushOptions` / `ForceWithLease` / `PushOption` | Commands + pack; follow-tags via `isAncestor` |
-| Session | `openUploadPack`, `openReceivePack`, `SessionOpts` | TLS/proxy applied to `Endpoint`; embedded or registry |
+| List | `Remote.list` + `ListOptions` / `PeelingOption` | Peel modes; mTLS fields; free with `freeReferences` |
+| Fetch | `Remote.fetch` + `FetchOptions` / `TagMode` / `Progress` | Prune, AllTags/NoTags, depth+shallow, mTLS |
+| Push | `Remote.push` + `ForceWithLease` / `PushOption` / `Progress` | Force, delete, require-remote-refs, follow-tags |
+| Session | `openUploadPack`, `openReceivePack`, `sessionOptsFrom` | TLS/proxy/cert applied to `Endpoint` |
+| Server | upload-pack **depth/shallow** (beyond go-git) | Boundary shallows on response; client `updateShallow` |
 | Refs | `calculateRefs`, `getWants`, `getHaves`, `isFastForward` | Refspec expand + commit-walk FF |
-| Repo glue | `Repository.fetch`, `Repository.push` | Validate options → lookup remote → delegate |
+| Repo glue | `Repository.fetch`, `Repository.push` | Registry or embedded; MapLoader e2e in `repo_test` |
 
 ### Class A goldens (phase 11)
 
@@ -309,9 +310,15 @@ Static `file_equals` plus **executable** recompute in `//tools/golden:recompute_
 | `remote_string` | `Remote.string` for single URL (fetch + push lines) |
 | `remote_fetch_options_defaults` | `FetchOptions.validate` → `origin` + `following` |
 | `remote_default_fetch_refspec` | `default_fetch_ref_spec` formatted for `origin` |
+| `remote_default_push_refspec` | `default_push_ref_spec` |
+| `remote_list_ref_names` | MapLoader list → sorted `HEAD` + `refs/heads/master` |
 
-Integration unit tests (not Class A dumps) cover List/Fetch/Push and
-ForceWithLease reject over MapLoader in `//src/remote:remote_test`.
+### Integration coverage (`//src/remote:remote_test` + `//src/repo:repo_test`)
+
+List (incl. peel, empty URLs, timeout); Fetch (objects, up-to-date, prune, tags, **depth=1 shallow**);
+Push (empty remote, FWL reject, force, delete, require-remote-refs, follow-tags);
+SessionOpts/mTLS fields; **Repository.fetch/push** via client registry + MapLoader.
+
 
 ### How to run
 

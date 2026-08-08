@@ -36,12 +36,29 @@ pub fn storeTree(s: *memory.Storage, allocator: Allocator, blob: Hash, name: []c
 }
 
 pub fn storeCommit(s: *memory.Storage, allocator: Allocator, tree: Hash, msg: []const u8) !Hash {
+    return storeCommitParents(s, allocator, tree, msg, &.{});
+}
+
+/// Commit with optional parent hashes (for shallow / multi-commit fixture chains).
+pub fn storeCommitParents(
+    s: *memory.Storage,
+    allocator: Allocator,
+    tree: Hash,
+    msg: []const u8,
+    parents: []const Hash,
+) !Hash {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
     var tree_hex: [plumbing.MaxHexSize]u8 = undefined;
     try buf.appendSlice(allocator, "tree ");
     try buf.appendSlice(allocator, tree.string(&tree_hex));
     try buf.append(allocator, '\n');
+    for (parents) |p| {
+        var phex: [plumbing.MaxHexSize]u8 = undefined;
+        try buf.appendSlice(allocator, "parent ");
+        try buf.appendSlice(allocator, p.string(&phex));
+        try buf.append(allocator, '\n');
+    }
     try buf.appendSlice(allocator, "author A <a@b> 1 +0000\n");
     try buf.appendSlice(allocator, "committer A <a@b> 1 +0000\n");
     try buf.append(allocator, '\n');

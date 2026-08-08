@@ -29,7 +29,8 @@ pub const Error = error{
     UpdateReference,
     /// Requested capability is not supported by this server.
     UnsupportedCapability,
-    /// Shallow upload-pack is not implemented (go-git server message).
+    /// Unsupported shallow mode (e.g. deepen-since / deepen-not without full support).
+    /// Depth-commits shallow fetch is implemented; go-git rejects all shallows.
     ShallowNotSupported,
 };
 
@@ -179,6 +180,9 @@ pub const UploadPackSession = struct {
     }
 
     /// go-git `UploadPack` — encode reachable objects into an in-memory pack.
+    ///
+    /// Unlike go-git (which rejects client shallows), gitz supports `deepen`
+    /// depth-limited packs and reports boundary commits via `shallow_update`.
     pub fn uploadPack(
         self: *UploadPackSession,
         req: *const packp.UploadPackRequest,
@@ -190,10 +194,30 @@ pub const UploadPackSession = struct {
         try self.base.checkSupportedCapabilities(&req.upload_request.capabilities);
         try self.base.adoptCaps(&req.upload_request.capabilities);
 
-        if (req.upload_request.shallows.items.len > 0) return Error.ShallowNotSupported;
+        const use_depth = !req.depth().isZero() or req.upload_request.shallows.items.len > 0;
 
-        const objs = try self.objectsToUpload(req);
-        defer self.base.allocator.free(objs);
+        var objs: ?[]Hash = null;
+        var shallow_tips: ?[]Hash = null;
+        defer {
+            if (objs) |o| self.base.allocator.free(o);
+            if (shallow_tips) |s| self.base.allocator.free(s);
+        }
+
+        if (use_depth) {
+            const depth_n = switch (req.depth()) {
+                .commits => |n| n,
+                // Deepen-since / deepen-not require caps we do not advertise;
+                // validate() rejects them first. Keep a clear error if forced.
+                else => return Error.ShallowNotSupported,
+            };
+            const got = try self.objectsToUploadDepth(req, depth_n);
+            objs = got.objects;
+            shallow_tips = got.shallows;
+        } else {
+            objs = try self.objectsToUpload(req);
+        }
+
+        const objs_slice = objs.?;
 
         var aw: IoWriter.Allocating = .init(self.base.allocator);
         errdefer aw.deinit();
@@ -209,11 +233,22 @@ pub const UploadPackSession = struct {
         // go-git pack window 10. Delta selection uses `utils/sync` free lists;
         // drain them after encode so GPA-based tests stay leak-clean.
         defer sync.deinitPools(self.base.allocator);
-        _ = try enc.encode(objs, 10);
+        _ = try enc.encode(objs_slice, 10);
 
         const pack_data = try aw.toOwnedSlice();
         // Response takes ownership of pack_data (no second copy).
-        return try packp.newUploadPackResponseWithPackfile(self.base.allocator, req, pack_data);
+        const resp = try packp.newUploadPackResponseWithPackfile(self.base.allocator, req, pack_data);
+        errdefer packp.freeUploadPackResponse(self.base.allocator, resp);
+
+        // Boundary commits past the depth limit → `shallow` lines on the response.
+        // `is_shallow` is already true when request depth is non-zero (packp init).
+        if (shallow_tips) |tips| {
+            for (tips) |h| {
+                try resp.shallow_update.shallows.append(self.base.allocator, h);
+            }
+        }
+
+        return resp;
     }
 
     fn objectsToUpload(self: *UploadPackSession, req: *const packp.UploadPackRequest) ![]Hash {
@@ -222,6 +257,142 @@ pub const UploadPackSession = struct {
         defer self.base.allocator.free(haves);
         return revlist.objects(self.base.allocator, &adapter, req.upload_request.wants.items, haves);
     }
+
+    /// Depth-limited object set for shallow fetch.
+    ///
+    /// Walks commit parents from each want up to `depth_n` commits (`0` = unlimited).
+    /// Parents past the limit become **new** shallow tips (not already listed by the
+    /// client). Client shallows are accepted so deepen/refetch does not error; they
+    /// are not expanded as "haves" (the client often lacks those objects).
+    ///
+    /// Trees/blobs come from `revlist` over each included commit's **tree** (not the
+    /// commit). That avoids walking parents through revlist and avoids expanding
+    /// shallow boundary commits into the ignore set (which would drop shared blobs).
+    fn objectsToUploadDepth(
+        self: *UploadPackSession,
+        req: *const packp.UploadPackRequest,
+        depth_n: i32,
+    ) !struct { objects: []Hash, shallows: []Hash } {
+        const allocator = self.base.allocator;
+        var adapter = StorerAdapter{ .inner = self.base.storer };
+
+        var client_shallow: std.AutoHashMapUnmanaged(Hash, void) = .empty;
+        defer client_shallow.deinit(allocator);
+        for (req.upload_request.shallows.items) |h| {
+            try client_shallow.put(allocator, h, {});
+        }
+
+        // BFS: (commit hash, depth from want; want itself is depth 1).
+        const QueueItem = struct { hash: Hash, depth: i32 };
+        var queue: std.ArrayList(QueueItem) = .empty;
+        defer queue.deinit(allocator);
+
+        var visited: std.AutoHashMapUnmanaged(Hash, void) = .empty;
+        defer visited.deinit(allocator);
+
+        var included: std.ArrayList(Hash) = .empty;
+        defer included.deinit(allocator);
+
+        var shallow_set: std.AutoHashMapUnmanaged(Hash, void) = .empty;
+        defer shallow_set.deinit(allocator);
+
+        for (req.upload_request.wants.items) |want| {
+            try queue.append(allocator, .{ .hash = want, .depth = 1 });
+        }
+
+        while (queue.items.len > 0) {
+            const item = queue.orderedRemove(0);
+            if (visited.contains(item.hash)) continue;
+            try visited.put(allocator, item.hash, {});
+
+            // Peel annotated tags to the underlying commit (or other tip).
+            const tip = try peelWantToTip(self.base.storer, item.hash);
+
+            const obj = self.base.storer.encodedObject(.any, tip) catch |err| {
+                if (err == error.ObjectNotFound) return err;
+                return err;
+            };
+
+            if (obj.object_type != .commit) {
+                // Non-commit want tip: include as-is; no parent walk / no shallow.
+                try included.append(allocator, tip);
+                continue;
+            }
+
+            // Unlimited depth (0) always includes; finite depth stops after depth_n.
+            if (depth_n > 0 and item.depth > depth_n) continue;
+
+            try included.append(allocator, tip);
+
+            var parents_buf: [16]Hash = undefined;
+            const parents = try parseCommitParents(obj.readerBytes(), &parents_buf);
+
+            const at_limit = depth_n > 0 and item.depth >= depth_n;
+            for (parents) |p| {
+                if (at_limit) {
+                    // New shallow edge only when the client did not already list it.
+                    if (!client_shallow.contains(p)) {
+                        try shallow_set.put(allocator, p, {});
+                    }
+                } else {
+                    try queue.append(allocator, .{ .hash = p, .depth = item.depth + 1 });
+                }
+            }
+        }
+
+        // Objects the client already has (negotiation haves only).
+        // Client shallows and new shallow tips are **not** expanded here.
+        const haves_exp = try revlist.objects(allocator, &adapter, req.upload_haves.haves.items, &.{});
+        defer allocator.free(haves_exp);
+
+        // Collect trees (and non-commit tips) for revlist; add commit OIDs by hand.
+        var tree_tips: std.ArrayList(Hash) = .empty;
+        defer tree_tips.deinit(allocator);
+        var commit_oids: std.ArrayList(Hash) = .empty;
+        defer commit_oids.deinit(allocator);
+
+        var haves_set: std.AutoHashMapUnmanaged(Hash, void) = .empty;
+        defer haves_set.deinit(allocator);
+        for (haves_exp) |h| try haves_set.put(allocator, h, {});
+
+        for (included.items) |h| {
+            if (haves_set.contains(h)) continue;
+            const obj = self.base.storer.encodedObject(.any, h) catch |err| {
+                if (err == error.ObjectNotFound) return err;
+                return err;
+            };
+            switch (obj.object_type) {
+                .commit => {
+                    try commit_oids.append(allocator, h);
+                    const tree = try parseCommitTree(obj.readerBytes());
+                    if (!haves_set.contains(tree)) try tree_tips.append(allocator, tree);
+                },
+                else => try tree_tips.append(allocator, h),
+            }
+        }
+
+        const tree_objs = try revlist.objects(allocator, &adapter, tree_tips.items, haves_exp);
+        defer allocator.free(tree_objs);
+
+        var out: std.ArrayList(Hash) = .empty;
+        errdefer out.deinit(allocator);
+        try out.appendSlice(allocator, commit_oids.items);
+        for (tree_objs) |h| {
+            if (!haves_set.contains(h)) try out.append(allocator, h);
+        }
+
+        var shallows: std.ArrayList(Hash) = .empty;
+        errdefer shallows.deinit(allocator);
+        var sit = shallow_set.keyIterator();
+        while (sit.next()) |k| {
+            try shallows.append(allocator, k.*);
+        }
+
+        const objects = try out.toOwnedSlice(allocator);
+        errdefer allocator.free(objects);
+        const shallow_slice = try shallows.toOwnedSlice(allocator);
+        return .{ .objects = objects, .shallows = shallow_slice };
+    }
 };
 
 fn setSupportedCapabilitiesUpload(c: *capability.List) !void {
@@ -229,6 +400,61 @@ fn setSupportedCapabilitiesUpload(c: *capability.List) !void {
     defer c.allocator.free(agent);
     try c.set(capability.Agent, &.{agent});
     try c.set(capability.OFSDelta, &.{});
+    // gitz extends go-git here: advertise shallow so depth fetch can negotiate.
+    try c.set(capability.Shallow, &.{});
+}
+
+/// Peel annotated-tag wants to their ultimate non-tag target (commit/tree/blob).
+fn peelWantToTip(s: RepoStorer, start: Hash) !Hash {
+    var current = start;
+    var depth: usize = 0;
+    const max_peel: usize = 16;
+    while (depth < max_peel) : (depth += 1) {
+        const obj = s.encodedObject(.any, current) catch |err| {
+            if (err == error.ObjectNotFound) return start;
+            return err;
+        };
+        if (obj.object_type != .tag) return current;
+        current = parseTagTarget(obj.readerBytes()) orelse return current;
+    }
+    return current;
+}
+
+/// Parse `parent <hex>` lines from a commit body into `buf` (cap 16 parents).
+fn parseCommitParents(body: []const u8, buf: *[16]Hash) ![]const Hash {
+    var n: usize = 0;
+    var rest = body;
+    while (rest.len > 0) {
+        if (rest[0] == '\n') break;
+        const nl = std.mem.indexOfScalar(u8, rest, '\n') orelse break;
+        const line = rest[0..nl];
+        rest = rest[nl + 1 ..];
+        if (!std.mem.startsWith(u8, line, "parent ")) continue;
+        if (line.len < 7 + plumbing.HexSize) return plumbing.Error.InvalidType;
+        if (n >= buf.len) break;
+        buf[n] = plumbing.parseHash(line[7 .. 7 + plumbing.HexSize]) catch {
+            return plumbing.Error.InvalidType;
+        };
+        n += 1;
+    }
+    return buf[0..n];
+}
+
+/// Parse the `tree <hex>` header from a commit body.
+fn parseCommitTree(body: []const u8) !Hash {
+    var rest = body;
+    while (rest.len > 0) {
+        if (rest[0] == '\n') break;
+        const nl = std.mem.indexOfScalar(u8, rest, '\n') orelse break;
+        const line = rest[0..nl];
+        rest = rest[nl + 1 ..];
+        if (!std.mem.startsWith(u8, line, "tree ")) continue;
+        if (line.len < 5 + plumbing.HexSize) return plumbing.Error.InvalidType;
+        return plumbing.parseHash(line[5 .. 5 + plumbing.HexSize]) catch {
+            return plumbing.Error.InvalidType;
+        };
+    }
+    return plumbing.Error.InvalidType;
 }
 
 // ---------------------------------------------------------------------------

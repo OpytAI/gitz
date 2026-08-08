@@ -66,11 +66,14 @@ pub fn fetch(
 
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
-    const sopts = session.SessionOpts{
-        .auth = o.auth,
-        .insecure_skip_tls = o.insecure_skip_tls,
-        .proxy = o.proxy,
-    };
+    const sopts = session.sessionOptsFrom(
+        o.auth,
+        o.insecure_skip_tls,
+        o.client_cert,
+        o.client_key,
+        o.ca_bundle,
+        o.proxy,
+    );
     var sess = try session.openUploadPack(allocator, io, o.remote_url, sopts, embedded);
     defer sess.close();
 
@@ -181,8 +184,9 @@ fn configureUploadPackRequest(
         try req.upload_request.capabilities.set(capability.Shallow, &.{});
     }
 
-    // No Progress writer on FetchOptions yet → request no-progress when supported.
-    if (ar.capabilities.supports(capability.NoProgress)) {
+    // go-git: when Progress is nil and remote supports no-progress, request it.
+    // When progress is set, do not set NoProgress so the server may send progress.
+    if (o.progress == null and ar.capabilities.supports(capability.NoProgress)) {
         try req.upload_request.capabilities.set(capability.NoProgress, &.{});
     }
 

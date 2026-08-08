@@ -14,6 +14,7 @@ const gitconfig = @import("gitconfig");
 const options_mod = @import("options.zig");
 const error_mod = @import("error.zig");
 const remote_mod = @import("remote.zig");
+const session_mod = @import("session.zig");
 
 const Allocator = std.mem.Allocator;
 const Reference = plumbing.Reference;
@@ -26,7 +27,11 @@ const FetchOptions = options_mod.FetchOptions;
 const PushOptions = options_mod.PushOptions;
 const ListOptions = options_mod.ListOptions;
 const ForceWithLease = options_mod.ForceWithLease;
+const PeelingOption = options_mod.PeelingOption;
+const TagMode = options_mod.TagMode;
+const SessionOpts = session_mod.SessionOpts;
 const RemoteError = error_mod.Error;
+const packp = @import("packp");
 
 const default_fetch_spec = "+refs/heads/*:refs/remotes/origin/*";
 const default_push_spec = "refs/heads/*:refs/heads/*";
@@ -321,6 +326,523 @@ test "Remote.Push ForceWithLease rejects mismatched tip" {
     // Remote tip must remain unchanged.
     const tip = try remote_sto.reference(plumbing.master);
     try std.testing.expect(tip.hash.eql(remote_head));
+}
+
+// ---------------------------------------------------------------------------
+// List peeling (annotated tag + append_peeled)
+// ---------------------------------------------------------------------------
+
+test "Remote.List append_peeled includes peeled tag suffix" {
+    const allocator = std.testing.allocator;
+    defer sync.deinitPools(allocator);
+
+    var loader = MapLoader.init(allocator);
+    defer loader.deinit();
+
+    const remote_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, remote_sto);
+    const head = try fixtures.populateRepo(remote_sto, allocator);
+
+    const tag_hash = try fixtures.storeAnnotatedTag(remote_sto, allocator, head, "commit", "v1.0");
+    try remote_sto.setReference(Reference.newHashReference(
+        plumbing.ReferenceName.init("refs/tags/v1.0"),
+        tag_hash,
+    ));
+
+    const local_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, local_sto);
+
+    var ep = try fixtures.makeEndpoint(allocator, "file://list-peel");
+    defer ep.deinit();
+    try loader.put(&ep, remote_sto);
+
+    var client = newClient(allocator, loader.asLoader());
+    var owned = try OwnedRemoteConfig.init(allocator, "origin", "file://list-peel", default_fetch_spec);
+    defer owned.deinit(allocator);
+
+    var rem = newRemoteEmbedded(local_sto, &owned.cfg, &client);
+
+    const peeled_name = try std.fmt.allocPrint(allocator, "refs/tags/v1.0{s}", .{packp.peeled});
+    defer allocator.free(peeled_name);
+
+    // Default ignore_peeled still returns the tag tip itself.
+    {
+        const refs = try rem.list(.{ .peeling = .ignore_peeled });
+        defer freeReferences(allocator, refs);
+        try std.testing.expect(refNamed(refs, "refs/tags/v1.0") != null);
+        try std.testing.expect(refNamed(refs, peeled_name) == null);
+    }
+
+    // append_peeled adds the peeled name with ^{} suffix.
+    {
+        const refs = try rem.list(.{ .peeling = .append_peeled });
+        defer freeReferences(allocator, refs);
+        try std.testing.expect(refNamed(refs, "refs/tags/v1.0") != null);
+        const peeled = refNamed(refs, peeled_name);
+        try std.testing.expect(peeled != null);
+        try std.testing.expect(peeled.?.hash.eql(head));
+        _ = PeelingOption.append_peeled;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fetch prune
+// ---------------------------------------------------------------------------
+
+test "Remote.Fetch prune removes stale tracking ref" {
+    const allocator = std.testing.allocator;
+    defer sync.deinitPools(allocator);
+
+    var loader = MapLoader.init(allocator);
+    defer loader.deinit();
+
+    const remote_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, remote_sto);
+    const head = try fixtures.populateRepo(remote_sto, allocator);
+
+    const local_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, local_sto);
+
+    // Stale tracking ref that no longer exists on the remote.
+    try local_sto.setReference(Reference.newHashReference(
+        plumbing.ReferenceName.init("refs/remotes/origin/gone"),
+        head,
+    ));
+
+    var ep = try fixtures.makeEndpoint(allocator, "file://fetch-prune");
+    defer ep.deinit();
+    try loader.put(&ep, remote_sto);
+
+    var client = newClient(allocator, loader.asLoader());
+    var owned = try OwnedRemoteConfig.init(allocator, "origin", "file://fetch-prune", default_fetch_spec);
+    defer owned.deinit(allocator);
+
+    var rem = newRemoteEmbedded(local_sto, &owned.cfg, &client);
+    var opts: FetchOptions = .{
+        .remote_name = "origin",
+        .prune = true,
+    };
+    try rem.fetch(&opts);
+
+    const tracking = try local_sto.reference(plumbing.ReferenceName.init("refs/remotes/origin/master"));
+    try std.testing.expect(tracking.hash.eql(head));
+
+    try std.testing.expectError(
+        error.ReferenceNotFound,
+        local_sto.reference(plumbing.ReferenceName.init("refs/remotes/origin/gone")),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Fetch AllTags / NoTags
+// ---------------------------------------------------------------------------
+
+test "Remote.Fetch AllTags gains tag; NoTags does not" {
+    const allocator = std.testing.allocator;
+    defer sync.deinitPools(allocator);
+
+    var loader = MapLoader.init(allocator);
+    defer loader.deinit();
+
+    const remote_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, remote_sto);
+    const head = try fixtures.populateRepo(remote_sto, allocator);
+
+    const tag_hash = try fixtures.storeAnnotatedTag(remote_sto, allocator, head, "commit", "v-all");
+    try remote_sto.setReference(Reference.newHashReference(
+        plumbing.ReferenceName.init("refs/tags/v-all"),
+        tag_hash,
+    ));
+
+    // --- AllTags ---
+    {
+        const local_sto = try memory.newStorage(allocator);
+        defer destroyStorage(allocator, local_sto);
+
+        var ep = try fixtures.makeEndpoint(allocator, "file://fetch-alltags");
+        defer ep.deinit();
+        try loader.put(&ep, remote_sto);
+
+        var client = newClient(allocator, loader.asLoader());
+        var owned = try OwnedRemoteConfig.init(allocator, "origin", "file://fetch-alltags", default_fetch_spec);
+        defer owned.deinit(allocator);
+
+        var rem = newRemoteEmbedded(local_sto, &owned.cfg, &client);
+        var opts: FetchOptions = .{
+            .remote_name = "origin",
+            .tags = .all,
+        };
+        try rem.fetch(&opts);
+
+        const got = try local_sto.reference(plumbing.ReferenceName.init("refs/tags/v-all"));
+        try std.testing.expect(got.hash.eql(tag_hash));
+        _ = TagMode.all;
+    }
+
+    // --- NoTags ---
+    {
+        const local_sto = try memory.newStorage(allocator);
+        defer destroyStorage(allocator, local_sto);
+
+        var ep = try fixtures.makeEndpoint(allocator, "file://fetch-notags");
+        defer ep.deinit();
+        try loader.put(&ep, remote_sto);
+
+        var client = newClient(allocator, loader.asLoader());
+        var owned = try OwnedRemoteConfig.init(allocator, "origin", "file://fetch-notags", default_fetch_spec);
+        defer owned.deinit(allocator);
+
+        var rem = newRemoteEmbedded(local_sto, &owned.cfg, &client);
+        var opts: FetchOptions = .{
+            .remote_name = "origin",
+            .tags = .none,
+        };
+        try rem.fetch(&opts);
+
+        const tracking = try local_sto.reference(plumbing.ReferenceName.init("refs/remotes/origin/master"));
+        try std.testing.expect(tracking.hash.eql(head));
+        try std.testing.expectError(
+            error.ReferenceNotFound,
+            local_sto.reference(plumbing.ReferenceName.init("refs/tags/v-all")),
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Push force
+// ---------------------------------------------------------------------------
+
+test "Remote.Push ForceNeeded without force; force succeeds" {
+    const allocator = std.testing.allocator;
+    defer sync.deinitPools(allocator);
+
+    var loader = MapLoader.init(allocator);
+    defer loader.deinit();
+
+    const remote_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, remote_sto);
+    const remote_head = try fixtures.populateRepo(remote_sto, allocator);
+
+    const local_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, local_sto);
+    const first = try fixtures.populateRepo(local_sto, allocator);
+    try std.testing.expect(first.eql(remote_head));
+
+    // Divergent tip: second commit has no parent, so it is not a fast-forward.
+    const blob = try fixtures.storeBlob(local_sto, "divergent");
+    const tree = try fixtures.storeTree(local_sto, allocator, blob, "div.txt");
+    const second = try fixtures.storeCommit(local_sto, allocator, tree, "divergent\n");
+    try local_sto.setReference(Reference.newHashReference(plumbing.master, second));
+
+    var ep = try fixtures.makeEndpoint(allocator, "file://push-force");
+    defer ep.deinit();
+    try loader.put(&ep, remote_sto);
+
+    var client = newClient(allocator, loader.asLoader());
+    var owned = try OwnedRemoteConfig.init(allocator, "origin", "file://push-force", default_fetch_spec);
+    defer owned.deinit(allocator);
+
+    var rem = newRemoteEmbedded(local_sto, &owned.cfg, &client);
+    const push_spec = gitconfig.RefSpec.init("refs/heads/master:refs/heads/master");
+
+    var opts_noforce: PushOptions = .{
+        .remote_name = "origin",
+        .ref_specs = &.{push_spec},
+        .force = false,
+    };
+    try std.testing.expectError(RemoteError.ForceNeeded, rem.push(&opts_noforce));
+
+    const tip_before = try remote_sto.reference(plumbing.master);
+    try std.testing.expect(tip_before.hash.eql(remote_head));
+
+    var opts_force: PushOptions = .{
+        .remote_name = "origin",
+        .ref_specs = &.{push_spec},
+        .force = true,
+    };
+    try rem.push(&opts_force);
+
+    const tip_after = try remote_sto.reference(plumbing.master);
+    try std.testing.expect(tip_after.hash.eql(second));
+}
+
+// ---------------------------------------------------------------------------
+// Push delete ref
+// ---------------------------------------------------------------------------
+
+test "Remote.Push delete ref removes remote branch" {
+    const allocator = std.testing.allocator;
+    defer sync.deinitPools(allocator);
+
+    var loader = MapLoader.init(allocator);
+    defer loader.deinit();
+
+    const remote_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, remote_sto);
+    const head = try fixtures.populateRepo(remote_sto, allocator);
+    try remote_sto.setReference(Reference.newHashReference(
+        plumbing.ReferenceName.init("refs/heads/temp"),
+        head,
+    ));
+
+    // Local can be empty for a pure delete push.
+    const local_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, local_sto);
+
+    var ep = try fixtures.makeEndpoint(allocator, "file://push-delete");
+    defer ep.deinit();
+    try loader.put(&ep, remote_sto);
+
+    var client = newClient(allocator, loader.asLoader());
+    var owned = try OwnedRemoteConfig.init(allocator, "origin", "file://push-delete", default_fetch_spec);
+    defer owned.deinit(allocator);
+
+    var rem = newRemoteEmbedded(local_sto, &owned.cfg, &client);
+    const del_spec = gitconfig.RefSpec.init(":refs/heads/temp");
+    var opts: PushOptions = .{
+        .remote_name = "origin",
+        .ref_specs = &.{del_spec},
+    };
+    try rem.push(&opts);
+
+    try std.testing.expectError(
+        error.ReferenceNotFound,
+        remote_sto.reference(plumbing.ReferenceName.init("refs/heads/temp")),
+    );
+    // master remains.
+    const master = try remote_sto.reference(plumbing.master);
+    try std.testing.expect(master.hash.eql(head));
+}
+
+// ---------------------------------------------------------------------------
+// Push require_remote_refs
+// ---------------------------------------------------------------------------
+
+test "Remote.Push require_remote_refs match succeeds; mismatch fails" {
+    const allocator = std.testing.allocator;
+    defer sync.deinitPools(allocator);
+
+    var loader = MapLoader.init(allocator);
+    defer loader.deinit();
+
+    const remote_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, remote_sto);
+    const remote_head = try fixtures.populateRepo(remote_sto, allocator);
+
+    const local_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, local_sto);
+    _ = try fixtures.populateRepo(local_sto, allocator);
+
+    var ep = try fixtures.makeEndpoint(allocator, "file://push-require");
+    defer ep.deinit();
+    try loader.put(&ep, remote_sto);
+
+    var client = newClient(allocator, loader.asLoader());
+    var owned = try OwnedRemoteConfig.init(allocator, "origin", "file://push-require", default_fetch_spec);
+    defer owned.deinit(allocator);
+
+    var rem = newRemoteEmbedded(local_sto, &owned.cfg, &client);
+
+    var hex_buf: [plumbing.MaxHexSize]u8 = undefined;
+    const head_hex = remote_head.string(&hex_buf);
+
+    // Matching tip SHA → require passes; nothing to push → AlreadyUpToDate.
+    {
+        const require_raw = try std.fmt.allocPrint(allocator, "{s}:refs/heads/master", .{head_hex});
+        defer allocator.free(require_raw);
+        const require_spec = gitconfig.RefSpec.init(require_raw);
+        const push_spec = gitconfig.RefSpec.init(default_push_spec);
+        var opts: PushOptions = .{
+            .remote_name = "origin",
+            .ref_specs = &.{push_spec},
+            .require_remote_refs = &.{require_spec},
+        };
+        try std.testing.expectError(RemoteError.AlreadyUpToDate, rem.push(&opts));
+    }
+
+    // Mismatched tip → RequireRemoteRefsFailed before any update.
+    {
+        const bad = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        const require_raw = try std.fmt.allocPrint(allocator, "{s}:refs/heads/master", .{bad});
+        defer allocator.free(require_raw);
+        const require_spec = gitconfig.RefSpec.init(require_raw);
+        const push_spec = gitconfig.RefSpec.init(default_push_spec);
+        var opts: PushOptions = .{
+            .remote_name = "origin",
+            .ref_specs = &.{push_spec},
+            .require_remote_refs = &.{require_spec},
+        };
+        try std.testing.expectError(RemoteError.RequireRemoteRefsFailed, rem.push(&opts));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Push follow_tags
+// ---------------------------------------------------------------------------
+
+test "Remote.Push follow_tags pushes annotated tag for tip commit" {
+    const allocator = std.testing.allocator;
+    defer sync.deinitPools(allocator);
+
+    var loader = MapLoader.init(allocator);
+    defer loader.deinit();
+
+    const local_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, local_sto);
+    const head = try fixtures.populateRepo(local_sto, allocator);
+
+    const tag_hash = try fixtures.storeAnnotatedTag(local_sto, allocator, head, "commit", "v-follow");
+    try local_sto.setReference(Reference.newHashReference(
+        plumbing.ReferenceName.init("refs/tags/v-follow"),
+        tag_hash,
+    ));
+
+    const remote_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, remote_sto);
+
+    var ep = try fixtures.makeEndpoint(allocator, "file://push-follow-tags");
+    defer ep.deinit();
+    try loader.put(&ep, remote_sto);
+
+    var client = newClient(allocator, loader.asLoader());
+    var owned = try OwnedRemoteConfig.init(allocator, "origin", "file://push-follow-tags", default_fetch_spec);
+    defer owned.deinit(allocator);
+
+    var rem = newRemoteEmbedded(local_sto, &owned.cfg, &client);
+    const push_spec = gitconfig.RefSpec.init(default_push_spec);
+    var opts: PushOptions = .{
+        .remote_name = "origin",
+        .ref_specs = &.{push_spec},
+        .follow_tags = true,
+    };
+    try rem.push(&opts);
+
+    const remote_master = try remote_sto.reference(plumbing.master);
+    try std.testing.expect(remote_master.hash.eql(head));
+    const remote_tag = try remote_sto.reference(plumbing.ReferenceName.init("refs/tags/v-follow"));
+    try std.testing.expect(remote_tag.hash.eql(tag_hash));
+}
+
+// ---------------------------------------------------------------------------
+// Fetch depth (shallow) e2e — server depth pack + client updateShallow
+// ---------------------------------------------------------------------------
+
+test "Remote.Fetch depth=1 records shallow tip and omits parent object" {
+    const allocator = std.testing.allocator;
+    defer sync.deinitPools(allocator);
+
+    var loader = MapLoader.init(allocator);
+    defer loader.deinit();
+
+    // Two-commit chain: root → tip.
+    const remote_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, remote_sto);
+    const blob1 = try fixtures.storeBlob(remote_sto, "one");
+    const tree1 = try fixtures.storeTree(remote_sto, allocator, blob1, "a.txt");
+    const root = try fixtures.storeCommitParents(remote_sto, allocator, tree1, "root\n", &.{});
+    const blob2 = try fixtures.storeBlob(remote_sto, "two");
+    const tree2 = try fixtures.storeTree(remote_sto, allocator, blob2, "b.txt");
+    const tip = try fixtures.storeCommitParents(remote_sto, allocator, tree2, "tip\n", &.{root});
+    try remote_sto.setReference(Reference.newHashReference(plumbing.master, tip));
+    try remote_sto.setReference(Reference.newSymbolicReference(plumbing.HEAD, plumbing.master));
+
+    const local_sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, local_sto);
+
+    var ep = try fixtures.makeEndpoint(allocator, "file://fetch-depth");
+    defer ep.deinit();
+    try loader.put(&ep, remote_sto);
+
+    var client = newClient(allocator, loader.asLoader());
+    var owned = try OwnedRemoteConfig.init(allocator, "origin", "file://fetch-depth", default_fetch_spec);
+    defer owned.deinit(allocator);
+
+    var rem = newRemoteEmbedded(local_sto, &owned.cfg, &client);
+    var opts: FetchOptions = .{
+        .remote_name = "origin",
+        .depth = 1,
+    };
+    try rem.fetch(&opts);
+
+    const tracking = try local_sto.reference(plumbing.ReferenceName.init("refs/remotes/origin/master"));
+    try std.testing.expect(tracking.hash.eql(tip));
+
+    // Tip object present; root commit should not be in the pack (depth=1).
+    _ = try local_sto.encodedObject(.commit, tip);
+    try std.testing.expectError(error.ObjectNotFound, local_sto.encodedObject(.commit, root));
+
+    // Shallow list must record the boundary (root).
+    const shallows = local_sto.shallow();
+    try std.testing.expect(shallows.len >= 1);
+    var found_root = false;
+    for (shallows) |h| {
+        if (h.eql(root)) found_root = true;
+    }
+    try std.testing.expect(found_root);
+}
+
+// ---------------------------------------------------------------------------
+// List InvalidTimeout
+// ---------------------------------------------------------------------------
+
+test "Remote.List InvalidTimeout for negative timeout_sec" {
+    const allocator = std.testing.allocator;
+    const sto = try memory.newStorage(allocator);
+    defer destroyStorage(allocator, sto);
+
+    const name = try allocator.dupe(u8, "origin");
+    defer allocator.free(name);
+    const url = try allocator.dupe(u8, "file://timeout");
+    defer allocator.free(url);
+    var urls = [_][]u8{url};
+    const cfg = memory.RemoteConfig{ .name = name, .urls = urls[0..] };
+    const rem = remote_mod.newRemote(sto, &cfg);
+
+    try std.testing.expectError(
+        RemoteError.InvalidTimeout,
+        rem.list(.{ .timeout_sec = -1 }),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// SessionOpts / insecure (construct + ListOptions field surface)
+// ---------------------------------------------------------------------------
+
+test "SessionOpts client_cert fields and ListOptions insecure" {
+    const opts = SessionOpts{
+        .insecure_skip_tls = true,
+        .client_cert = "cert-pem",
+        .client_key = "key-pem",
+        .ca_bundle = "ca-pem",
+    };
+    try std.testing.expect(opts.insecure_skip_tls);
+    try std.testing.expectEqualStrings("cert-pem", opts.client_cert);
+    try std.testing.expectEqualStrings("key-pem", opts.client_key);
+    try std.testing.expectEqualStrings("ca-pem", opts.ca_bundle);
+    try std.testing.expect(opts.auth == null);
+
+    const from = session_mod.sessionOptsFrom(
+        null,
+        true,
+        "cert-pem",
+        "key-pem",
+        "ca-pem",
+        .{},
+    );
+    try std.testing.expect(from.insecure_skip_tls);
+    try std.testing.expectEqualStrings("cert-pem", from.client_cert);
+
+    const list_opts = ListOptions{
+        .insecure_skip_tls = true,
+        .client_cert = "list-cert",
+        .client_key = "list-key",
+        .ca_bundle = "list-ca",
+        .timeout_sec = 30,
+        .peeling = .ignore_peeled,
+    };
+    try std.testing.expect(list_opts.insecure_skip_tls);
+    try std.testing.expectEqualStrings("list-cert", list_opts.client_cert);
+    try std.testing.expectEqual(@as(i32, 30), list_opts.effectiveTimeoutSec());
 }
 
 // ---------------------------------------------------------------------------

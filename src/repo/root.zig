@@ -64,6 +64,8 @@ pub const plainOpenWithOptions = plain.plainOpenWithOptions;
 
 // activateFormat is a method on Repository / PlainRepository.
 
+// Network MapLoader e2e lives in network_tests.zig pulled by //src/repo:repo_test
+// only (test_root). Keep production root free of transport test fixtures.
 test {
     _ = repository;
     _ = facade;

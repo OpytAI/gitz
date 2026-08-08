@@ -1,0 +1,3 @@
+# MapLoader Remote.list sorted names for populateRepo fixture
+HEAD
+refs/heads/master

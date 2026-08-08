@@ -39,10 +39,18 @@ zig_library(
 
 zig_test(
     name = "repo_test",
-    size = "small",
-    main = "root.zig",
-    srcs = _SRCS,
-    deps = _DEPS,
+    size = "medium",
+    main = "test_root.zig",
+    srcs = _SRCS + [
+        "root.zig",
+        "network_tests.zig",
+        "test_root.zig",
+    ],
+    deps = _DEPS + [
+        "//src/plumbing/transport/server",
+        "//src/plumbing/transport/client",
+        "//src/plumbing/transport/test:fixtures",
+    ],
 )
 
 filegroup(

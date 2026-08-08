@@ -98,11 +98,14 @@ pub fn push(
 
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
-    const sopts = session.SessionOpts{
-        .auth = o.auth,
-        .insecure_skip_tls = o.insecure_skip_tls,
-        .proxy = o.proxy,
-    };
+    const sopts = session.sessionOptsFrom(
+        o.auth,
+        o.insecure_skip_tls,
+        o.client_cert,
+        o.client_key,
+        o.ca_bundle,
+        o.proxy,
+    );
     var sess = try session.openReceivePack(allocator, io, o.remote_url, sopts, embedded);
     defer sess.close();
 
@@ -134,6 +137,16 @@ pub fn push(
 
     var req = try packp.newReferenceUpdateRequestFromCapabilities(allocator, &ar.capabilities);
     defer req.deinit();
+
+    // go-git `newReferenceUpdateRequest`: wire progress + sideband when set.
+    if (o.progress) |p| {
+        req.progress = p;
+        if (ar.capabilities.supports(capability.Sideband64k)) {
+            try req.capabilities.set(capability.Sideband64k, &.{});
+        } else if (ar.capabilities.supports(capability.Sideband)) {
+            try req.capabilities.set(capability.Sideband, &.{});
+        }
+    }
 
     if (ar.capabilities.supports(capability.PushOptions)) {
         try req.capabilities.set(capability.PushOptions, &.{});

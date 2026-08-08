@@ -60,11 +60,20 @@ pub const FetchOptions = struct {
     ref_specs: []const RefSpec = &.{},
     depth: i32 = 0,
     auth: ?transport.AuthMethod = null,
+    /// Human-readable server progress (go-git `sideband.Progress`). When null
+    /// and the remote supports it, `no-progress` is requested.
+    progress: ?*std.Io.Writer = null,
     /// Tag fetch mode (default `.following` after `validate`).
     tags: TagMode = .invalid,
     force: bool = false,
     prune: bool = false,
     insecure_skip_tls: bool = false,
+    /// Client certificate PEM for mutual TLS (go-git `ClientCert`).
+    client_cert: []const u8 = "",
+    /// Client key PEM for mutual TLS (go-git `ClientKey`).
+    client_key: []const u8 = "",
+    /// Extra CA bundle PEM (go-git `CABundle`).
+    ca_bundle: []const u8 = "",
     proxy: transport.ProxyOptions = .{},
 
     /// go-git `FetchOptions.Validate`.
@@ -81,6 +90,8 @@ pub const PushOptions = struct {
     remote_url: []const u8 = "",
     ref_specs: []const RefSpec = &.{},
     auth: ?transport.AuthMethod = null,
+    /// Human-readable server progress (go-git `sideband.Progress`).
+    progress: ?*std.Io.Writer = null,
     prune: bool = false,
     force: bool = false,
     require_remote_refs: []const RefSpec = &.{},
@@ -90,6 +101,12 @@ pub const PushOptions = struct {
     options: []const PushOption = &.{},
     atomic: bool = false,
     insecure_skip_tls: bool = false,
+    /// Client certificate PEM for mutual TLS (go-git `ClientCert`).
+    client_cert: []const u8 = "",
+    /// Client key PEM for mutual TLS (go-git `ClientKey`).
+    client_key: []const u8 = "",
+    /// Extra CA bundle PEM (go-git `CABundle`).
+    ca_bundle: []const u8 = "",
     proxy: transport.ProxyOptions = .{},
 
     /// go-git `PushOptions.Validate`.
@@ -107,6 +124,12 @@ pub const PushOptions = struct {
 pub const ListOptions = struct {
     auth: ?transport.AuthMethod = null,
     insecure_skip_tls: bool = false,
+    /// Client certificate PEM for mutual TLS (go-git `ClientCert`).
+    client_cert: []const u8 = "",
+    /// Client key PEM for mutual TLS (go-git `ClientKey`).
+    client_key: []const u8 = "",
+    /// Extra CA bundle PEM (go-git `CABundle`).
+    ca_bundle: []const u8 = "",
     peeling: PeelingOption = .ignore_peeled,
     /// Timeout in seconds. `0` means default (`default_list_timeout_sec`);
     /// negative is `error.InvalidTimeout`. Network enforcement is phase 13.
@@ -136,4 +159,34 @@ test "PushOptions validate defaults name" {
 test "ListOptions effectiveTimeoutSec" {
     try std.testing.expectEqual(@as(i32, 10), (ListOptions{}).effectiveTimeoutSec());
     try std.testing.expectEqual(@as(i32, 30), (ListOptions{ .timeout_sec = 30 }).effectiveTimeoutSec());
+}
+
+test "options progress and mTLS field defaults" {
+    const fo = FetchOptions{};
+    try std.testing.expect(fo.progress == null);
+    try std.testing.expectEqualStrings("", fo.client_cert);
+    try std.testing.expectEqualStrings("", fo.client_key);
+    try std.testing.expectEqualStrings("", fo.ca_bundle);
+
+    const po = PushOptions{};
+    try std.testing.expect(po.progress == null);
+    try std.testing.expectEqualStrings("", po.client_cert);
+    try std.testing.expectEqualStrings("", po.client_key);
+    try std.testing.expectEqualStrings("", po.ca_bundle);
+
+    const lo = ListOptions{};
+    try std.testing.expectEqualStrings("", lo.client_cert);
+    try std.testing.expectEqualStrings("", lo.client_key);
+    try std.testing.expectEqualStrings("", lo.ca_bundle);
+
+    // validate still succeeds with defaults (progress remains null).
+    var o: FetchOptions = .{};
+    try o.validate();
+    try std.testing.expect(o.progress == null);
+    try std.testing.expectEqualStrings("", o.client_cert);
+
+    var p: PushOptions = .{};
+    try p.validate();
+    try std.testing.expect(p.progress == null);
+    try std.testing.expectEqualStrings("", p.client_cert);
 }

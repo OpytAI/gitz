@@ -43,8 +43,9 @@ goldens:
   # Phase 10: gitconfig_new_defaults + gitconfig_marshal_core + repo_init_bare
   # + repo_init_nonbare + repo_open_head + repo_object_getters (53).
   # Phase 11: remote_string + remote_fetch_options_defaults +
-  # remote_default_fetch_refspec (56).
-  min_count: 56
+  # remote_default_fetch_refspec + remote_default_push_refspec +
+  # remote_list_ref_names (58).
+  min_count: 58
 
 
 allowlists:

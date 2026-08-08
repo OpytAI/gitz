@@ -15,6 +15,8 @@
 //!   sees `config`/`objects`/`refs` at the FS root (go-git leaves the worktree).
 //! - Advertise peels annotated tags under `refs/tags/*` (go-git still TODOs this).
 //! - Upload-pack encodes the pack into an allocated buffer (no goroutine pipe).
+//! - Upload-pack advertises `shallow` and supports `deepen` depth (unlike go-git,
+//!   which rejects shallows). Boundary commits land on `UploadPackResponse.shallow_update`.
 //! - Receive-pack unpacks via `packfile.updateObjectStorage` then copies objects
 //!   into the session storer and applies ref create/update/delete.
 //! - `as_client` (NewClient) returns `EmptyRemoteRepository` when advertise is empty.
@@ -29,6 +31,7 @@
 //! | Advertise refs + caps + peel | `advertise refs *` / `advertise peels *` |
 //! | asClient empty repo | `asClient empty repo` |
 //! | UploadPack encode | `upload-pack roundtrip pack objects` |
+//! | UploadPack depth/shallow (gitz) | `upload-pack depth=1 *` / `upload-pack with client shallows *` |
 //! | ReceivePack ref update | `receive-pack create update delete refs` |
 
 const loader_mod = @import("loader.zig");

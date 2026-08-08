@@ -32,6 +32,27 @@ pub const SessionOpts = struct {
     proxy: ProxyOptions = .{},
 };
 
+/// Build `SessionOpts` from Fetch/Push/List option fields (auth, TLS, mTLS, proxy).
+///
+/// Lives here so `options.zig` does not import `session.zig` (avoids cycles).
+pub fn sessionOptsFrom(
+    auth: ?AuthMethod,
+    insecure_skip_tls: bool,
+    client_cert: []const u8,
+    client_key: []const u8,
+    ca_bundle: []const u8,
+    proxy: ProxyOptions,
+) SessionOpts {
+    return .{
+        .auth = auth,
+        .insecure_skip_tls = insecure_skip_tls,
+        .client_cert = client_cert,
+        .client_key = client_key,
+        .ca_bundle = ca_bundle,
+        .proxy = proxy,
+    };
+}
+
 fn applySessionOpts(ep: *Endpoint, opts: SessionOpts) void {
     ep.insecure_skip_tls = opts.insecure_skip_tls;
     ep.client_cert = opts.client_cert;
@@ -202,4 +223,17 @@ test "SessionOpts defaults" {
     const o = SessionOpts{};
     try std.testing.expect(o.auth == null);
     try std.testing.expect(!o.insecure_skip_tls);
+    try std.testing.expectEqualStrings("", o.client_cert);
+    try std.testing.expectEqualStrings("", o.client_key);
+    try std.testing.expectEqualStrings("", o.ca_bundle);
+}
+
+test "sessionOptsFrom maps fields" {
+    const proxy = ProxyOptions{};
+    const o = sessionOptsFrom(null, true, "cert", "key", "ca", proxy);
+    try std.testing.expect(o.auth == null);
+    try std.testing.expect(o.insecure_skip_tls);
+    try std.testing.expectEqualStrings("cert", o.client_cert);
+    try std.testing.expectEqualStrings("key", o.client_key);
+    try std.testing.expectEqualStrings("ca", o.ca_bundle);
 }

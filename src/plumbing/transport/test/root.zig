@@ -9,6 +9,7 @@ pub const makeEndpoint = fixtures_mod.makeEndpoint;
 pub const storeBlob = fixtures_mod.storeBlob;
 pub const storeTree = fixtures_mod.storeTree;
 pub const storeCommit = fixtures_mod.storeCommit;
+pub const storeCommitParents = fixtures_mod.storeCommitParents;
 pub const populateRepo = fixtures_mod.populateRepo;
 pub const storeAnnotatedTag = fixtures_mod.storeAnnotatedTag;
 

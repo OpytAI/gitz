@@ -1,0 +1,5 @@
+name: remote_default_push_refspec
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "go-git DefaultPushRefSpec constant string."

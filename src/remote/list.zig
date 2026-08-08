@@ -45,11 +45,14 @@ pub fn list(
 
     var threaded: std.Io.Threaded = .init_single_threaded;
     const io = threaded.io();
-    const sopts = session.SessionOpts{
-        .auth = o.auth,
-        .insecure_skip_tls = o.insecure_skip_tls,
-        .proxy = o.proxy,
-    };
+    const sopts = session.sessionOptsFrom(
+        o.auth,
+        o.insecure_skip_tls,
+        o.client_cert,
+        o.client_key,
+        o.ca_bundle,
+        o.proxy,
+    );
     var sess = try session.openUploadPack(allocator, io, config.urls[0], sopts, embedded);
     defer sess.close();
 

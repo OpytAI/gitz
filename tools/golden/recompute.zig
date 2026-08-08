@@ -22,6 +22,9 @@ const repo = @import("repo");
 const memory = @import("memory");
 const fs_pkg = @import("fs");
 const remote = @import("remote");
+const server_pkg = @import("server");
+const fixtures = @import("transport_test_fixtures");
+const sync = @import("utils/sync");
 
 // ---------------------------------------------------------------------------
 // Expected fixtures (generated vectors.zig from data/goldens/**/expected.txt)
@@ -920,4 +923,79 @@ test "recompute remote_default_fetch_refspec" {
     try out.append(gpa, '\n');
 
     try expectPayload(out.items, expectedFor("remote_default_fetch_refspec"));
+}
+
+test "recompute remote_default_push_refspec" {
+    const gpa = std.testing.allocator;
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try out.appendSlice(gpa, gitconfig.default_push_ref_spec);
+    try out.append(gpa, '\n');
+
+    try expectPayload(out.items, expectedFor("remote_default_push_refspec"));
+}
+
+test "recompute remote_list_ref_names" {
+    const gpa = std.testing.allocator;
+    defer sync.deinitPools(gpa);
+
+    var loader = server_pkg.MapLoader.init(gpa);
+    defer loader.deinit();
+
+    const remote_sto = try memory.newStorage(gpa);
+    defer {
+        remote_sto.deinit();
+        gpa.destroy(remote_sto);
+    }
+    _ = try fixtures.populateRepo(remote_sto, gpa);
+
+    const local_sto = try memory.newStorage(gpa);
+    defer {
+        local_sto.deinit();
+        gpa.destroy(local_sto);
+    }
+
+    var ep = try fixtures.makeEndpoint(gpa, "file://golden-list-names");
+    defer ep.deinit();
+    try loader.put(&ep, remote_sto);
+
+    var client = server_pkg.newClient(gpa, loader.asLoader());
+
+    const name = try gpa.dupe(u8, "origin");
+    defer gpa.free(name);
+    const url = try gpa.dupe(u8, "file://golden-list-names");
+    defer gpa.free(url);
+    var urls = [_][]u8{url};
+    const fetch_owned = try gpa.dupe(u8, "+refs/heads/*:refs/remotes/origin/*");
+    defer gpa.free(fetch_owned);
+    var fetch = [_][]u8{fetch_owned};
+    const cfg = memory.RemoteConfig{
+        .name = name,
+        .urls = urls[0..],
+        .fetch = fetch[0..],
+        .mirror = false,
+    };
+
+    var rem = remote.newRemoteEmbedded(local_sto, &cfg, &client);
+    const refs = try rem.list(.{});
+    defer remote.freeReferences(gpa, refs);
+
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(gpa);
+    for (refs) |r| try names.append(gpa, r.name.raw);
+
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn less(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.less);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    for (names.items) |n| {
+        try out.appendSlice(gpa, n);
+        try out.append(gpa, '\n');
+    }
+
+    try expectPayload(out.items, expectedFor("remote_list_ref_names"));
 }

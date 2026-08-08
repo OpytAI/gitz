@@ -58,6 +58,8 @@ _GOLDEN_SUITES = [
     "remote_string",
     "remote_fetch_options_defaults",
     "remote_default_fetch_refspec",
+    "remote_default_push_refspec",
+    "remote_list_ref_names",
 ]
 
 # Bake expected.txt bodies into a Zig module so recompute_test is hermetic.
@@ -110,5 +112,8 @@ zig_test(
         "//src/fs",
         # Phase 11
         "//src/remote",
+        "//src/plumbing/transport/server",
+        "//src/plumbing/transport/test:fixtures",
+        "//src/utils/sync",
     ],
 )

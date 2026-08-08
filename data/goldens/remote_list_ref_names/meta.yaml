@@ -1,0 +1,5 @@
+name: remote_list_ref_names
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "MapLoader list of populated fixture: sorted ref names HEAD + refs/heads/master."

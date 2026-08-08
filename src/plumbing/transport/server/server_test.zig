@@ -259,6 +259,7 @@ test "advertise refs on memory storage" {
 
     try std.testing.expect(ar.capabilities.supports(capability.Agent));
     try std.testing.expect(ar.capabilities.supports(capability.OFSDelta));
+    try std.testing.expect(ar.capabilities.supports(capability.Shallow));
     try std.testing.expect(!ar.capabilities.supports(capability.MultiACK));
 
     // HEAD / master present.
@@ -653,6 +654,160 @@ test "upload-pack empty request" {
     defer req.deinit();
     // No wants → IsEmpty
     try std.testing.expectError(error.EmptyUploadPackRequest, sess.uploadPack(&req));
+}
+
+/// Commit with a single parent (2-commit chain fixture helper).
+fn storeCommitWithParent(
+    s: *memory.Storage,
+    allocator: Allocator,
+    tree: Hash,
+    parent: Hash,
+    msg: []const u8,
+) !Hash {
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+    var hex: [plumbing.MaxHexSize]u8 = undefined;
+    try buf.appendSlice(allocator, "tree ");
+    try buf.appendSlice(allocator, tree.string(&hex));
+    try buf.append(allocator, '\n');
+    try buf.appendSlice(allocator, "parent ");
+    try buf.appendSlice(allocator, parent.string(&hex));
+    try buf.append(allocator, '\n');
+    try buf.appendSlice(allocator, "author A <a@b> 1 +0000\n");
+    try buf.appendSlice(allocator, "committer A <a@b> 1 +0000\n");
+    try buf.append(allocator, '\n');
+    try buf.appendSlice(allocator, msg);
+    const obj = try s.newEncodedObject();
+    obj.setType(.commit);
+    _ = try obj.write(buf.items);
+    return s.setEncodedObject(obj);
+}
+
+test "upload-pack depth=1 reports shallow tip and omits parent" {
+    const allocator = std.testing.allocator;
+    defer sync.deinitPools(allocator);
+
+    var loader = MapLoader.init(allocator);
+    defer loader.deinit();
+
+    const sto = try memory.newStorage(allocator);
+    defer {
+        sto.deinit();
+        allocator.destroy(sto);
+    }
+
+    // Two-commit chain: root → child.
+    const root = try populateRepo(sto, allocator);
+    const blob2 = try storeBlob(sto, "world");
+    const tree2 = try storeTree(sto, allocator, blob2, "hello.txt");
+    const child = try storeCommitWithParent(sto, allocator, tree2, root, "second\n");
+    try sto.setReference(Reference.newHashReference(plumbing.master, child));
+
+    var ep = try makeEndpoint(allocator, "file://up-depth1");
+    defer ep.deinit();
+    try loader.put(&ep, sto);
+
+    var srv = newServer(allocator, loader.asLoader());
+    var sess = try srv.newUploadPackSession(&ep, null);
+    defer sess.close();
+
+    const ar = try sess.advertisedReferences();
+    defer packp.freeAdvRefs(allocator, ar);
+    try std.testing.expect(ar.capabilities.supports(capability.Shallow));
+
+    var req = packp.newUploadPackRequest(allocator);
+    defer req.deinit();
+    try req.upload_request.wants.append(allocator, child);
+    req.upload_request.depth = .{ .commits = 1 };
+    try req.upload_request.capabilities.set(capability.Shallow, &.{});
+    if (ar.capabilities.supports(capability.OFSDelta)) {
+        try req.upload_request.capabilities.set(capability.OFSDelta, &.{});
+    }
+
+    const resp = try sess.uploadPack(&req);
+    defer packp.freeUploadPackResponse(allocator, resp);
+
+    try std.testing.expect(resp.is_shallow);
+    try std.testing.expectEqual(@as(usize, 1), resp.shallow_update.shallows.items.len);
+    try std.testing.expect(resp.shallow_update.shallows.items[0].eql(root));
+
+    const pack_bytes = try readPackBytes(allocator, resp);
+    defer allocator.free(pack_bytes);
+    try std.testing.expect(pack_bytes.len > 12);
+
+    var obj_store = packfile.ObjectStore.init(allocator);
+    defer obj_store.deinit();
+    _ = try packfile.updateObjectStorage(allocator, &obj_store, pack_bytes);
+
+    // Tip commit is in the pack; parent (shallow boundary) is not.
+    _ = try obj_store.get(child);
+    try std.testing.expectError(error.ObjectNotFound, obj_store.get(root));
+}
+
+test "upload-pack with client shallows deepen does not reject" {
+    const allocator = std.testing.allocator;
+    defer sync.deinitPools(allocator);
+
+    var loader = MapLoader.init(allocator);
+    defer loader.deinit();
+
+    const sto = try memory.newStorage(allocator);
+    defer {
+        sto.deinit();
+        allocator.destroy(sto);
+    }
+
+    // root → mid → tip  (client previously fetched depth=1: has tip, shallow=mid)
+    const root = try populateRepo(sto, allocator);
+    const blob_m = try storeBlob(sto, "mid");
+    const tree_m = try storeTree(sto, allocator, blob_m, "mid.txt");
+    const mid = try storeCommitWithParent(sto, allocator, tree_m, root, "mid\n");
+    const blob_t = try storeBlob(sto, "tip");
+    const tree_t = try storeTree(sto, allocator, blob_t, "tip.txt");
+    const tip = try storeCommitWithParent(sto, allocator, tree_t, mid, "tip\n");
+    try sto.setReference(Reference.newHashReference(plumbing.master, tip));
+
+    var ep = try makeEndpoint(allocator, "file://up-client-shallow");
+    defer ep.deinit();
+    try loader.put(&ep, sto);
+
+    var srv = newServer(allocator, loader.asLoader());
+    var sess = try srv.newUploadPackSession(&ep, null);
+    defer sess.close();
+
+    const ar = try sess.advertisedReferences();
+    defer packp.freeAdvRefs(allocator, ar);
+
+    // Deepen to 2 with existing client shallow at mid (go-git would reject).
+    var req = packp.newUploadPackRequest(allocator);
+    defer req.deinit();
+    try req.upload_request.wants.append(allocator, tip);
+    try req.upload_request.shallows.append(allocator, mid);
+    req.upload_request.depth = .{ .commits = 2 };
+    try req.upload_request.capabilities.set(capability.Shallow, &.{});
+    if (ar.capabilities.supports(capability.OFSDelta)) {
+        try req.upload_request.capabilities.set(capability.OFSDelta, &.{});
+    }
+
+    const resp = try sess.uploadPack(&req);
+    defer packp.freeUploadPackResponse(allocator, resp);
+
+    try std.testing.expect(resp.is_shallow);
+    // New shallow edge is root; mid is already client-listed so not re-reported.
+    try std.testing.expectEqual(@as(usize, 1), resp.shallow_update.shallows.items.len);
+    try std.testing.expect(resp.shallow_update.shallows.items[0].eql(root));
+
+    const pack_bytes = try readPackBytes(allocator, resp);
+    defer allocator.free(pack_bytes);
+
+    var obj_store = packfile.ObjectStore.init(allocator);
+    defer obj_store.deinit();
+    _ = try packfile.updateObjectStorage(allocator, &obj_store, pack_bytes);
+
+    // tip + mid within depth 2; root is the new shallow boundary (omitted).
+    _ = try obj_store.get(tip);
+    _ = try obj_store.get(mid);
+    try std.testing.expectError(error.ObjectNotFound, obj_store.get(root));
 }
 
 fn readPackBytes(allocator: Allocator, resp: *packp.UploadPackResponse) ![]u8 {
