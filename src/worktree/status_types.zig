@@ -67,9 +67,7 @@ pub const Status = struct {
 
     /// go-git `Status.File` — get or insert untracked/untracked entry.
     ///
-    /// Always owns path keys: never stores a caller-temporary slice in the map
-    /// (getOrPut-then-replace-key is racy if the map grows during dupe, and
-    /// leaves a window where the key is not owned).
+    /// Owns path keys: dupes before insert so callers may free temporaries.
     pub fn file(self: *Status, path: []const u8) !*FileStatus {
         if (self.map.getPtr(path)) |p| return p;
 
@@ -77,20 +75,18 @@ pub const Status = struct {
         errdefer self.allocator.free(owned);
         const gop = try self.map.getOrPut(self.allocator, owned);
         if (gop.found_existing) {
-            // Lost race with equivalent path (shouldn't happen single-threaded);
-            // keep existing entry, free our unused dupe.
+            // Equal path already present (content eql); drop unused dupe.
             self.allocator.free(owned);
             return gop.value_ptr;
         }
-        gop.key_ptr.* = owned;
+        // getOrPut stored `owned` as the key; keep it.
         gop.value_ptr.* = .{ .worktree = .untracked, .staging = .untracked };
         return gop.value_ptr;
     }
 
     /// go-git `Status.IsUntracked`.
     pub fn isUntracked(self: *const Status, path: []const u8) bool {
-        const p = path; // callers pass slash paths
-        const st = self.map.get(p) orelse return false;
+        const st = self.map.get(path) orelse return false;
         return st.worktree == .untracked;
     }
 

@@ -334,3 +334,33 @@ bazel --output_user_root=/mnt/workspace/gitz/bazel-cache test //src/remote:remot
 
 Merge-complete on `develop` also requires `current_phase: 11` in
 `inventories/packages.yaml` (set on this phase branch).
+
+
+---
+
+## Phase 12 — Worktree + porcelain Class C scenarios
+
+**Gate:** `//check:phase_12`  
+**Purpose:** Worktree status/add/commit/checkout/reset/pull/clean and porcelain
+clone/plainClone over memory storage + Mem FS (MapLoader for network-free pull/clone).
+
+### Class C scenario goldens (phase 12 residuals)
+
+True Class C pins **Git-visible scenario state** (refs, status codes, file
+presence, clean/dirty, pull outcomes) as static `file_equals` fixtures under
+`data/goldens/`. Format matches Class A (`actual.txt` == `expected.txt`) but
+content is scenario state, not only enum names.
+
+| Suite | Locks |
+|-------|--------|
+| `worktree_class_c_lifecycle` | Init clean → write `hello.txt` (`?`/`?`) → add (`A`/` `) → commit clean; HEAD branch `refs/heads/master` |
+| `worktree_class_c_reset_soft` | Two commits then soft reset to first: `b.txt` exists, staging `A` |
+| `worktree_class_c_pull_ff` | MapLoader pull: first updates master; second `AlreadyUpToDate` |
+| `worktree_class_c_checkout_force` | Dirty file + force checkout restores original content and clean status |
+| `worktree_class_c_sparse` | Sparse dirs keep only matching prefix in index / materialised tree |
+| `worktree_class_c_move` | After Move: old path gone, new present, same blob hash |
+| `porcelain_class_c_plain_clone` | `plainCloneEmbedded` bare: `is_bare=true`, master hash non-zero |
+
+Earlier phase-12 goldens (options/defaults, status code chars, soft-reset staging
+notes, plain-clone bare *path* notes) remain Class A style locks; the `*_class_c_*`
+dirs above are the scenario-state pins.

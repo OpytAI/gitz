@@ -1,0 +1,7 @@
+# go-git Worktree Status/Add/Commit cycle (Class C scenario state)
+# Setup: empty non-bare memory repo + Mem FS; symbolic HEAD → refs/heads/master.
+# StatusCode runes: unmodified=' ', untracked='?', added='A' (status_types.StatusCode).
+after_init: clean=true
+after_write_hello: hello.txt staging=? worktree=?
+after_add_hello: staging=A worktree=' '
+after_commit: clean=true head_branch=refs/heads/master

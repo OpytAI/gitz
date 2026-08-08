@@ -1,0 +1,5 @@
+# go-git PlainClone bare path via plainCloneEmbedded (Class C scenario state)
+# Setup: MapLoader remote with populated tip; plainCloneEmbedded(..., is_bare=true).
+# bare forces no worktree checkout; master ref is fetched non-zero hash.
+is_bare=true
+master_hash_non_zero=true

@@ -4,6 +4,7 @@ _SRCS = [
     "error.zig",
     "status_types.zig",
     "options.zig",
+    "util.zig",
     "platform.zig",
     "platform_linux.zig",
     "platform_windows.zig",
@@ -14,6 +15,7 @@ _SRCS = [
     "reset.zig",
     "pull.zig",
     "clean.zig",
+    "grep.zig",
     "worktree.zig",
 ]
 

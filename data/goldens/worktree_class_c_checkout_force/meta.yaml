@@ -1,0 +1,5 @@
+name: worktree_class_c_checkout_force
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "Class C scenario: dirty file + Checkout Force restores original content."

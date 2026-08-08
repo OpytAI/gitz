@@ -40,4 +40,8 @@ pub const Error = error{
     CommitParentsAmendExclusive,
     /// Force and Keep mutually exclusive on CheckoutOptions.
     CheckoutForceKeepExclusive,
+    /// go-git `ErrNoRestorePaths` — Restore with empty Files.
+    NoRestorePaths,
+    /// go-git `ErrHashOrReference` — GrepOptions CommitHash and ReferenceName both set.
+    HashOrReference,
 };

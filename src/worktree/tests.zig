@@ -448,3 +448,333 @@ test "phase exit scenario full lifecycle" {
     try env.wt.clean(.{});
     try std.testing.expect(!fileExists(env.fs, "scratch.tmp"));
 }
+
+// ---------------------------------------------------------------------------
+// Restore
+// ---------------------------------------------------------------------------
+
+test "restore no files returns NoRestorePaths" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try std.testing.expectError(
+        worktree.Error.NoRestorePaths,
+        env.wt.restore(.{ .staged = true }),
+    );
+}
+
+test "restore worktree-only returns RestoreWorktreeOnlyNotSupported" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try writeFile(env.fs, "f.txt", "x\n");
+    _ = try env.wt.add("f.txt");
+    _ = try env.wt.commit("c", commitOpts());
+
+    try std.testing.expectError(
+        worktree.Error.RestoreWorktreeOnlyNotSupported,
+        env.wt.restore(.{
+            .worktree = true,
+            .files = &.{"f.txt"},
+        }),
+    );
+    // Neither staged nor worktree is also unsupported once files are given.
+    try std.testing.expectError(
+        worktree.Error.RestoreWorktreeOnlyNotSupported,
+        env.wt.restore(.{
+            .files = &.{"f.txt"},
+        }),
+    );
+}
+
+test "restore staged-only resets index from HEAD (mixed)" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try writeFile(env.fs, "tracked.txt", "original\n");
+    _ = try env.wt.add("tracked.txt");
+    _ = try env.wt.commit("base", commitOpts());
+
+    // Stage a modification, then make a secondary worktree-only edit.
+    try writeFile(env.fs, "tracked.txt", "staged\n");
+    _ = try env.wt.add("tracked.txt");
+    try writeFile(env.fs, "tracked.txt", "worktree-secondary\n");
+
+    {
+        var st = try env.wt.status();
+        defer st.deinit();
+        const codes = statusCodeAt(&st, "tracked.txt") orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(StatusCode.modified, codes.staging);
+        try std.testing.expectEqual(StatusCode.modified, codes.worktree);
+    }
+
+    try env.wt.restore(.{
+        .staged = true,
+        .files = &.{"tracked.txt"},
+    });
+
+    // Mixed restore: index matches HEAD; worktree keeps secondary edits.
+    {
+        var st = try env.wt.status();
+        defer st.deinit();
+        const codes = statusCodeAt(&st, "tracked.txt") orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(StatusCode.unmodified, codes.staging);
+        try std.testing.expectEqual(StatusCode.modified, codes.worktree);
+    }
+
+    const body = try readFileAll(gpa, env.fs, "tracked.txt");
+    defer gpa.free(body);
+    try std.testing.expectEqualStrings("worktree-secondary\n", body);
+}
+
+// ---------------------------------------------------------------------------
+// Grep
+// ---------------------------------------------------------------------------
+
+test "grep finds line in committed blob" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try env.fs.mkdirAll("src", 0o755);
+    try writeFile(env.fs, "src/main.txt", "alpha\nfindme here\nomega\n");
+    _ = try env.wt.add("src/main.txt");
+    const h = try env.wt.commit("add main", commitOpts());
+
+    // Dirty worktree must not affect grep (commit tree only).
+    try writeFile(env.fs, "src/main.txt", "no match in worktree\n");
+
+    const results = try env.wt.grep(.{
+        .patterns = &.{"findme"},
+    });
+    defer worktree.freeGrepResults(gpa, results);
+
+    try std.testing.expectEqual(@as(usize, 1), results.len);
+    try std.testing.expectEqualStrings("src/main.txt", results[0].file_name);
+    try std.testing.expectEqual(@as(usize, 2), results[0].line_number);
+    try std.testing.expectEqualStrings("findme here", results[0].content);
+
+    var hex_buf: [plumbing.MaxHexSize]u8 = undefined;
+    const hex = h.string(&hex_buf);
+    try std.testing.expectEqualStrings(hex, results[0].tree_name);
+}
+
+test "grep invert excludes matching lines" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try writeFile(env.fs, "notes.txt", "keep\nskip-import\nkeep2\n");
+    _ = try env.wt.add("notes.txt");
+    _ = try env.wt.commit("notes", commitOpts());
+
+    const results = try env.wt.grep(.{
+        .patterns = &.{"import"},
+        .invert_match = true,
+    });
+    defer worktree.freeGrepResults(gpa, results);
+
+    // invert: all non-matching lines (including trailing empty from final \n).
+    var found_keep = false;
+    var found_keep2 = false;
+    var found_import = false;
+    for (results) |r| {
+        if (std.mem.eql(u8, r.content, "keep")) found_keep = true;
+        if (std.mem.eql(u8, r.content, "keep2")) found_keep2 = true;
+        if (std.mem.indexOf(u8, r.content, "import") != null) found_import = true;
+    }
+    try std.testing.expect(found_keep);
+    try std.testing.expect(found_keep2);
+    try std.testing.expect(!found_import);
+}
+
+test "grep path_specs filter" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try env.fs.mkdirAll("go", 0o755);
+    try env.fs.mkdirAll("vendor", 0o755);
+    try writeFile(env.fs, "go/example.go", "package main\nimport (\n");
+    try writeFile(env.fs, "vendor/foo.go", "package foo\nimport \"fmt\"\n");
+    _ = try env.wt.add("go/example.go");
+    _ = try env.wt.add("vendor/foo.go");
+    _ = try env.wt.commit("two files", commitOpts());
+
+    const results = try env.wt.grep(.{
+        .patterns = &.{"import"},
+        .path_specs = &.{"go/"},
+    });
+    defer worktree.freeGrepResults(gpa, results);
+
+    try std.testing.expectEqual(@as(usize, 1), results.len);
+    try std.testing.expectEqualStrings("go/example.go", results[0].file_name);
+}
+
+test "grep hash and reference exclusive" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try writeFile(env.fs, "a.txt", "x\n");
+    _ = try env.wt.add("a.txt");
+    const h = try env.wt.commit("c", commitOpts());
+
+    try std.testing.expectError(
+        worktree.Error.HashOrReference,
+        env.wt.grep(.{
+            .patterns = &.{"x"},
+            .commit_hash = h,
+            .reference_name = plumbing.master,
+        }),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Sparse checkout / ResetSparsely
+// ---------------------------------------------------------------------------
+//
+// go-git Index.SkipUnless marks non-matching index entries with skip_worktree
+// (it does not delete them). Hard ResetSparsely then materialises only the
+// non-skip paths into the worktree. Active (non-skip) index paths are those
+// under the sparse dir prefixes (e.g. "a" → a/*).
+
+test "resetSparsely hard keeps only sparse prefix active in index" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try env.fs.mkdirAll("a", 0o755);
+    try env.fs.mkdirAll("b", 0o755);
+    try writeFile(env.fs, "a/x.txt", "ax\n");
+    try writeFile(env.fs, "b/y.txt", "by\n");
+    _ = try env.wt.add("a/x.txt");
+    _ = try env.wt.add("b/y.txt");
+    const h = try env.wt.commit("nested", commitOpts());
+
+    // Sparse hard reset: only "a" stays checked out / active.
+    try env.wt.resetSparsely(.{
+        .commit = h,
+        .mode = .hard,
+    }, &.{"a"});
+
+    const idx = try env.sto.index();
+    var active_a = false;
+    var active_b = false;
+    var skip_b = false;
+    for (idx.entries.items) |*e| {
+        if (std.mem.eql(u8, e.name, "a/x.txt")) {
+            try std.testing.expect(!e.skip_worktree);
+            active_a = true;
+        } else if (std.mem.eql(u8, e.name, "b/y.txt")) {
+            if (e.skip_worktree) skip_b = true else active_b = true;
+        }
+    }
+    try std.testing.expect(active_a);
+    // b is either marked skip_worktree or absent from active checkout view.
+    try std.testing.expect(skip_b or !active_b);
+    try std.testing.expect(!active_b);
+
+    // Worktree should still have a/x.txt; sparse hard drops other prefixes.
+    try std.testing.expect(fileExists(env.fs, "a/x.txt"));
+}
+
+// ---------------------------------------------------------------------------
+// move / removeGlob / grep phase-exit smokes
+// ---------------------------------------------------------------------------
+
+test "move renames tracked file in index and worktree" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try writeFile(env.fs, "old.txt", "body\n");
+    _ = try env.wt.add("old.txt");
+    _ = try env.wt.commit("base", commitOpts());
+
+    const h = try env.wt.move("old.txt", "new.txt");
+    try std.testing.expect(!h.isZero());
+    try std.testing.expect(!fileExists(env.fs, "old.txt"));
+    try std.testing.expect(fileExists(env.fs, "new.txt"));
+
+    const idx = try env.sto.index();
+    try std.testing.expectError(error.EntryNotFound, idx.entry("old.txt"));
+    const e = try idx.entry("new.txt");
+    try std.testing.expect(e.hash.eql(h));
+}
+
+test "removeGlob removes matching index and worktree paths" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try env.fs.mkdirAll("pkg", 0o755);
+    try writeFile(env.fs, "pkg/a.go", "package a\n");
+    try writeFile(env.fs, "pkg/b.go", "package b\n");
+    try writeFile(env.fs, "keep.txt", "keep\n");
+    _ = try env.wt.add("pkg/a.go");
+    _ = try env.wt.add("pkg/b.go");
+    _ = try env.wt.add("keep.txt");
+    _ = try env.wt.commit("files", commitOpts());
+
+    try env.wt.removeGlob("pkg/*.go");
+
+    const idx = try env.sto.index();
+    try std.testing.expectError(error.EntryNotFound, idx.entry("pkg/a.go"));
+    try std.testing.expectError(error.EntryNotFound, idx.entry("pkg/b.go"));
+    _ = try idx.entry("keep.txt");
+    try std.testing.expect(!fileExists(env.fs, "pkg/a.go"));
+    try std.testing.expect(!fileExists(env.fs, "pkg/b.go"));
+    try std.testing.expect(fileExists(env.fs, "keep.txt"));
+}
+
+test "grep finds fixed string in committed tree" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try writeFile(env.fs, "main.go", "package main\nimport \"fmt\"\n");
+    _ = try env.wt.add("main.go");
+    _ = try env.wt.commit("go", commitOpts());
+
+    const results = try env.wt.grep(.{ .patterns = &.{"import"} });
+    defer worktree.freeGrepResults(gpa, results);
+
+    try std.testing.expect(results.len >= 1);
+    try std.testing.expectEqualStrings("main.go", results[0].file_name);
+    try std.testing.expect(std.mem.indexOf(u8, results[0].content, "import") != null);
+}
+
+test "phase exit scenario includes move removeGlob grep" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try writeFile(env.fs, "life.txt", "hello world\n");
+    _ = try env.wt.add("life.txt");
+    _ = try env.wt.commit("life", commitOpts());
+
+    // grep smoke after commit
+    {
+        const results = try env.wt.grep(.{ .patterns = &.{"hello"} });
+        defer worktree.freeGrepResults(gpa, results);
+        try std.testing.expect(results.len >= 1);
+    }
+
+    // move smoke
+    _ = try env.wt.move("life.txt", "life2.txt");
+    try std.testing.expect(fileExists(env.fs, "life2.txt"));
+    _ = try env.wt.add("life2.txt"); // ensure staged if needed
+    // After move, index already has life2.txt; commit rename.
+    _ = try env.wt.commit("rename", commitOpts());
+
+    // removeGlob smoke
+    try writeFile(env.fs, "tmp.o", "obj\n");
+    _ = try env.wt.add("tmp.o");
+    _ = try env.wt.commit("obj", commitOpts());
+    try env.wt.removeGlob("*.o");
+    try std.testing.expect(!fileExists(env.fs, "tmp.o"));
+}

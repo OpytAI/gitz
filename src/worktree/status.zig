@@ -20,6 +20,7 @@ const filemode = @import("filemode");
 const worktree_mod = @import("worktree.zig");
 const status_types = @import("status_types.zig");
 const options_mod = @import("options.zig");
+const util = @import("util.zig");
 
 const Allocator = std.mem.Allocator;
 const Worktree = worktree_mod.Worktree;
@@ -193,7 +194,18 @@ fn applyWorktreeStatus(w: *Worktree, s: *Status) !void {
     }
 
     // Untracked: walk Mem FS for regular files not in index.
-    try walkUntracked(w, s, &indexed, ".");
+    // go-git excludeIgnoredChanges: ReadPatterns + Worktree.Excludes.
+    // readPatterns treats missing ignore files as empty (not an error).
+    const from_fs = try gitignore.readPatterns(w.allocator, w.filesystem, &.{});
+    defer gitignore.freePatterns(w.allocator, from_fs);
+
+    var ignore: std.ArrayList(gitignore.Pattern) = .empty;
+    defer ignore.deinit(w.allocator);
+    try ignore.ensureTotalCapacity(w.allocator, from_fs.len + w.excludes.len);
+    try ignore.appendSlice(w.allocator, from_fs);
+    try ignore.appendSlice(w.allocator, w.excludes);
+
+    try walkUntracked(w, s, &indexed, ".", ignore.items);
 }
 
 fn hashWorktreeFile(w: *Worktree, path: []const u8) !Hash {
@@ -215,6 +227,7 @@ fn walkUntracked(
     s: *Status,
     indexed: *const std.StringHashMapUnmanaged(void),
     dir: []const u8,
+    ignore: []const gitignore.Pattern,
 ) !void {
     const entries = try w.filesystem.readDir(dir);
     defer w.filesystem.freeReadDir(entries);
@@ -230,15 +243,22 @@ fn walkUntracked(
         defer w.allocator.free(path);
 
         if (info.isDir()) {
-            try walkUntracked(w, s, indexed, path);
+            // Skip ignored directories entirely (go-git matcher on dir path).
+            if (matchIgnore(ignore, path, true)) continue;
+            try walkUntracked(w, s, indexed, path, ignore);
             continue;
         }
         if (indexed.contains(path)) continue;
+        // go-git excludeIgnoredChanges: untracked Inserts that match ignore
+        // are dropped from Status (TestIgnored: map length 0).
+        if (matchIgnore(ignore, path, false)) continue;
         const f = try s.file(path);
         f.worktree = .untracked;
         f.staging = .untracked;
     }
 }
+
+const matchIgnore = util.matchIgnore;
 
 fn diffTreeIsEquals(a: Noder, b: Noder) bool {
     const ha = a.hash();
@@ -548,3 +568,54 @@ test "status clean after commit has unmodified staging on tracked files" {
     try std.testing.expectEqual(StatusCode.added, f.staging);
     try std.testing.expect(!s.isClean());
 }
+
+test "status excludes ignored untracked via Worktree.excludes" {
+    // go-git TestIgnored / TestExcludedNoGitignore: matching untracked paths
+    // are absent from the status map (IsClean when only ignored noise).
+    const gpa = std.testing.allocator;
+    var sto = memory.Storage.init(gpa);
+    defer sto.deinit();
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+    try writeMemFile(&mem, "foo", "FOO");
+    try writeMemFile(&mem, "bar", "BAR");
+
+    var pat = try gitignore.parsePattern(gpa, "foo", &.{});
+    defer pat.deinit();
+    const excludes = [_]gitignore.Pattern{pat};
+
+    var w = worktree_mod.newWorktree(gpa, &sto, &mem);
+    w.excludes = &excludes;
+
+    var s = try status(&w, .{});
+    defer s.deinit();
+
+    try std.testing.expect(s.map.get("foo") == null);
+    try std.testing.expect(!s.isUntracked("foo"));
+    const bar = s.map.get("bar") orelse return error.TestExpectedEqual;
+    try std.testing.expectEqual(StatusCode.untracked, bar.worktree);
+    try std.testing.expectEqual(StatusCode.untracked, bar.staging);
+    try std.testing.expect(!s.isClean());
+}
+
+test "status only ignored untracked is clean" {
+    const gpa = std.testing.allocator;
+    var sto = memory.Storage.init(gpa);
+    defer sto.deinit();
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+    try writeMemFile(&mem, "noise.log", "x");
+
+    var pat = try gitignore.parsePattern(gpa, "noise.log", &.{});
+    defer pat.deinit();
+    const excludes = [_]gitignore.Pattern{pat};
+
+    var w = worktree_mod.newWorktree(gpa, &sto, &mem);
+    w.excludes = &excludes;
+
+    var s = try status(&w, .{});
+    defer s.deinit();
+    try std.testing.expect(s.isClean());
+    try std.testing.expect(s.map.count() == 0);
+}
+

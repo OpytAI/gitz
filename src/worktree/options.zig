@@ -5,6 +5,7 @@ const plumbing = @import("plumbing");
 const objpkg = @import("object");
 const remote = @import("remote");
 const transport = @import("transport");
+const storer = @import("storer");
 
 const error_mod = @import("error.zig");
 const status_types = @import("status_types.zig");
@@ -127,7 +128,56 @@ pub const CleanOptions = struct {
     dir: bool = false,
 };
 
+/// go-git `RestoreOptions`.
+pub const RestoreOptions = struct {
+    /// Restore content in the index (staging area).
+    staged: bool = false,
+    /// Restore content of the working tree (with staged → hard reset of files).
+    worktree: bool = false,
+    /// Paths to restore (required; empty → `NoRestorePaths`).
+    files: []const []const u8 = &.{},
+
+    pub fn validate(self: *const RestoreOptions) !void {
+        if (self.files.len == 0) return error_mod.Error.NoRestorePaths;
+    }
+};
+
+/// go-git `GrepOptions`.
+///
+/// Patterns are **fixed-string** substrings matched unanchored per line.
+/// Zig has no `std.regex`; tests use fixed strings for hermetic parity with
+/// the common go-git cases (literal `regexp.MustCompile("word")`).
+pub const GrepOptions = struct {
+    /// Fixed-string patterns (go-git `Patterns` as `[]*regexp.Regexp`).
+    patterns: []const []const u8 = &.{},
+    /// Select non-matching lines (go-git `InvertMatch`).
+    invert_match: bool = false,
+    /// Commit to grep (default HEAD when both hash and reference are empty).
+    commit_hash: Hash = ZeroHash,
+    /// Branch/tag name to resolve to a commit (exclusive with `commit_hash`).
+    reference_name: ReferenceName = ReferenceName.init(""),
+    /// Path filters: if non-empty, path must contain any as substring.
+    path_specs: []const []const u8 = &.{},
+
+    /// Validate exclusivity and default `commit_hash` from HEAD when unset.
+    /// go-git `(*GrepOptions).validate` — `get` is a reference storer (`*memory.Storage`).
+    pub fn validate(self: *GrepOptions, get: anytype) !void {
+        if (!self.commit_hash.isZero() and self.reference_name.raw.len > 0) {
+            return error_mod.Error.HashOrReference;
+        }
+        if (self.commit_hash.isZero() and self.reference_name.raw.len == 0) {
+            const resolved = try storer.resolveReference(get, plumbing.HEAD);
+            self.commit_hash = resolved.hash;
+        }
+    }
+};
+
 test "AddOptions path glob exclusive" {
     const o = AddOptions{ .path = "a", .glob = "*" };
     try std.testing.expectError(error_mod.Error.AddPathGlobExclusive, o.validate());
+}
+
+test "RestoreOptions empty files" {
+    const o = RestoreOptions{ .staged = true };
+    try std.testing.expectError(error_mod.Error.NoRestorePaths, o.validate());
 }

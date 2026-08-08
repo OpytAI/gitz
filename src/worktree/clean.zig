@@ -10,12 +10,14 @@ const fs_pkg = @import("fs");
 const options_mod = @import("options.zig");
 const status_types = @import("status_types.zig");
 const worktree_mod = @import("worktree.zig");
+const util = @import("util.zig");
 
 const Allocator = std.mem.Allocator;
 const Worktree = worktree_mod.Worktree;
 const CleanOptions = options_mod.CleanOptions;
 const Status = status_types.Status;
 const FileInfo = fs_pkg.FileInfo;
+const joinRel = util.joinRel;
 
 /// go-git `GitDirName` — never remove or recurse into `.git`.
 const git_dir_name = ".git";
@@ -73,22 +75,6 @@ fn removeDirIfEmpty(w: *Worktree, dir: []const u8) !bool {
     return true;
 }
 
-/// Join relative worktree path segments with `/` (billy / go-git slash paths).
-fn joinRel(allocator: Allocator, dir: []const u8, name: []const u8) Allocator.Error![]u8 {
-    if (dir.len == 0) return try allocator.dupe(u8, name);
-    return try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, name });
-}
-
-test "joinRel root and nested" {
-    const gpa = std.testing.allocator;
-    {
-        const p = try joinRel(gpa, "", "foo.txt");
-        defer gpa.free(p);
-        try std.testing.expectEqualStrings("foo.txt", p);
-    }
-    {
-        const p = try joinRel(gpa, "pkgA", "bar");
-        defer gpa.free(p);
-        try std.testing.expectEqualStrings("pkgA/bar", p);
-    }
+test {
+    _ = @import("util.zig");
 }

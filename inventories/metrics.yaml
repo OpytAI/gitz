@@ -48,7 +48,12 @@ goldens:
   # remote_list_ref_names (58).
   # Phase 12: worktree status/add/commit/checkout + pull FF + porcelain
   # PlainClone/clone options (+8 → 66).
-  min_count: 66
+  # Phase 12 residuals: true Class C scenario goldens (+7 → 73):
+  # worktree_class_c_lifecycle, worktree_class_c_reset_soft,
+  # worktree_class_c_pull_ff, worktree_class_c_checkout_force,
+  # worktree_class_c_sparse, worktree_class_c_move,
+  # porcelain_class_c_plain_clone.
+  min_count: 73
 
 
 allowlists:

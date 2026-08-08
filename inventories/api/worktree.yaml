@@ -3,7 +3,9 @@
 #
 # Present: Worktree status/add/commit/checkout/reset/pull/clean, Status map,
 # StatusCode/FileStatus, Checkout/Reset/Add/Commit/Pull/Clone/Clean options,
-# platform fillSystemInfo. Network transports remain phase 13.
+# Move/RemoveGlob/AddGlob/resetSparsely, platform fillSystemInfo.
+# Restore / Grep (+ options/results) are inventory-required residuals; implement
+# when residual API work lands. Network transports remain phase 13.
 package: git/worktree
 phase: 12
 require:
@@ -22,10 +24,20 @@ require:
     - PullOptions
     - CloneOptions
     - CleanOptions
+    - RestoreOptions
+    - GrepOptions
+    - GrepResult
   functions:
     - newWorktree
     - newWorktreeEmbedded
     - fillSystemInfo
+    - Move
+    - RemoveGlob
+    - AddGlob
+    - Restore
+    - Grep
+    - freeGrepResults
+    - resetSparsely
   constants:
     - default_status_strategy
   semantic:
@@ -35,11 +47,17 @@ require:
     - Worktree.add
     - Worktree.addWithOptions
     - Worktree.remove
+    - Worktree.removeGlob
+    - Worktree.addGlob
+    - Worktree.move
     - Worktree.commit
     - Worktree.checkout
     - Worktree.reset
+    - Worktree.resetSparsely
     - Worktree.pull
     - Worktree.clean
+    - Worktree.restore
+    - Worktree.grep
     - newWorktree
     - newWorktreeEmbedded
     - Status
@@ -64,6 +82,11 @@ require:
     - CloneOptions
     - CloneOptions.validate
     - CleanOptions
+    - RestoreOptions
+    - GrepOptions
+    - GrepResult
+    - freeGrepResults
+    - resetSparsely
     - fillSystemInfo
     - default_status_strategy
     - WorktreeNotClean
@@ -71,6 +94,11 @@ require:
     - MissingAuthor
     - MissingURL
     - NonFastForwardUpdate
+    - NoRestorePaths
+    - HashOrReference
+    - DestinationExists
+    - GlobNoMatches
+    - RestoreWorktreeOnlyNotSupported
 zig_map:
   Worktree: Worktree
   NewWorktree: newWorktree
@@ -88,6 +116,16 @@ zig_map:
   PullOptions: PullOptions
   CloneOptions: CloneOptions
   CleanOptions: CleanOptions
+  RestoreOptions: RestoreOptions
+  GrepOptions: GrepOptions
+  GrepResult: GrepResult
+  Move: move
+  RemoveGlob: removeGlob
+  AddGlob: addGlob
+  Restore: restore
+  Grep: grep
+  freeGrepResults: freeGrepResults
+  ResetSparsely: resetSparsely
   fillSystemInfo: fillSystemInfo
   default_status_strategy: default_status_strategy
   ErrWorktreeNotClean: WorktreeNotClean
@@ -95,3 +133,8 @@ zig_map:
   ErrMissingAuthor: MissingAuthor
   ErrMissingURL: MissingURL
   ErrNonFastForwardUpdate: NonFastForwardUpdate
+  ErrNoRestorePaths: NoRestorePaths
+  ErrHashOrReference: HashOrReference
+  ErrDestinationExists: DestinationExists
+  ErrGlobNoMatches: GlobNoMatches
+  ErrRestoreWorktreeOnlyNotSupported: RestoreWorktreeOnlyNotSupported

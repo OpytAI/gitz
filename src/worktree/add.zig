@@ -1,9 +1,9 @@
-//! Worktree Add / Remove (go-git `worktree_status.go`).
+//! Worktree Add / Remove / Move / Glob (go-git `worktree_status.go`).
 //!
-//! Ports: `Add`, `AddWithOptions`, `Remove`, and helpers `doAdd`,
-//! `doAddFile`, `doAddDirectory`, `copyFileToStorage`, `addOrUpdateFileToIndex`,
-//! `doAddFileToIndex`, `doUpdateFileToIndex`, `doRemoveFile`, `doRemoveDirectory`,
-//! `deleteFromIndex`, `deleteFromFilesystem`.
+//! Ports: `Add`, `AddWithOptions`, `AddGlob`, `Remove`, `RemoveGlob`, `Move`,
+//! and helpers `doAdd`, `doAddFile`, `doAddDirectory`, `copyFileToStorage`,
+//! `addOrUpdateFileToIndex`, `doAddFileToIndex`, `doUpdateFileToIndex`,
+//! `doRemoveFile`, `doRemoveDirectory`, `deleteFromIndex`, `deleteFromFilesystem`.
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -19,6 +19,7 @@ const platform_mod = @import("platform.zig");
 const error_mod = @import("error.zig");
 const status_types = @import("status_types.zig");
 const status_mod = @import("status.zig");
+const util = @import("util.zig");
 
 const Allocator = std.mem.Allocator;
 const Worktree = worktree_mod.Worktree;
@@ -104,7 +105,7 @@ fn doAdd(
     const fi_opt: ?FileInfo = fi_or_err catch null;
     const need_status = !skip_status or fi_opt == null or fi_opt.?.isDir();
     if (need_status) {
-        status_opt = try loadStatusOrEmpty(w);
+        status_opt = try loadStatus(w);
     }
 
     var h = ZeroHash;
@@ -404,10 +405,71 @@ fn deleteFromFilesystem(w: *Worktree, path: []const u8) !void {
 }
 
 // ---------------------------------------------------------------------------
-// AddGlob (used by AddWithOptions)
+// Move / RemoveGlob / AddGlob
 // ---------------------------------------------------------------------------
 
-fn addGlob(w: *Worktree, pattern: []const u8) !void {
+/// go-git `Worktree.Move` — rename a file in the worktree and the index.
+/// Directories are not supported.
+pub fn move(w: *Worktree, from: []const u8, to: []const u8) !Hash {
+    _ = try w.filesystem.lstat(from);
+
+    // Destination must not already exist (go-git ErrDestinationExists).
+    if (w.filesystem.lstat(to)) |_| {
+        return error_mod.Error.DestinationExists;
+    } else |err| {
+        if (err != error.NotExist) return err;
+    }
+
+    const idx = try w.storer.index();
+    // Order matches go-git: drop index entry, rename FS, re-add under `to`.
+    const hash = try deleteFromIndex(idx, from);
+    try w.filesystem.rename(from, to);
+    try addOrUpdateFileToIndex(w, idx, to, hash);
+    w.storer.setIndex(idx);
+    return hash;
+}
+
+/// go-git `Worktree.RemoveGlob` — remove every index entry matching `pattern`
+/// from the index and worktree. Empty match list is not an error.
+pub fn removeGlob(w: *Worktree, pattern: []const u8) !void {
+    const idx = try w.storer.index();
+    const entries = try idx.glob(pattern);
+    defer w.allocator.free(entries);
+
+    // Collect names first: doRemoveFile mutates `idx.entries` (orderedRemove),
+    // which would invalidate pointers returned by Glob.
+    var names: std.ArrayList([]const u8) = .empty;
+    defer {
+        for (names.items) |n| w.allocator.free(n);
+        names.deinit(w.allocator);
+    }
+    for (entries) |e| {
+        try names.append(w.allocator, try w.allocator.dupe(u8, e.name));
+    }
+
+    for (names.items) |file| {
+        // go-git: Lstat only to surface unexpected FS errors; NotExist is fine.
+        _ = w.filesystem.lstat(file) catch |err| {
+            if (err != error.NotExist) return err;
+        };
+
+        _ = try doRemoveFile(w, idx, file);
+
+        // Immediate parent only (go-git filepath.Split + removeEmptyDirectory).
+        if (std.mem.lastIndexOfScalar(u8, file, '/')) |slash| {
+            if (slash > 0) {
+                try removeEmptyDirectory(w, file[0..slash]);
+            }
+        }
+    }
+
+    w.storer.setIndex(idx);
+}
+
+/// go-git `Worktree.AddGlob` — stage all paths matching `pattern`.
+/// If the pattern matches a directory, its contents are staged recursively.
+/// Returns `GlobNoMatches` when nothing matches.
+pub fn addGlob(w: *Worktree, pattern: []const u8) !void {
     var matches: std.ArrayList([]const u8) = .empty;
     defer {
         for (matches.items) |p| w.allocator.free(p);
@@ -416,7 +478,7 @@ fn addGlob(w: *Worktree, pattern: []const u8) !void {
     try collectGlobMatches(w, ".", pattern, &matches);
     if (matches.items.len == 0) return error_mod.Error.GlobNoMatches;
 
-    var status_val = try loadStatusOrEmpty(w);
+    var status_val = try loadStatus(w);
     defer status_val.deinit();
     const status_ptr: ?*Status = &status_val;
 
@@ -480,27 +542,9 @@ fn collectGlobMatches(
 // Path / ignore utilities
 // ---------------------------------------------------------------------------
 
-fn cleanToSlash(allocator: Allocator, path: []const u8) Allocator.Error![]u8 {
-    const cleaned = try fs_pkg.path.clean(allocator, path);
-    errdefer allocator.free(cleaned);
-    for (cleaned) |*c| {
-        if (c.* == '\\') c.* = '/';
-    }
-    // Drop a single leading "./" for relative paths (go-git Clean).
-    if (std.mem.startsWith(u8, cleaned, "./") and cleaned.len > 2) {
-        const trimmed = try allocator.dupe(u8, cleaned[2..]);
-        allocator.free(cleaned);
-        return trimmed;
-    }
-    return cleaned;
-}
-
-fn joinRel(allocator: Allocator, dir: []const u8, name: []const u8) Allocator.Error![]u8 {
-    if (dir.len == 0 or std.mem.eql(u8, dir, ".")) {
-        return try allocator.dupe(u8, name);
-    }
-    return try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir, name });
-}
+const cleanToSlash = util.cleanToSlash;
+const joinRel = util.joinRel;
+const matchIgnore = util.matchIgnore;
 
 fn collectFiles(w: *Worktree, dir: []const u8, out: *std.ArrayList([]const u8)) !void {
     const entries = w.filesystem.readDir(dir) catch |err| {
@@ -520,22 +564,6 @@ fn collectFiles(w: *Worktree, dir: []const u8, out: *std.ArrayList([]const u8)) 
             try out.append(w.allocator, child);
         }
     }
-}
-
-fn matchIgnore(patterns: []const gitignore.Pattern, path: []const u8, is_dir: bool) bool {
-    if (patterns.len == 0) return false;
-    const m = gitignore.newMatcher(patterns);
-    // Split path on `/` into stack segments (bounded; heap for deep trees).
-    var segs_buf: [64][]const u8 = undefined;
-    var n: usize = 0;
-    var it = std.mem.splitScalar(u8, path, '/');
-    while (it.next()) |seg| {
-        if (seg.len == 0) continue;
-        if (n >= segs_buf.len) break;
-        segs_buf[n] = seg;
-        n += 1;
-    }
-    return m.match(segs_buf[0..n], is_dir);
 }
 
 /// Minimal ValidTreePath (go-git pathutil gate) without pulling pathutil dep.
@@ -560,8 +588,8 @@ fn validTreePathLite(p: []const u8) error{InvalidPath}!void {
     if (!any) return error.InvalidPath;
 }
 
-/// Load real worktree Status (go-git always uses Status for Add unless SkipStatus).
-fn loadStatusOrEmpty(w: *Worktree) !Status {
+/// Load worktree Status for Add skip-unmodified (go-git always Status unless SkipStatus).
+fn loadStatus(w: *Worktree) !Status {
     return try status_mod.status(w, .{});
 }
 
@@ -594,7 +622,7 @@ test "add file stages blob and index entry" {
 
     try writeFile(&mem, "foo.txt", "FOO");
 
-    // skip_status avoids depending on a full Status implementation.
+    // skip_status skips Status load (go-git SkipStatus for single regular files).
     try addWithOptions(&wt, .{ .path = "foo.txt", .skip_status = true });
 
     const idx = try sto.index();
@@ -857,4 +885,163 @@ test "copyFileToStorage returns stable blob hash" {
         "d96c7efbfec2814ae0301ad054dc8d9fc416c9b5",
         h.string(&hex_buf),
     );
+}
+
+test "move renames file in filesystem and index" {
+    const gpa = std.testing.allocator;
+    var sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+    var wt = worktree_mod.newWorktree(gpa, sto, &mem);
+
+    try writeFile(&mem, "LICENSE", "license text");
+    try addWithOptions(&wt, .{ .path = "LICENSE", .skip_status = true });
+    const expected = (try (try sto.index()).entry("LICENSE")).hash;
+
+    const h = try move(&wt, "LICENSE", "foo");
+    try std.testing.expect(h.eql(expected));
+
+    // FS: old gone, new present with same content.
+    try std.testing.expectError(error.NotExist, mem.stat("LICENSE"));
+    _ = try mem.stat("foo");
+    var f = try mem.open("foo");
+    defer f.close() catch {};
+    var buf: [64]u8 = undefined;
+    const n = try f.read(&buf);
+    try std.testing.expectEqualStrings("license text", buf[0..n]);
+
+    // Index: only `foo` remains, same blob hash.
+    const idx = try sto.index();
+    try std.testing.expectEqual(@as(usize, 1), idx.entries.items.len);
+    try std.testing.expectError(index_fmt.Error.EntryNotFound, idx.entry("LICENSE"));
+    const e = try idx.entry("foo");
+    try std.testing.expect(e.hash.eql(expected));
+}
+
+test "move to existing path returns DestinationExists" {
+    const gpa = std.testing.allocator;
+    var sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+    var wt = worktree_mod.newWorktree(gpa, sto, &mem);
+
+    try writeFile(&mem, ".gitignore", "a");
+    try writeFile(&mem, "LICENSE", "b");
+    try addWithOptions(&wt, .{ .path = ".gitignore", .skip_status = true });
+    try addWithOptions(&wt, .{ .path = "LICENSE", .skip_status = true });
+
+    try std.testing.expectError(
+        error_mod.Error.DestinationExists,
+        move(&wt, ".gitignore", "LICENSE"),
+    );
+
+    // Index and FS unchanged on destination conflict.
+    const idx = try sto.index();
+    try std.testing.expectEqual(@as(usize, 2), idx.entries.items.len);
+    _ = try idx.entry(".gitignore");
+    _ = try idx.entry("LICENSE");
+    _ = try mem.stat(".gitignore");
+    _ = try mem.stat("LICENSE");
+}
+
+test "removeGlob removes matching files from index and filesystem" {
+    const gpa = std.testing.allocator;
+    var sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+    var wt = worktree_mod.newWorktree(gpa, sto, &mem);
+
+    try mem.mkdirAll("json", 0o755);
+    try writeFile(&mem, "json/long.json", "[]");
+    try writeFile(&mem, "json/short.json", "{}");
+    try writeFile(&mem, "README", "hi");
+    try addWithOptions(&wt, .{ .path = "json/long.json", .skip_status = true });
+    try addWithOptions(&wt, .{ .path = "json/short.json", .skip_status = true });
+    try addWithOptions(&wt, .{ .path = "README", .skip_status = true });
+
+    try removeGlob(&wt, "json/l*");
+
+    const idx = try sto.index();
+    try std.testing.expectEqual(@as(usize, 2), idx.entries.items.len);
+    try std.testing.expectError(index_fmt.Error.EntryNotFound, idx.entry("json/long.json"));
+    _ = try idx.entry("json/short.json");
+    _ = try idx.entry("README");
+    try std.testing.expectError(error.NotExist, mem.stat("json/long.json"));
+    _ = try mem.stat("json/short.json");
+}
+
+test "removeGlob directory pattern removes children and empty dir" {
+    const gpa = std.testing.allocator;
+    var sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+    var wt = worktree_mod.newWorktree(gpa, sto, &mem);
+
+    try mem.mkdirAll("json", 0o755);
+    try writeFile(&mem, "json/long.json", "[]");
+    try writeFile(&mem, "json/short.json", "{}");
+    try addWithOptions(&wt, .{ .path = "json/long.json", .skip_status = true });
+    try addWithOptions(&wt, .{ .path = "json/short.json", .skip_status = true });
+
+    // `js*` matches json/* paths (go-git full-path match spans separators).
+    try removeGlob(&wt, "js*");
+
+    const idx = try sto.index();
+    try std.testing.expectEqual(@as(usize, 0), idx.entries.items.len);
+    try std.testing.expectError(error.NotExist, mem.stat("json"));
+}
+
+test "addGlob stages matching paths" {
+    const gpa = std.testing.allocator;
+    var sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+    var wt = worktree_mod.newWorktree(gpa, sto, &mem);
+
+    try mem.mkdirAll("qux/bar", 0o755);
+    try writeFile(&mem, "qux/qux", "QUX");
+    try writeFile(&mem, "qux/baz", "BAZ");
+    try writeFile(&mem, "qux/bar/baz", "BAZ");
+
+    try addGlob(&wt, "qux/b*");
+
+    const idx = try sto.index();
+    try std.testing.expectEqual(@as(usize, 2), idx.entries.items.len);
+    _ = try idx.entry("qux/baz");
+    _ = try idx.entry("qux/bar/baz");
+    try std.testing.expectError(index_fmt.Error.EntryNotFound, idx.entry("qux/qux"));
+}
+
+test "addGlob empty match returns GlobNoMatches" {
+    const gpa = std.testing.allocator;
+    var sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+    var wt = worktree_mod.newWorktree(gpa, sto, &mem);
+
+    try std.testing.expectError(error_mod.Error.GlobNoMatches, addGlob(&wt, "foo"));
 }

@@ -1,0 +1,6 @@
+# go-git Worktree.Move (Class C scenario state)
+# Setup: memory + Mem FS; commit old.txt; Move(old.txt, new.txt).
+# Index drops old path, adds new path with same blob hash; FS rename.
+old_exists=false
+new_exists=true
+hash_same=true

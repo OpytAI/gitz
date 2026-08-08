@@ -1,7 +1,7 @@
 //! Worktree handle (go-git `Worktree`).
 //!
-//! Method bodies live in status.zig / add.zig / commit.zig / checkout.zig /
-//! reset.zig / pull.zig / clean.zig.
+//! Method bodies: status, add, commit, checkout, reset, pull, clean, grep.
+//! Shared path/ignore helpers: util.zig.
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -19,6 +19,7 @@ const checkout_mod = @import("checkout.zig");
 const reset_mod = @import("reset.zig");
 const pull_mod = @import("pull.zig");
 const clean_mod = @import("clean.zig");
+const grep_mod = @import("grep.zig");
 
 const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
@@ -57,6 +58,18 @@ pub const Worktree = struct {
         return add_mod.remove(self, path);
     }
 
+    pub fn removeGlob(self: *Worktree, pattern: []const u8) !void {
+        return add_mod.removeGlob(self, pattern);
+    }
+
+    pub fn addGlob(self: *Worktree, pattern: []const u8) !void {
+        return add_mod.addGlob(self, pattern);
+    }
+
+    pub fn move(self: *Worktree, from: []const u8, to: []const u8) !Hash {
+        return add_mod.move(self, from, to);
+    }
+
     pub fn commit(self: *Worktree, msg: []const u8, o: options_mod.CommitOptions) !Hash {
         return commit_mod.commit(self, msg, o);
     }
@@ -69,12 +82,24 @@ pub const Worktree = struct {
         return reset_mod.reset(self, o);
     }
 
+    pub fn resetSparsely(self: *Worktree, o: options_mod.ResetOptions, dirs: []const []const u8) !void {
+        return reset_mod.resetSparsely(self, o, dirs);
+    }
+
     pub fn pull(self: *Worktree, o: *options_mod.PullOptions) !void {
         return pull_mod.pull(self, o);
     }
 
     pub fn clean(self: *Worktree, o: options_mod.CleanOptions) !void {
         return clean_mod.clean(self, o);
+    }
+
+    pub fn restore(self: *Worktree, o: options_mod.RestoreOptions) !void {
+        return reset_mod.restore(self, o);
+    }
+
+    pub fn grep(self: *Worktree, o: options_mod.GrepOptions) ![]grep_mod.GrepResult {
+        return grep_mod.grep(self, o);
     }
 };
 

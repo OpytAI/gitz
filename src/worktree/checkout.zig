@@ -1,7 +1,8 @@
 //! Worktree Checkout (go-git `Worktree.Checkout` core).
 //!
-//! Flow: validate → optional create branch → resolve commit → update HEAD →
-//! materialise tree into Mem FS + rebuild index (`checkoutTree`), unless Keep.
+//! Flow: validate → optional create branch → resolve commit → set HEAD →
+//! Reset (Force→Hard, Keep→Soft, default→Merge) or ResetSparsely when sparse
+//! dirs are set. Tree materialisation lives in `checkoutTree` for hard reset.
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -23,6 +24,7 @@ const Reference = plumbing.Reference;
 const ReferenceName = plumbing.ReferenceName;
 const Worktree = worktree_mod.Worktree;
 const CheckoutOptions = options_mod.CheckoutOptions;
+const ResetOptions = options_mod.ResetOptions;
 const Index = index_fmt.Index;
 const FileMode = filemode.FileMode;
 
@@ -37,6 +39,17 @@ pub fn checkout(w: *Worktree, o: CheckoutOptions) !void {
 
     const commit_hash = try getCommitFromCheckoutOptions(w, &opts);
 
+    // Mode selection matches go-git: default MergeReset; Force → Hard; Keep → Soft.
+    var ro: ResetOptions = .{
+        .commit = commit_hash,
+        .mode = .merge,
+    };
+    if (opts.force) {
+        ro.mode = .hard;
+    } else if (opts.keep) {
+        ro.mode = .soft;
+    }
+
     // Update HEAD (symbolic branch or detached). go-git does this before Reset.
     if (!opts.hash.isZero() and !opts.create) {
         try setHEADToCommit(w, opts.hash);
@@ -44,26 +57,14 @@ pub fn checkout(w: *Worktree, o: CheckoutOptions) !void {
         try setHEADToBranch(w, opts.branch, commit_hash);
     }
 
-    // Soft (Keep): only move HEAD; leave index and worktree alone.
-    if (opts.keep) {
-        try setHEADCommit(w, commit_hash);
-        return;
+    // Lazy import avoids a module-level cycle with reset.zig (which imports
+    // checkoutTree only inside hard-reset).
+    const reset_mod = @import("reset.zig");
+    if (opts.sparse_checkout_directories.len > 0) {
+        try reset_mod.resetSparsely(w, ro, opts.sparse_checkout_directories);
+    } else {
+        try reset_mod.reset(w, ro);
     }
-
-    // MergeReset / HardReset: point branch tip (or detached HEAD) at commit,
-    // then materialise the commit tree into the worktree + index.
-    try setHEADCommit(w, commit_hash);
-
-    const c = try objpkg.getCommit(w.allocator, w.storer, commit_hash);
-    defer {
-        c.deinit();
-        w.allocator.destroy(c);
-    }
-
-    // Force always rewrites. Default (merge) also materialises in this core
-    // port (unstaged-change abort lives with full Reset/status later).
-    _ = opts.force;
-    try checkoutTree(w, c.tree_hash);
 }
 
 /// Write every regular/symlink blob from `tree_hash` into the worktree FS and
@@ -120,20 +121,6 @@ pub fn setHEADToBranch(w: *Worktree, branch: ReferenceName, commit: Hash) !void 
     else
         Reference.newHashReference(plumbing.HEAD, commit);
     try w.storer.setReference(head);
-}
-
-/// Update the current branch tip (or detached HEAD) to `commit`.
-/// go-git `setHEADCommit`.
-fn setHEADCommit(w: *Worktree, commit: Hash) !void {
-    const head = try w.storer.reference(plumbing.HEAD);
-    if (head.type == .hash) {
-        try w.storer.setReference(Reference.newHashReference(plumbing.HEAD, commit));
-        return;
-    }
-
-    const branch = try w.storer.reference(head.target);
-    if (!branch.name.isBranch()) return error.InvalidReferenceName;
-    try w.storer.setReference(Reference.newHashReference(branch.name, commit));
 }
 
 // ---------------------------------------------------------------------------
@@ -298,6 +285,68 @@ fn readFileAll(filesystem: *fs_pkg.Mem, allocator: Allocator, path: []const u8) 
     return try list.toOwnedSlice(allocator);
 }
 
+/// Two commits (A: a.txt, B: a.txt + sub/b.txt) with index/worktree at A.
+fn setupTwoCommitCheckout(gpa: Allocator) !struct {
+    sto: *memory.Storage,
+    mem: *fs_pkg.Mem,
+    wt: Worktree,
+    commit_a: Hash,
+    commit_b: Hash,
+    blob_a: Hash,
+} {
+    const sto = try gpa.create(memory.Storage);
+    errdefer gpa.destroy(sto);
+    sto.* = memory.Storage.init(gpa);
+    errdefer sto.deinit();
+
+    const mem = try gpa.create(fs_pkg.Mem);
+    errdefer gpa.destroy(mem);
+    mem.* = try fs_pkg.Mem.init(gpa);
+    errdefer mem.deinit();
+
+    var wt = worktree_mod.newWorktree(gpa, sto, mem);
+
+    const blob_a = try storeBlob(sto, "content-a");
+    const tree_a = try storeTree(sto, gpa, &.{
+        .{ .name = "a.txt", .mode = filemode.Regular, .hash = blob_a },
+    });
+    const commit_a = try storeCommit(sto, gpa, tree_a, "A\n");
+
+    const blob_b_root = try storeBlob(sto, "content-a-at-b");
+    const blob_b_sub = try storeBlob(sto, "content-sub");
+    const sub_tree = try storeTree(sto, gpa, &.{
+        .{ .name = "b.txt", .mode = filemode.Regular, .hash = blob_b_sub },
+    });
+    const tree_b = try storeTree(sto, gpa, &.{
+        .{ .name = "a.txt", .mode = filemode.Regular, .hash = blob_b_root },
+        .{ .name = "sub", .mode = filemode.Dir, .hash = sub_tree },
+    });
+    const commit_b = try storeCommit(sto, gpa, tree_b, "B\n");
+
+    try sto.setReference(Reference.newHashReference(plumbing.master, commit_a));
+    try sto.setReference(Reference.newSymbolicReference(plumbing.HEAD, plumbing.master));
+
+    // Materialise commit A into index + worktree.
+    try checkoutTree(&wt, tree_a);
+    try sto.setReference(Reference.newHashReference(plumbing.master, commit_a));
+
+    return .{
+        .sto = sto,
+        .mem = mem,
+        .wt = wt,
+        .commit_a = commit_a,
+        .commit_b = commit_b,
+        .blob_a = blob_a,
+    };
+}
+
+fn deinitTwoCommitCheckout(gpa: Allocator, env: anytype) void {
+    env.mem.deinit();
+    gpa.destroy(env.mem);
+    env.sto.deinit();
+    gpa.destroy(env.sto);
+}
+
 test "checkout materialises tree and detaches HEAD on hash" {
     const gpa = std.testing.allocator;
     var sto = memory.Storage.init(gpa);
@@ -405,6 +454,115 @@ test "checkout keep leaves worktree untouched" {
     const local = try readFileAll(&mem, gpa, "local-only.txt");
     defer gpa.free(local);
     try std.testing.expectEqualStrings("local", local);
+}
+
+test "checkout dirty without force returns UnstagedChanges" {
+    const gpa = std.testing.allocator;
+    var env = try setupTwoCommitCheckout(gpa);
+    defer deinitTwoCommitCheckout(gpa, &env);
+
+    // Unstaged modification of a tracked file.
+    {
+        var f = try env.mem.openFile("a.txt", fs_pkg.O.WRONLY | fs_pkg.O.TRUNC, 0o644);
+        defer f.close() catch {};
+        _ = try f.write("dirty");
+    }
+
+    try std.testing.expectError(
+        error_mod.Error.UnstagedChanges,
+        checkout(&env.wt, .{
+            .hash = env.commit_b,
+            .branch = .{ .raw = "" },
+        }),
+    );
+
+    // Worktree still dirty; content not restored.
+    const body = try readFileAll(env.mem, gpa, "a.txt");
+    defer gpa.free(body);
+    try std.testing.expectEqualStrings("dirty", body);
+}
+
+test "checkout dirty with force restores file" {
+    const gpa = std.testing.allocator;
+    var env = try setupTwoCommitCheckout(gpa);
+    defer deinitTwoCommitCheckout(gpa, &env);
+
+    {
+        var f = try env.mem.openFile("a.txt", fs_pkg.O.WRONLY | fs_pkg.O.TRUNC, 0o644);
+        defer f.close() catch {};
+        _ = try f.write("dirty");
+    }
+
+    try checkout(&env.wt, .{
+        .hash = env.commit_b,
+        .branch = .{ .raw = "" },
+        .force = true,
+    });
+
+    const body = try readFileAll(env.mem, gpa, "a.txt");
+    defer gpa.free(body);
+    try std.testing.expectEqualStrings("content-a-at-b", body);
+
+    const head = try env.sto.reference(plumbing.HEAD);
+    try std.testing.expect(head.hash.eql(env.commit_b));
+}
+
+test "checkout keep moves HEAD and leaves dirty file" {
+    const gpa = std.testing.allocator;
+    var env = try setupTwoCommitCheckout(gpa);
+    defer deinitTwoCommitCheckout(gpa, &env);
+
+    {
+        var f = try env.mem.openFile("a.txt", fs_pkg.O.WRONLY | fs_pkg.O.TRUNC, 0o644);
+        defer f.close() catch {};
+        _ = try f.write("dirty-keep");
+    }
+
+    try checkout(&env.wt, .{
+        .hash = env.commit_b,
+        .branch = .{ .raw = "" },
+        .keep = true,
+    });
+
+    const head = try env.sto.reference(plumbing.HEAD);
+    try std.testing.expect(head.hash.eql(env.commit_b));
+
+    const body = try readFileAll(env.mem, gpa, "a.txt");
+    defer gpa.free(body);
+    try std.testing.expectEqualStrings("dirty-keep", body);
+
+    // Index still at A (soft reset).
+    const idx = try env.sto.index();
+    const ent = try idx.entry("a.txt");
+    try std.testing.expect(ent.hash.eql(env.blob_a));
+}
+
+test "checkout sparse_checkout_directories marks skip_worktree via skipUnless" {
+    const gpa = std.testing.allocator;
+    var env = try setupTwoCommitCheckout(gpa);
+    defer deinitTwoCommitCheckout(gpa, &env);
+
+    // MergeReset sparse checkout of commit B with only "sub" prefix active.
+    try checkout(&env.wt, .{
+        .hash = env.commit_b,
+        .branch = .{ .raw = "" },
+        .sparse_checkout_directories = &.{"sub"},
+    });
+
+    const idx = try env.sto.index();
+    // Both tree paths are in the index; skipUnless only flags non-matching.
+    try std.testing.expectEqual(@as(usize, 2), idx.entries.items.len);
+
+    const a_ent = try idx.entry("a.txt");
+    try std.testing.expect(a_ent.skip_worktree);
+
+    const b_ent = try idx.entry("sub/b.txt");
+    try std.testing.expect(!b_ent.skip_worktree);
+
+    // Active sparse path is on disk.
+    const sub_body = try readFileAll(env.mem, gpa, "sub/b.txt");
+    defer gpa.free(sub_body);
+    try std.testing.expectEqualStrings("content-sub", sub_body);
 }
 
 test "checkoutTree nested path and index rebuild" {

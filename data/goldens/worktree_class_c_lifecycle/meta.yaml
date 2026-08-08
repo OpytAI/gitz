@@ -1,0 +1,5 @@
+name: worktree_class_c_lifecycle
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "Class C scenario: status/add/commit cycle pins Git-visible status codes (memory + Mem FS)."

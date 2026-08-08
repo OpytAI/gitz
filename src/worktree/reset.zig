@@ -39,6 +39,24 @@ pub fn reset(w: *Worktree, o: ResetOptions) !void {
     return resetSparsely(w, o, &.{});
 }
 
+/// go-git `(*Worktree).Restore`.
+///
+/// - Staged only → mixed reset of `files` (index from HEAD).
+/// - Staged + Worktree → hard reset of `files`.
+/// - Worktree only / neither → `RestoreWorktreeOnlyNotSupported`.
+/// - Empty files → `NoRestorePaths`.
+pub fn restore(w: *Worktree, o: options_mod.RestoreOptions) !void {
+    try o.validate();
+    if (o.staged) {
+        const mode: options_mod.ResetMode = if (o.worktree) .hard else .mixed;
+        return reset(w, .{
+            .files = o.files,
+            .mode = mode,
+        });
+    }
+    return error_mod.Error.RestoreWorktreeOnlyNotSupported;
+}
+
 /// go-git `(*Worktree).ResetSparsely` (`dirs` = sparse checkout prefixes; empty = full).
 pub fn resetSparsely(w: *Worktree, o: ResetOptions, dirs: []const []const u8) !void {
     var opts = o;
@@ -67,6 +85,12 @@ pub fn resetSparsely(w: *Worktree, o: ResetOptions, dirs: []const []const u8) !v
     }
 
     if (opts.mode == .hard) {
+        // Sparse hard: preserve skipUnless from resetIndex; full checkoutTree
+        // rebuilds the entire index and would wipe sparse flags.
+        if (dirs.len > 0) {
+            try resetWorktree(w, tree, opts.files);
+            return;
+        }
         // Full materialization: rebuild index + worktree from commit tree
         // (more reliable than change-walk alone for Mem FS).
         const checkout_mod = @import("checkout.zig");
