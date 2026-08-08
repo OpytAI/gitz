@@ -4,6 +4,13 @@
 //! line-oriented diffs (`//src/utils/diff`) and assigns each final-file line
 //! to the commit that last introduced or changed it.
 //!
+//! # Ownership
+//!
+//! - `blame` does not take ownership of `c` (borrowed for the call only).
+//! - `BlameResult` owns path and every `Line` string; free with `deinit`.
+//! - Walk state uses an arena plus `owned_commits` for parent commits loaded
+//!   during the search; root commit is never freed by the walk.
+//!
 //! Pin: go-git v5.19.2.
 
 const std = @import("std");
@@ -149,8 +156,6 @@ const QueueItem = struct {
     num_parents_need_resolving: i32 = 0,
     identical_to_child: bool = false,
     parent_no: i32 = 0,
-    /// True when this item was created for the root and must not free commit.
-    is_root: bool = false,
 };
 
 const ParentCommit = struct {
@@ -244,6 +249,7 @@ const BlameState = struct {
         const path_owned = try self.aa().dupe(u8, self.path);
 
         const root_item = try self.aa().create(QueueItem);
+        // Root commit is borrowed (`f_rev`); never freed via owned_commits.
         root_item.* = .{
             .child = null,
             .merged_children = &.{},
@@ -254,7 +260,6 @@ const BlameState = struct {
             .num_parents_need_resolving = 0,
             .identical_to_child = false,
             .parent_no = 0,
-            .is_root = true,
         };
         try self.q.push(self.allocator, root_item);
 
@@ -637,6 +642,8 @@ fn blobHash(path: []const u8, commit: *const Commit) anyerror!Hash {
 // Utilities
 // ---------------------------------------------------------------------------
 
+/// Free an owned string slice. Zero-length slices are never allocated here
+/// (empty fields stay as `""` literals); free is skipped for len == 0.
 fn freeOwned(allocator: Allocator, s: []const u8) void {
     if (s.len > 0) allocator.free(s);
 }

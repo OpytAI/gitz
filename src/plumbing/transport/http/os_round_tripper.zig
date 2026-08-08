@@ -1,5 +1,4 @@
-//! OS HTTP RoundTripper backed by Zig 0.16 `std.http.Client` (secure path)
-//! and an intentional insecure HTTPS path using `std.crypto.tls.Client`.
+//! OS HTTP RoundTripper: verified `std.http.Client` plus insecure HTTPS.
 //!
 //! Default production path for HTTP transport sessions. Hermetic tests inject
 //! `MockRoundTripper` instead.
@@ -13,34 +12,41 @@
 //!
 //! # Redirects
 //!
-//! Redirect policy is applied here (go-git `CheckRedirect` on `http.Client`):
-//! - `never` — do not follow; first 3xx surfaces as `Error.RedirectBlocked`
+//! Both the verified and insecure paths apply the same `RedirectPolicy`
+//! (go-git `CheckRedirect` on `http.Client`):
+//! - `never` — do not follow; first 3xx → `Error.RedirectBlocked`
 //! - `initial` — follow only when `Request.is_initial` (info/refs GET)
-//! - `always` — follow GETs up to 10 hops; POST bodies stay unhandled
+//! - `always` — follow GETs up to 10 hops
+//! - POST / payload requests never auto-follow (3xx returned to the session)
 //!
-//! After auto-followed redirects, `Response.final_url` is the final request
-//! URI (no userinfo) so `Session.modifyEndpointIfRedirect` can rewrite the
+//! After followed redirects, `Response.final_url` is the final request URI
+//! (no userinfo) so `Session.modifyEndpointIfRedirect` can rewrite the
 //! endpoint like go-git `res.Request.URL`.
+//!
+//! # Response headers
+//!
+//! Both paths copy every response header name/value into an owned
+//! `HeaderMap` on `Response` (multi-value headers via `HeaderMap.add`).
+//! Headers are snapshotted before the body stream invalidates head slices.
 //!
 //! # TLS / `insecure_skip_tls`
 //!
-//! When `insecure_skip_tls` is false, requests use `std.http.Client`, which
-//! verifies server certificates against the system CA bundle (secure default).
+//! Secure default (`insecure_skip_tls == false`): `std.http.Client` verifies
+//! server certificates against the system CA bundle.
 //!
-//! When `insecure_skip_tls` is true **and** the URL scheme is `https://`, this
-//! type takes a dedicated path that is a full intentional implementation:
+//! When `insecure_skip_tls` is true **and** the URL scheme is `https://`,
+//! requests use a dedicated path:
 //! 1. TCP connect via `HostName.connect`
-//! 2. TLS handshake with `std.crypto.tls.Client` options
-//!    `host: .no_verification` and `ca: .no_verification`
-//! 3. HTTP/1.1 request/response over the TLS stream
+//! 2. TLS handshake with `std.crypto.tls.Client`
+//!    (`host: .no_verification`, `ca: .no_verification`)
+//! 3. HTTP/1.1 request/response over the TLS stream (`connection: close`)
+//! 4. Redirect following under the same policy as the verified path
+//!    (subsequent hops may be `http://` plain or `https://` insecure TLS)
 //!
-//! Redirects are not auto-followed on the insecure path; `final_url` is the
-//! request URL. Plain `http://` with the flag set still uses `std.http.Client`
-//! (no TLS to skip).
+//! Plain `http://` with the flag set still uses `std.http.Client` (no TLS).
 //!
-//! This is the Zig equivalent of go-git / `InsecureSkipVerify`: verification
-//! is intentionally disabled. Prefer injecting a custom RoundTripper for
-//! custom trust stores rather than broad skip-verify when possible.
+//! Equivalent of go-git `InsecureSkipVerify`. Prefer a custom RoundTripper for
+//! custom trust stores when possible.
 
 const std = @import("std");
 const common = @import("common.zig");
@@ -57,22 +63,27 @@ const RoundTripper = common.RoundTripper;
 const RedirectPolicy = common.RedirectPolicy;
 const Error = common.Error;
 
-/// Real OS sockets RoundTripper using `std.http.Client` (verified TLS) and an
-/// optional insecure HTTPS path when `insecure_skip_tls` is set.
+/// Max redirect hops (go-git `len(via) >= 10`).
+const max_redirect_hops: usize = 10;
+
+/// Buffer sizes for the insecure TLS path (mirrors std.http.Client sizing).
+const insecure_tls_min = TlsClient.min_buffer_len;
+const insecure_http_read_cap: usize = 8 * 1024;
+const insecure_clear_write_cap: usize = 1024;
+const insecure_redirect_buf_cap: usize = 8 * 1024;
+
+/// Real OS sockets RoundTripper.
 pub const OsRoundTripper = struct {
     allocator: Allocator,
-    /// Borrowed Io handle. For the default Client path this is a process
-    /// threadlocal single-threaded `std.Io.Threaded`; keep Client use and
-    /// deinit on the same thread that constructed it.
+    /// Borrowed Io handle. Default Client path uses a process threadlocal
+    /// single-threaded `std.Io.Threaded`; keep use and deinit on that thread.
     io: std.Io,
     client: http.Client,
     /// Mirrored from `Client.follow` / session options.
     redirect_policy: RedirectPolicy = .initial,
-    /// When true, HTTPS trips use `tls.Client` with no host/CA verification.
-    /// Wired from `ClientOptions` / `Endpoint` via `Client.newSession`.
+    /// When true, HTTPS uses `tls.Client` with no host/CA verification.
     insecure_skip_tls: bool = false,
 
-    /// Create a client bound to `allocator` and `io`.
     pub fn init(allocator: Allocator, io: std.Io) OsRoundTripper {
         return .{
             .allocator = allocator,
@@ -96,12 +107,15 @@ pub const OsRoundTripper = struct {
     /// Perform one HTTP request. Returns an owned `Response` (caller deinits).
     pub fn roundTrip(self: *OsRoundTripper, req: *const Request) anyerror!Response {
         if (usesInsecureTlsPath(self.insecure_skip_tls, req.url)) {
-            return self.roundTripInsecureHttps(req);
+            return self.roundTripInsecure(req);
         }
         return self.roundTripVerified(req);
     }
 
-    /// Secure default path: `std.http.Client` with system CA verification.
+    // -----------------------------------------------------------------------
+    // Verified path (std.http.Client + system CAs)
+    // -----------------------------------------------------------------------
+
     fn roundTripVerified(self: *OsRoundTripper, req: *const Request) anyerror!Response {
         const method = try mapMethod(req.method);
         const uri = try std.Uri.parse(req.url);
@@ -139,7 +153,7 @@ pub const OsRoundTripper = struct {
             });
         }
 
-        const has_payload = req.body.len > 0 or std.mem.eql(u8, req.method, "POST");
+        const has_payload = requestHasPayload(req.method, req.body);
         const redirect_behavior = redirectBehaviorFor(self.redirect_policy, req.is_initial, has_payload);
 
         var http_req = try self.client.request(method, uri, .{
@@ -162,19 +176,22 @@ pub const OsRoundTripper = struct {
 
         const follows = redirect_behavior != .unhandled and redirect_behavior != .not_allowed;
         const redirect_buffer: []u8 = if (follows)
-            try self.allocator.alloc(u8, 8 * 1024)
+            try self.allocator.alloc(u8, insecure_redirect_buf_cap)
         else
             &.{};
         defer if (redirect_buffer.len != 0) self.allocator.free(redirect_buffer);
 
         var response = http_req.receiveHead(redirect_buffer) catch |err| switch (err) {
-            error.TooManyHttpRedirects => return Error.RedirectBlocked,
+            error.TooManyHttpRedirects => return mapTooManyRedirects(redirect_behavior),
             else => |e| return e,
         };
 
-        // Final URI after auto-followed redirects (no userinfo).
         const final_url = try formatUriNoAuth(self.allocator, &http_req.uri);
         errdefer self.allocator.free(final_url);
+
+        // Snapshot headers before body stream invalidates `response.head` strings.
+        var headers = try copyHeadHeaders(self.allocator, response.head);
+        errdefer headers.deinit();
 
         var body_aw: std.Io.Writer.Allocating = .init(self.allocator);
         errdefer body_aw.deinit();
@@ -203,130 +220,338 @@ pub const OsRoundTripper = struct {
             .status_code = @intFromEnum(response.head.status),
             .body = body,
             .final_url = final_url,
-            .headers = HeaderMap.init(self.allocator),
+            .headers = headers,
         };
     }
 
-    /// Insecure HTTPS: TCP + `tls.Client` with host/CA verification disabled.
-    ///
-    /// Full intentional implementation (not a stub). GET and POST with body,
-    /// request headers, owned status/body/`final_url` (request URL; redirects
-    /// are not followed on this path).
+    // -----------------------------------------------------------------------
+    // Insecure HTTPS path (tls.Client no_verification + HTTP/1.1)
+    // -----------------------------------------------------------------------
+
+    /// Insecure HTTPS entry: full HTTP/1.1 with body, redirect policy, and
+    /// owned `Response` (`final_url` is the last request URL after follows).
     pub fn roundTripInsecureHttps(self: *OsRoundTripper, req: *const Request) anyerror!Response {
-        const uri = try std.Uri.parse(req.url);
-        if (!std.ascii.eqlIgnoreCase(uri.scheme, "https")) return error.UnsupportedUriScheme;
+        return self.roundTripInsecure(req);
+    }
+
+    fn roundTripInsecure(self: *OsRoundTripper, req: *const Request) anyerror!Response {
+        var current_url = try self.allocator.dupe(u8, req.url);
+        defer self.allocator.free(current_url);
+
+        // Method may switch POST→GET on 301/302/303; keep a small owned buffer.
+        var method_buf: [8]u8 = undefined;
+        var method: []const u8 = copyMethodToBuf(&method_buf, req.method);
+        var body: []const u8 = req.body;
+        var drop_auth = false;
+        var via_len: usize = 0;
+
+        while (true) {
+            var hop = try self.performInsecureHop(method, current_url, body, &req.headers, drop_auth);
+            // Manual cleanup only — errdefer would double-free after hop.deinit on continue.
+
+            if (hop.status.class() != .redirect or requestHasPayload(method, body)) {
+                const status = hop.status;
+                const final_url = self.allocator.dupe(u8, current_url) catch |err| {
+                    hop.deinit(self.allocator);
+                    return err;
+                };
+                errdefer self.allocator.free(final_url);
+                const owned_body = hop.takeBody();
+                errdefer self.allocator.free(owned_body);
+                const headers = hop.takeHeaders();
+                hop.deinit(self.allocator);
+                return Response{
+                    .allocator = self.allocator,
+                    .status_code = @intFromEnum(status),
+                    .body = owned_body,
+                    .final_url = final_url,
+                    .headers = headers,
+                };
+            }
+
+            const location = hop.headers.get("Location") orelse {
+                hop.deinit(self.allocator);
+                return Error.RedirectInvalid;
+            };
+
+            // Resolve Location against the current request URI.
+            var aux_storage: [insecure_redirect_buf_cap]u8 = undefined;
+            if (location.len > aux_storage.len) {
+                hop.deinit(self.allocator);
+                return Error.RedirectInvalid;
+            }
+            @memcpy(aux_storage[0..location.len], location);
+            var aux_buf: []u8 = aux_storage[0..];
+            const base_uri = std.Uri.parse(current_url) catch {
+                hop.deinit(self.allocator);
+                return Error.RedirectInvalid;
+            };
+            const new_uri = base_uri.resolveInPlace(location.len, &aux_buf) catch {
+                hop.deinit(self.allocator);
+                return Error.RedirectInvalid;
+            };
+
+            const next_url = formatUriNoAuth(self.allocator, &new_uri) catch |err| {
+                hop.deinit(self.allocator);
+                return err;
+            };
+
+            // Policy oracle (same as Mock / go-git CheckRedirect).
+            common.checkRedirectPolicy(
+                self.redirect_policy,
+                req.is_initial,
+                next_url,
+                via_len,
+            ) catch |err| {
+                hop.deinit(self.allocator);
+                self.allocator.free(next_url);
+                return err;
+            };
+
+            // Cross-host / scheme change: drop Authorization (std.http parity).
+            if (shouldDropAuthOnRedirect(current_url, next_url)) {
+                drop_auth = true;
+            }
+
+            // 301/302/303 with POST → GET (no body). 307/308 keep method.
+            if (redirectForcesGet(hop.status) and std.ascii.eqlIgnoreCase(method, "POST")) {
+                method = copyMethodToBuf(&method_buf, "GET");
+                body = "";
+            }
+
+            hop.deinit(self.allocator);
+            self.allocator.free(current_url);
+            current_url = next_url;
+            via_len += 1;
+        }
+    }
+
+    /// Single TCP(+TLS) hop: write request, read status/headers/body, close.
+    fn performInsecureHop(
+        self: *OsRoundTripper,
+        method: []const u8,
+        url: []const u8,
+        body: []const u8,
+        headers: *const HeaderMap,
+        drop_auth: bool,
+    ) anyerror!InsecureHop {
+        const uri = try std.Uri.parse(url);
+        const use_tls = std.ascii.eqlIgnoreCase(uri.scheme, "https");
+        if (!use_tls and !std.ascii.eqlIgnoreCase(uri.scheme, "http")) {
+            return Error.RedirectInvalid;
+        }
 
         var host_name_buffer: [HostName.max_len]u8 = undefined;
         const host = try uri.getHost(&host_name_buffer);
-        const port: u16 = uri.port orelse 443;
+        const port: u16 = uri.port orelse if (use_tls) @as(u16, 443) else @as(u16, 80);
 
         var stream = try host.connect(self.io, port, .{ .mode = .stream });
         defer stream.close(self.io);
 
-        // Buffer layout mirrors std.http.Client TLS connection sizing.
-        const tls_min = TlsClient.min_buffer_len;
-        const http_read_cap: usize = 8 * 1024;
-        const clear_write_cap: usize = 1024;
-
-        const socket_read_buf = try self.allocator.alloc(u8, tls_min);
+        // Scratch buffers live for the hop only.
+        const socket_read_buf = try self.allocator.alloc(u8, insecure_tls_min);
         defer self.allocator.free(socket_read_buf);
-        const socket_write_buf = try self.allocator.alloc(u8, tls_min);
+        const socket_write_buf = try self.allocator.alloc(u8, insecure_tls_min);
         defer self.allocator.free(socket_write_buf);
-        const tls_read_buf = try self.allocator.alloc(u8, tls_min + http_read_cap);
-        defer self.allocator.free(tls_read_buf);
-        const tls_write_buf = try self.allocator.alloc(u8, clear_write_cap);
-        defer self.allocator.free(tls_write_buf);
 
         var stream_reader = stream.reader(self.io, socket_read_buf);
         var stream_writer = stream.writer(self.io, socket_write_buf);
 
-        var random_buffer: [TlsClient.Options.entropy_len]u8 = undefined;
-        self.io.random(&random_buffer);
-        const now = std.Io.Clock.real.now(self.io);
+        if (use_tls) {
+            const tls_read_buf = try self.allocator.alloc(u8, insecure_tls_min + insecure_http_read_cap);
+            defer self.allocator.free(tls_read_buf);
+            const tls_write_buf = try self.allocator.alloc(u8, insecure_clear_write_cap);
+            defer self.allocator.free(tls_write_buf);
 
-        var tls = try TlsClient.init(
-            &stream_reader.interface,
-            &stream_writer.interface,
-            .{
-                .host = .no_verification,
-                .ca = .no_verification,
-                .read_buffer = tls_read_buf,
-                .write_buffer = tls_write_buf,
-                .entropy = &random_buffer,
-                .realtime_now = now,
-                // HTTP Content-Length / chunked framing detects truncation.
-                .allow_truncation_attacks = true,
-            },
-        );
+            var random_buffer: [TlsClient.Options.entropy_len]u8 = undefined;
+            self.io.random(&random_buffer);
+            const now = std.Io.Clock.real.now(self.io);
 
-        try writeInsecureHttpRequest(&tls.writer, req, &uri);
-        try tls.writer.flush();
+            var tls = try TlsClient.init(
+                &stream_reader.interface,
+                &stream_writer.interface,
+                .{
+                    .host = .no_verification,
+                    .ca = .no_verification,
+                    .read_buffer = tls_read_buf,
+                    .write_buffer = tls_write_buf,
+                    .entropy = &random_buffer,
+                    .realtime_now = now,
+                    // HTTP framing detects truncation; close_notify is best-effort.
+                    .allow_truncation_attacks = true,
+                },
+            );
+
+            try writeInsecureHttpRequest(&tls.writer, method, &uri, body, headers, drop_auth);
+            try tls.writer.flush();
+            try stream_writer.interface.flush();
+
+            var http_reader: http.Reader = .{
+                .in = &tls.reader,
+                .interface = undefined,
+                .state = .ready,
+                .max_head_len = insecure_http_read_cap,
+            };
+
+            const hop = try readInsecureResponse(self.allocator, &http_reader);
+            tls.end() catch {};
+            stream_writer.interface.flush() catch {};
+            return hop;
+        }
+
+        try writeInsecureHttpRequest(&stream_writer.interface, method, &uri, body, headers, drop_auth);
         try stream_writer.interface.flush();
 
         var http_reader: http.Reader = .{
-            .in = &tls.reader,
+            .in = &stream_reader.interface,
             .interface = undefined,
             .state = .ready,
-            .max_head_len = http_read_cap,
+            .max_head_len = insecure_http_read_cap,
         };
-
-        const head_buffer = try http_reader.receiveHead();
-        const head = try http.Client.Response.Head.parse(head_buffer);
-
-        var body_aw: std.Io.Writer.Allocating = .init(self.allocator);
-        errdefer body_aw.deinit();
-
-        const decompress_buffer: []u8 = switch (head.content_encoding) {
-            .identity => &.{},
-            .zstd => try self.allocator.alloc(u8, std.compress.zstd.default_window_len),
-            .deflate, .gzip => try self.allocator.alloc(u8, std.compress.flate.max_window_len),
-            .compress => return error.UnsupportedCompressionMethod,
-        };
-        defer if (decompress_buffer.len != 0) self.allocator.free(decompress_buffer);
-
-        var transfer_buffer: [64]u8 = undefined;
-        var decompress: http.Decompress = undefined;
-        const body_reader = http_reader.bodyReaderDecompressing(
-            &transfer_buffer,
-            head.transfer_encoding,
-            head.content_length,
-            head.content_encoding,
-            &decompress,
-            decompress_buffer,
-        );
-        _ = body_reader.streamRemaining(&body_aw.writer) catch |err| switch (err) {
-            error.ReadFailed => return http_reader.body_err orelse error.ReadFailed,
-            else => |e| return e,
-        };
-
-        const body = try body_aw.toOwnedSlice();
-        errdefer self.allocator.free(body);
-
-        // Redirects optional under insecure; leave unhandled, report request URL.
-        const final_url = try self.allocator.dupe(u8, req.url);
-        errdefer self.allocator.free(final_url);
-
-        return Response{
-            .allocator = self.allocator,
-            .status_code = @intFromEnum(head.status),
-            .body = body,
-            .final_url = final_url,
-            .headers = HeaderMap.init(self.allocator),
-        };
+        return try readInsecureResponse(self.allocator, &http_reader);
     }
 };
 
+/// One insecure-path response hop (owned body + full response headers).
+const InsecureHop = struct {
+    status: http.Status,
+    body: []u8 = &.{},
+    headers: HeaderMap,
+
+    fn takeBody(self: *InsecureHop) []u8 {
+        const b = self.body;
+        self.body = &.{};
+        return b;
+    }
+
+    fn takeHeaders(self: *InsecureHop) HeaderMap {
+        const h = self.headers;
+        self.headers = HeaderMap.init(h.allocator);
+        return h;
+    }
+
+    /// Idempotent: safe if body/headers already transferred or cleared.
+    fn deinit(self: *InsecureHop, allocator: Allocator) void {
+        // free is a no-op for zero-length slices.
+        allocator.free(self.body);
+        self.body = &.{};
+        self.headers.deinit();
+        self.headers = HeaderMap.init(allocator);
+    }
+};
+
+fn readInsecureResponse(allocator: Allocator, http_reader: *http.Reader) anyerror!InsecureHop {
+    const head_buffer = try http_reader.receiveHead();
+    const head = try http.Client.Response.Head.parse(head_buffer);
+
+    // Snapshot every header before body read invalidates head buffer slices.
+    var headers = try copyHeadHeaders(allocator, head);
+    errdefer headers.deinit();
+
+    var body_aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer body_aw.deinit();
+
+    const decompress_buffer: []u8 = switch (head.content_encoding) {
+        .identity => &.{},
+        .zstd => try allocator.alloc(u8, std.compress.zstd.default_window_len),
+        .deflate, .gzip => try allocator.alloc(u8, std.compress.flate.max_window_len),
+        .compress => return error.UnsupportedCompressionMethod,
+    };
+    defer if (decompress_buffer.len != 0) allocator.free(decompress_buffer);
+
+    var transfer_buffer: [64]u8 = undefined;
+    var decompress: http.Decompress = undefined;
+    const body_reader = http_reader.bodyReaderDecompressing(
+        &transfer_buffer,
+        head.transfer_encoding,
+        head.content_length,
+        head.content_encoding,
+        &decompress,
+        decompress_buffer,
+    );
+    _ = body_reader.streamRemaining(&body_aw.writer) catch |err| switch (err) {
+        error.ReadFailed => return http_reader.body_err orelse error.ReadFailed,
+        else => |e| return e,
+    };
+
+    const body = try body_aw.toOwnedSlice();
+    return .{
+        .status = head.status,
+        .body = body,
+        .headers = headers,
+    };
+}
+
+/// Copy every non-trailer header from a parsed response head into an owned map.
+/// Multi-value headers are each `add`ed (Go `Header.Add` / `HeaderMap.add`).
+fn copyHeadHeaders(allocator: Allocator, head: http.Client.Response.Head) Allocator.Error!HeaderMap {
+    var map = HeaderMap.init(allocator);
+    errdefer map.deinit();
+    var it = head.iterateHeaders();
+    while (it.next()) |h| {
+        // Head buffer may include trailer section after the blank line; skip it.
+        if (it.is_trailer) continue;
+        try map.add(h.name, h.value);
+    }
+    return map;
+}
+
+/// Parse HTTP response head bytes into an owned `HeaderMap`.
+///
+/// `head_bytes` is status-line + headers ending with `\r\n\r\n` (as produced by
+/// `http.Reader.receiveHead` / `http.Client.Response.Head.bytes`). Used by both
+/// OS paths and unit-tested hermetically without sockets.
+pub fn headerMapFromHeadBytes(allocator: Allocator, head_bytes: []const u8) (http.Client.Response.Head.ParseError || Allocator.Error)!HeaderMap {
+    const head = try http.Client.Response.Head.parse(head_bytes);
+    return copyHeadHeaders(allocator, head);
+}
+
 /// True when the OS tripper should use the insecure TLS path (https + skip).
-/// Exported for unit tests of branch selection.
 pub fn usesInsecureTlsPath(insecure_skip_tls: bool, url: []const u8) bool {
     if (!insecure_skip_tls) return false;
     const uri = std.Uri.parse(url) catch return false;
     return std.ascii.eqlIgnoreCase(uri.scheme, "https");
 }
 
-/// Write an HTTP/1.1 request line, headers, and optional body to `w`.
-fn writeInsecureHttpRequest(w: *std.Io.Writer, req: *const Request, uri: *const std.Uri) anyerror!void {
-    try w.writeAll(req.method);
+fn requestHasPayload(method: []const u8, body: []const u8) bool {
+    return body.len > 0 or std.ascii.eqlIgnoreCase(method, "POST");
+}
+
+fn redirectForcesGet(status: http.Status) bool {
+    return switch (status) {
+        .moved_permanently, .found, .see_other => true,
+        else => false,
+    };
+}
+
+fn copyMethodToBuf(buf: *[8]u8, method: []const u8) []const u8 {
+    if (method.len > buf.len) return method; // caller only passes short methods
+    @memcpy(buf.*[0..method.len], method);
+    return buf.*[0..method.len];
+}
+
+fn shouldDropAuthOnRedirect(from_url: []const u8, to_url: []const u8) bool {
+    const from = std.Uri.parse(from_url) catch return true;
+    const to = std.Uri.parse(to_url) catch return true;
+    if (!std.ascii.eqlIgnoreCase(from.scheme, to.scheme)) return true;
+
+    var from_host_buf: [HostName.max_len]u8 = undefined;
+    var to_host_buf: [HostName.max_len]u8 = undefined;
+    const from_host = from.getHost(&from_host_buf) catch return true;
+    const to_host = to.getHost(&to_host_buf) catch return true;
+    return !from_host.sameParentDomain(to_host);
+}
+
+/// Write HTTP/1.1 request line, headers, and optional body to `w`.
+fn writeInsecureHttpRequest(
+    w: *std.Io.Writer,
+    method: []const u8,
+    uri: *const std.Uri,
+    body: []const u8,
+    headers: *const HeaderMap,
+    drop_auth: bool,
+) anyerror!void {
+    try w.writeAll(method);
     try w.writeByte(' ');
     try uri.writeToStream(w, .{
         .path = true,
@@ -339,9 +564,10 @@ fn writeInsecureHttpRequest(w: *std.Io.Writer, req: *const Request, uri: *const 
     try w.writeAll("\r\n");
 
     var saw_user_agent = false;
-    for (req.headers.entries.items) |e| {
+    for (headers.entries.items) |e| {
         if (std.ascii.eqlIgnoreCase(e.name, "Host")) continue;
         if (std.ascii.eqlIgnoreCase(e.name, "Content-Length")) continue;
+        if (drop_auth and std.ascii.eqlIgnoreCase(e.name, "Authorization")) continue;
         if (std.ascii.eqlIgnoreCase(e.name, "User-Agent")) saw_user_agent = true;
         try w.writeAll(e.name);
         try w.writeAll(": ");
@@ -352,17 +578,17 @@ fn writeInsecureHttpRequest(w: *std.Io.Writer, req: *const Request, uri: *const 
         try w.writeAll("user-agent: gitz/http-insecure\r\n");
     }
 
-    const has_payload = req.body.len > 0 or std.mem.eql(u8, req.method, "POST");
+    const has_payload = requestHasPayload(method, body);
     if (has_payload) {
-        try w.print("content-length: {d}\r\n", .{req.body.len});
+        try w.print("content-length: {d}\r\n", .{body.len});
     }
 
     // One-shot connection; no keep-alive on the insecure path.
     try w.writeAll("connection: close\r\n");
     try w.writeAll("\r\n");
 
-    if (has_payload and req.body.len > 0) {
-        try w.writeAll(req.body);
+    if (has_payload and body.len > 0) {
+        try w.writeAll(body);
     }
 }
 
@@ -379,9 +605,16 @@ fn redirectBehaviorFor(
     return switch (policy) {
         .never => .not_allowed,
         // go-git allows up to 10 prior hops (`len(via) >= 10`).
-        .initial => if (is_initial) @enumFromInt(10) else .not_allowed,
-        .always => @enumFromInt(10),
+        .initial => if (is_initial) @enumFromInt(max_redirect_hops) else .not_allowed,
+        .always => @enumFromInt(max_redirect_hops),
     };
+}
+
+/// Map std `TooManyHttpRedirects` to policy-specific package errors.
+fn mapTooManyRedirects(behavior: http.Client.Request.RedirectBehavior) Error {
+    // `not_allowed` means policy blocked the first redirect hop.
+    // Integer remaining exhausted means too many hops after following.
+    return if (behavior == .not_allowed) Error.RedirectBlocked else Error.TooManyRedirects;
 }
 
 fn formatUriNoAuth(allocator: Allocator, uri: *const std.Uri) Allocator.Error![]u8 {
@@ -418,7 +651,6 @@ test "OsRoundTripper init deinit and asRoundTripper vtable" {
     const rt = os_rt.asRoundTripper();
     try std.testing.expect(rt.ptr == @as(*anyopaque, @ptrCast(&os_rt)));
 
-    // Vtable is wired; closed port surfaces a network error (not NoRoundTripper).
     var req = Request{
         .allocator = gpa,
         .method = "GET",
@@ -447,9 +679,14 @@ test "redirectBehaviorFor policy matrix" {
     try std.testing.expect(redirectBehaviorFor(.initial, true, false) == @as(Beh, @enumFromInt(10)));
     try std.testing.expect(redirectBehaviorFor(.initial, false, false) == .not_allowed);
     try std.testing.expect(redirectBehaviorFor(.always, false, false) == @as(Beh, @enumFromInt(10)));
-    // Payload: never auto-follow (POST resend is not supported).
     try std.testing.expect(redirectBehaviorFor(.always, true, true) == .unhandled);
     try std.testing.expect(redirectBehaviorFor(.initial, true, true) == .unhandled);
+}
+
+test "mapTooManyRedirects distinguishes policy block vs hop limit" {
+    try std.testing.expect(mapTooManyRedirects(.not_allowed) == Error.RedirectBlocked);
+    try std.testing.expect(mapTooManyRedirects(@enumFromInt(10)) == Error.TooManyRedirects);
+    try std.testing.expect(mapTooManyRedirects(@enumFromInt(1)) == Error.TooManyRedirects);
 }
 
 test "usesInsecureTlsPath branch selection" {
@@ -460,7 +697,6 @@ test "usesInsecureTlsPath branch selection" {
     try std.testing.expect(usesInsecureTlsPath(true, "https://example.com/repo.git"));
     try std.testing.expect(usesInsecureTlsPath(true, "HTTPS://example.com/repo.git"));
     try std.testing.expect(usesInsecureTlsPath(true, "https://127.0.0.1:1/"));
-    // Malformed URL with flag set does not select the path.
     try std.testing.expect(!usesInsecureTlsPath(true, "not-a-url"));
 }
 
@@ -474,9 +710,7 @@ test "insecure_skip_tls flag on OsRoundTripper" {
     try std.testing.expect(usesInsecureTlsPath(os_rt.insecure_skip_tls, "https://x/"));
 }
 
-test "roundTripInsecureHttps exists and reaches TCP connect" {
-    // Direct call into the insecure path (no CA verify). Closed port fails at
-    // connect, proving the custom path is exercised rather than std.http CA load.
+test "roundTripInsecureHttps reaches TCP connect" {
     const gpa = std.testing.allocator;
     var os_rt = OsRoundTripper.init(gpa, std.testing.io);
     defer os_rt.deinit();
@@ -511,13 +745,11 @@ test "roundTrip selects insecure path for https+skip" {
     defer req.deinit();
     try req.headers.set("Content-Type", "application/x-git-upload-pack-request");
 
-    // Branch: https + insecure → roundTripInsecureHttps (connect refused).
     const result = os_rt.roundTrip(&req);
     try std.testing.expect(std.meta.isError(result));
 }
 
 test "roundTrip http+insecure still uses verified client path" {
-    // http:// with skip flag must not take the TLS insecure path.
     const gpa = std.testing.allocator;
     var os_rt = OsRoundTripper.init(gpa, std.testing.io);
     defer os_rt.deinit();
@@ -552,11 +784,12 @@ test "writeInsecureHttpRequest formats GET and POST" {
         const uri = try std.Uri.parse(req.url);
         var aw: std.Io.Writer.Allocating = .init(gpa);
         defer aw.deinit();
-        try writeInsecureHttpRequest(&aw.writer, &req, &uri);
+        try writeInsecureHttpRequest(&aw.writer, req.method, &uri, req.body, &req.headers, false);
         const out = aw.written();
         try std.testing.expect(std.mem.startsWith(u8, out, "GET /r.git/info/refs?service=git-upload-pack HTTP/1.1\r\n"));
         try std.testing.expect(std.mem.indexOf(u8, out, "host: example.com\r\n") != null);
         try std.testing.expect(std.mem.indexOf(u8, out, "Authorization: Basic dXNlcjpwYXNz\r\n") != null);
+        try std.testing.expect(std.mem.indexOf(u8, out, "connection: close\r\n") != null);
         try std.testing.expect(std.mem.indexOf(u8, out, "content-length:") == null);
         try std.testing.expect(std.mem.endsWith(u8, out, "\r\n\r\n"));
     }
@@ -575,11 +808,175 @@ test "writeInsecureHttpRequest formats GET and POST" {
         const uri = try std.Uri.parse(req.url);
         var aw: std.Io.Writer.Allocating = .init(gpa);
         defer aw.deinit();
-        try writeInsecureHttpRequest(&aw.writer, &req, &uri);
+        try writeInsecureHttpRequest(&aw.writer, req.method, &uri, req.body, &req.headers, false);
         const out = aw.written();
         try std.testing.expect(std.mem.startsWith(u8, out, "POST /r.git/git-upload-pack HTTP/1.1\r\n"));
         try std.testing.expect(std.mem.indexOf(u8, out, "host: example.com:8443\r\n") != null);
         try std.testing.expect(std.mem.indexOf(u8, out, "content-length: 9\r\n") != null);
         try std.testing.expect(std.mem.endsWith(u8, out, "\r\n\r\npack-body"));
     }
+
+    {
+        // drop_auth strips Authorization on cross-host redirect hops.
+        var req = Request{
+            .allocator = gpa,
+            .method = "GET",
+            .url = try gpa.dupe(u8, "https://example.com/x"),
+            .headers = HeaderMap.init(gpa),
+        };
+        defer req.deinit();
+        try req.headers.set("Authorization", "Basic dXNlcjpwYXNz");
+        const uri = try std.Uri.parse(req.url);
+        var aw: std.Io.Writer.Allocating = .init(gpa);
+        defer aw.deinit();
+        try writeInsecureHttpRequest(&aw.writer, req.method, &uri, "", &req.headers, true);
+        const out = aw.written();
+        try std.testing.expect(std.mem.indexOf(u8, out, "Authorization:") == null);
+    }
+}
+
+test "shouldDropAuthOnRedirect host matrix" {
+    try std.testing.expect(!shouldDropAuthOnRedirect(
+        "https://example.com/a",
+        "https://example.com/b",
+    ));
+    try std.testing.expect(!shouldDropAuthOnRedirect(
+        "https://example.com/a",
+        "https://cdn.example.com/b",
+    ));
+    try std.testing.expect(shouldDropAuthOnRedirect(
+        "https://example.com/a",
+        "https://other.com/b",
+    ));
+    try std.testing.expect(shouldDropAuthOnRedirect(
+        "http://example.com/a",
+        "https://example.com/a",
+    ));
+}
+
+test "redirectForcesGet status matrix" {
+    try std.testing.expect(redirectForcesGet(.moved_permanently));
+    try std.testing.expect(redirectForcesGet(.found));
+    try std.testing.expect(redirectForcesGet(.see_other));
+    try std.testing.expect(!redirectForcesGet(.temporary_redirect));
+    try std.testing.expect(!redirectForcesGet(.permanent_redirect));
+    try std.testing.expect(!redirectForcesGet(.ok));
+}
+
+test "headerMapFromHeadBytes copies all headers including multi-value" {
+    const gpa = std.testing.allocator;
+    const head_bytes =
+        "HTTP/1.1 200 OK\r\n" ++
+        "Content-Type: application/x-git-upload-pack-result\r\n" ++
+        "Content-Length: 4\r\n" ++
+        "Cache-Control: no-cache\r\n" ++
+        "Set-Cookie: a=1\r\n" ++
+        "Set-Cookie: b=2\r\n" ++
+        "X-Git-Protocol: version=2\r\n" ++
+        "\r\n";
+
+    var map = try headerMapFromHeadBytes(gpa, head_bytes);
+    defer map.deinit();
+
+    try std.testing.expectEqual(@as(usize, 6), map.entries.items.len);
+    try std.testing.expectEqualStrings(
+        "application/x-git-upload-pack-result",
+        map.get("Content-Type").?,
+    );
+    try std.testing.expectEqualStrings("4", map.get("Content-Length").?);
+    try std.testing.expectEqualStrings("no-cache", map.get("Cache-Control").?);
+    try std.testing.expectEqualStrings("version=2", map.get("X-Git-Protocol").?);
+    // get returns the last same-name value; both Set-Cookie entries are stored.
+    try std.testing.expectEqualStrings("b=2", map.get("Set-Cookie").?);
+    var set_cookie_count: usize = 0;
+    for (map.entries.items) |e| {
+        if (std.ascii.eqlIgnoreCase(e.name, "Set-Cookie")) set_cookie_count += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 2), set_cookie_count);
+    try std.testing.expectEqualStrings("a=1", map.entries.items[3].value);
+    try std.testing.expectEqualStrings("b=2", map.entries.items[4].value);
+}
+
+test "headerMapFromHeadBytes preserves name casing and trims values" {
+    const gpa = std.testing.allocator;
+    const head_bytes =
+        "HTTP/1.1 302 Found\r\n" ++
+        "LOcation:  /next  \r\n" ++
+        "content-tYpe:\ttext/plain\r\n" ++
+        "\r\n";
+
+    var map = try headerMapFromHeadBytes(gpa, head_bytes);
+    defer map.deinit();
+
+    try std.testing.expectEqual(@as(usize, 2), map.entries.items.len);
+    try std.testing.expectEqualStrings("LOcation", map.entries.items[0].name);
+    try std.testing.expectEqualStrings("/next", map.entries.items[0].value);
+    try std.testing.expectEqualStrings("content-tYpe", map.entries.items[1].name);
+    try std.testing.expectEqualStrings("text/plain", map.entries.items[1].value);
+    // Case-insensitive lookup still works.
+    try std.testing.expectEqualStrings("/next", map.get("location").?);
+    try std.testing.expectEqualStrings("text/plain", map.get("CONTENT-TYPE").?);
+}
+
+test "headerMapFromHeadBytes empty header section" {
+    const gpa = std.testing.allocator;
+    const head_bytes = "HTTP/1.1 204 No Content\r\n\r\n";
+    var map = try headerMapFromHeadBytes(gpa, head_bytes);
+    defer map.deinit();
+    try std.testing.expectEqual(@as(usize, 0), map.entries.items.len);
+}
+
+test "headerMapFromHeadBytes rejects invalid head" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectError(
+        error.HttpHeadersInvalid,
+        headerMapFromHeadBytes(gpa, "not-http"),
+    );
+    try std.testing.expectError(
+        error.HttpHeadersInvalid,
+        headerMapFromHeadBytes(gpa, "HTTP/1.1 200 OK\r\n: empty-name\r\n\r\n"),
+    );
+}
+
+test "copyHeadHeaders skips trailers after blank line" {
+    const gpa = std.testing.allocator;
+    // HeaderIterator can surface trailers after the blank line; response HeaderMap
+    // must only include the head section (go-git / net/http Header, not Trailer).
+    const head_bytes =
+        "HTTP/1.1 200 OK\r\n" ++
+        "X-Head: one\r\n" ++
+        "\r\n" ++
+        "X-Trailer: two\r\n" ++
+        "\r\n";
+    var map = try headerMapFromHeadBytes(gpa, head_bytes);
+    defer map.deinit();
+    try std.testing.expectEqual(@as(usize, 1), map.entries.items.len);
+    try std.testing.expectEqualStrings("one", map.get("X-Head").?);
+    try std.testing.expect(map.get("X-Trailer") == null);
+}
+
+test "InsecureHop transfers headers ownership" {
+    const gpa = std.testing.allocator;
+    var hop_headers = HeaderMap.init(gpa);
+    try hop_headers.add("Location", "https://example.com/b");
+    try hop_headers.add("Content-Type", "text/plain");
+
+    var hop = InsecureHop{
+        .status = .found,
+        .body = try gpa.dupe(u8, "moved"),
+        .headers = hop_headers,
+    };
+
+    const body = hop.takeBody();
+    defer gpa.free(body);
+    try std.testing.expectEqualStrings("moved", body);
+
+    var headers = hop.takeHeaders();
+    defer headers.deinit();
+    try std.testing.expectEqualStrings("https://example.com/b", headers.get("Location").?);
+    try std.testing.expectEqualStrings("text/plain", headers.get("Content-Type").?);
+
+    // Leftover hop state is empty after take*; deinit must not free transferred data.
+    hop.deinit(gpa);
+    try std.testing.expectEqualStrings("https://example.com/b", headers.get("Location").?);
 }

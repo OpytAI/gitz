@@ -103,6 +103,7 @@ pub const HeaderMap = struct {
         for (self.entries.items) |*e| {
             if (std.ascii.eqlIgnoreCase(e.name, name)) {
                 const v = try self.allocator.dupe(u8, value);
+                // Free after successful dupe so a failed set leaves the old value.
                 self.allocator.free(e.value);
                 e.value = v;
                 return;
@@ -209,8 +210,11 @@ pub const RoundTripper = struct {
 
 /// In-memory RoundTripper for hermetic unit tests (no OS sockets).
 ///
-/// Does not follow redirects. Supply `Canned.final_url` to exercise
-/// `Session.modifyEndpointIfRedirect` without a real HTTP hop.
+/// Does not auto-follow redirects. Supply `Canned.final_url` to simulate a
+/// post-redirect URI for `Session.modifyEndpointIfRedirect` (same contract as
+/// `OsRoundTripper` setting `Response.final_url` after followed hops).
+/// Redirect *policy* for live traffic is enforced in `OsRoundTripper` via
+/// `checkRedirectPolicy` / `redirectBehaviorFor`.
 pub const MockRoundTripper = struct {
     allocator: Allocator,
     /// FIFO of canned responses; matching entries are removed when `consume`.
@@ -220,6 +224,12 @@ pub const MockRoundTripper = struct {
     /// When true and no canned entry matches, return status 404.
     default_not_found: bool = true,
 
+    /// Borrowed name/value for a canned response header (copied on match).
+    pub const HeaderKV = struct {
+        name: []const u8,
+        value: []const u8,
+    };
+
     pub const Canned = struct {
         /// If non-empty, only match when request URL contains this substring.
         url_contains: []const u8 = "",
@@ -227,6 +237,8 @@ pub const MockRoundTripper = struct {
         body: []const u8 = "",
         /// Simulated post-redirect URL for ModifyEndpointIfRedirect.
         final_url: ?[]const u8 = null,
+        /// Response headers (each pair is `HeaderMap.add`ed; multi-value OK).
+        headers: []const HeaderKV = &.{},
         /// Remove this entry after a match (default true).
         consume: bool = true,
     };
@@ -263,19 +275,24 @@ pub const MockRoundTripper = struct {
     }
 
     pub fn roundTrip(self: *MockRoundTripper, req: *const Request) anyerror!Response {
-        const method = try self.allocator.dupe(u8, req.method);
-        errdefer self.allocator.free(method);
-        const url = try self.allocator.dupe(u8, req.url);
-        errdefer self.allocator.free(url);
-        const auth = if (req.headers.get("Authorization")) |a|
-            try self.allocator.dupe(u8, a)
-        else
-            null;
-        try self.requests.append(self.allocator, .{
-            .method = method,
-            .url = url,
-            .authorization = auth,
-        });
+        // Record request under a nested scope so errdefers do not free slices
+        // after ownership moves into `requests`.
+        {
+            const method = try self.allocator.dupe(u8, req.method);
+            errdefer self.allocator.free(method);
+            const url = try self.allocator.dupe(u8, req.url);
+            errdefer self.allocator.free(url);
+            const auth = if (req.headers.get("Authorization")) |a|
+                try self.allocator.dupe(u8, a)
+            else
+                null;
+            errdefer if (auth) |a| self.allocator.free(a);
+            try self.requests.append(self.allocator, .{
+                .method = method,
+                .url = url,
+                .authorization = auth,
+            });
+        }
 
         var match_idx: ?usize = null;
         for (self.canned.items, 0..) |c, i| {
@@ -291,6 +308,11 @@ pub const MockRoundTripper = struct {
             errdefer self.allocator.free(body);
             const final = if (c.final_url) |fu| try self.allocator.dupe(u8, fu) else null;
             errdefer if (final) |f| self.allocator.free(f);
+            var headers = HeaderMap.init(self.allocator);
+            errdefer headers.deinit();
+            for (c.headers) |hv| {
+                try headers.add(hv.name, hv.value);
+            }
             if (c.consume) {
                 _ = self.canned.orderedRemove(i);
             }
@@ -299,15 +321,16 @@ pub const MockRoundTripper = struct {
                 .status_code = c.status_code,
                 .body = body,
                 .final_url = final,
-                .headers = HeaderMap.init(self.allocator),
+                .headers = headers,
             };
         }
 
         if (self.default_not_found) {
+            const empty = try self.allocator.dupe(u8, "");
             return Response{
                 .allocator = self.allocator,
                 .status_code = 404,
-                .body = try self.allocator.dupe(u8, ""),
+                .body = empty,
                 .headers = HeaderMap.init(self.allocator),
             };
         }
@@ -602,14 +625,13 @@ pub fn applyHeaders(
 
 /// User-configurable client options (go-git `ClientOptions` + TLS skip flag).
 pub const ClientOptions = struct {
-    /// Max cached transport configs (0 = disabled). Reserved for endpoint TLS
-    /// transport cache parity with go-git; unused until client-cert/CA/proxy
-    /// transport cloning lands.
+    /// Max cached transport configs (0 = disabled). Parity field for go-git
+    /// transport cache; no cache is implemented yet.
     cache_max_entries: usize = default_transport_cache_size,
     /// Redirect policy; default is initial-only (Git `http.followRedirects`).
     redirect_policy: RedirectPolicy = .initial,
-    /// When true, HTTPS uses `OsRoundTripper`'s insecure path (`tls.Client`
-    /// with host/CA `no_verification`). See `os_round_tripper.zig`.
+    /// When true, HTTPS uses the insecure TLS path (`tls.Client` with
+    /// host/CA `no_verification`). See `os_round_tripper.zig`.
     insecure_skip_tls: bool = false,
 };
 
@@ -624,8 +646,8 @@ pub const ClientOptions = struct {
 /// | `newClient` / `defaultClient` / `init(null)` | owned OsRoundTripper | non-null | frees OS RT |
 /// | `init(injected)` / mock | borrowed inject | null | no-op on RT |
 ///
-/// Always call `deinit` once. Double-free is avoided: inject path never stores
-/// `owned_os_rt`; owned path nulls the pointer after destroy.
+/// Call `deinit` exactly once. Inject path never stores `owned_os_rt`; owned
+/// path nulls the pointer after destroy.
 pub const Client = struct {
     allocator: Allocator,
     round_tripper: ?RoundTripper = null,
@@ -685,7 +707,7 @@ pub const Client = struct {
             owned_basic = ba;
         }
 
-        // Endpoint flag or client option — applied on OsRoundTripper before each session.
+        // Endpoint flag or client option — applied on owned OsRoundTripper.
         const insecure = ep.insecure_skip_tls or self.options.insecure_skip_tls;
         if (self.owned_os_rt) |os_rt| {
             os_rt.insecure_skip_tls = insecure;
@@ -726,8 +748,7 @@ pub fn newClientWithOptions(allocator: Allocator, rt: ?RoundTripper, opts: Clien
 
 /// go-git package-level `DefaultClient` construction helper.
 ///
-/// Zig has no process-global HTTP client without an allocator; use this as the
-/// equivalent of `DefaultClient = NewClient(nil)`. Owns an OsRoundTripper —
+/// Equivalent of `DefaultClient = NewClient(nil)`. Owns an OsRoundTripper —
 /// call `Client.deinit` when finished.
 pub fn defaultClient(allocator: Allocator) Allocator.Error!Client {
     return newClient(allocator);
@@ -819,8 +840,9 @@ pub const Session = struct {
 
     /// Apply a redirect target URL string to the session endpoint.
     ///
-    /// On failure after partial allocation, owned replacement slices are freed
-    /// and the endpoint is left unchanged.
+    /// On allocation failure, replacement slices are freed and the endpoint is
+    /// left unchanged. Credential clear for cross-host happens only after all
+    /// allocations succeed.
     pub fn applyRedirectUrl(self: *Session, final_url: []const u8) !void {
         const uri = std.Uri.parse(final_url) catch return Error.RedirectInvalid;
         const scheme = uri.scheme;
@@ -887,12 +909,9 @@ pub const Session = struct {
     }
 
     fn doRequest(self: *Session, req: *const Request) !Response {
-        // Default clients always have a RoundTripper (owned OsRoundTripper).
-        // Inject path also sets one. NoRoundTripper only if both missing.
         const rt = self.client.round_tripper orelse return Error.NoRoundTripper;
-        // Redirect following is enforced inside OsRoundTripper (go-git
-        // CheckRedirect). MockRoundTripper does not auto-follow; canned
-        // `final_url` simulates redirect results for hermetic tests.
+        // Live redirect policy lives in OsRoundTripper. MockRoundTripper
+        // returns canned status/body/final_url without following hops.
         return rt.roundTrip(req);
     }
 
@@ -968,11 +987,12 @@ pub fn effectivePort(scheme: []const u8, port: i32) i32 {
 }
 
 /// go-git `checkRedirect` — called for each hop about to be followed, not on
-/// the original request. `redirect_count` is `len(via)` in go-git terms.
+/// the original request. `redirect_count` is `len(via)` in go-git terms
+/// (0 on the first redirect decision; reject at `>= 10`).
 ///
-/// Production following is implemented in `OsRoundTripper` via
-/// `redirectBehaviorFor`; this function remains the policy oracle for tests
-/// and for any custom RoundTripper that walks hops manually.
+/// Shared policy oracle for the insecure OS path, unit tests, and any custom
+/// RoundTripper that walks hops manually. The verified OS path encodes the
+/// same rules into `std.http.Client.Request.RedirectBehavior`.
 pub fn checkRedirectPolicy(
     policy: RedirectPolicy,
     is_initial: bool,
@@ -1173,6 +1193,48 @@ test "MockRoundTripper final_url drives modifyEndpointIfRedirect" {
     _ = sess.advertisedReferences(transport.UploadPackServiceName) catch {};
     try testing.expectEqualStrings("cdn.example.com", ep.host);
     try testing.expectEqualStrings("/repo.git", ep.path);
+}
+
+test "MockRoundTripper copies canned response headers including multi-value" {
+    const gpa = testing.allocator;
+    var mock = MockRoundTripper.init(gpa);
+    defer mock.deinit();
+    try mock.push(.{
+        .status_code = 200,
+        .body = "ok",
+        .headers = &.{
+            .{ .name = "Content-Type", .value = "application/x-git-upload-pack-result" },
+            .{ .name = "Set-Cookie", .value = "a=1" },
+            .{ .name = "Set-Cookie", .value = "b=2" },
+            .{ .name = "X-Custom", .value = "yes" },
+        },
+    });
+
+    var req = Request{
+        .allocator = gpa,
+        .method = "GET",
+        .url = try gpa.dupe(u8, "https://example.com/info/refs"),
+        .headers = HeaderMap.init(gpa),
+    };
+    defer req.deinit();
+
+    var res = try mock.roundTrip(&req);
+    defer res.deinit();
+
+    try testing.expectEqual(@as(u16, 200), res.status_code);
+    try testing.expectEqualStrings("ok", res.body);
+    try testing.expectEqual(@as(usize, 4), res.headers.entries.items.len);
+    try testing.expectEqualStrings(
+        "application/x-git-upload-pack-result",
+        res.headers.get("Content-Type").?,
+    );
+    try testing.expectEqualStrings("yes", res.headers.get("X-Custom").?);
+    try testing.expectEqualStrings("b=2", res.headers.get("Set-Cookie").?);
+    var n_cookie: usize = 0;
+    for (res.headers.entries.items) |e| {
+        if (std.ascii.eqlIgnoreCase(e.name, "Set-Cookie")) n_cookie += 1;
+    }
+    try testing.expectEqual(@as(usize, 2), n_cookie);
 }
 
 test "invalid scheme on session" {

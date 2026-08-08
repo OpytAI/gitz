@@ -33,6 +33,7 @@ pub const ConfigStorage = config_mod.ConfigStorage;
 pub const Config = config_mod.Config;
 pub const RemoteConfig = config_mod.RemoteConfig;
 pub const BranchConfig = config_mod.BranchConfig;
+pub const SubmoduleEntry = config_mod.SubmoduleEntry;
 pub const IndexStorage = index_mod.IndexStorage;
 pub const Index = index_mod.Index;
 
@@ -205,8 +206,13 @@ pub const Storage = struct {
         return self.object_storage.begin();
     }
 
-    pub fn forEachObjectHash(self: *const Storage, fun: anytype) anyerror!void {
-        return self.object_storage.forEachObjectHash(fun);
+    /// Context-aware `ForEachObjectHash` (see `ObjectStorage.forEachObjectHash`).
+    pub fn forEachObjectHash(
+        self: *const Storage,
+        ctx: anytype,
+        comptime fun: *const fn (@TypeOf(ctx), Hash) anyerror!void,
+    ) anyerror!void {
+        return self.object_storage.forEachObjectHash(ctx, fun);
     }
 
     pub fn objectPacks(self: *const Storage) []const Hash {

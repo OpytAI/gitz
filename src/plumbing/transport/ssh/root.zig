@@ -20,34 +20,46 @@
 //! | `auth_method.zig` | Auth methods + `ClientConfig` + PEM helpers |
 //! | `agent.zig` | OpenSSH agent wire protocol (list / sign) |
 //! | `known_hosts.zig` | known_hosts path discovery + pure-Zig match |
-//! | `ssh_wire.zig` | Binary packet framing, AES-CTR, name-lists |
-//! | `native_ssh.zig` | Pure-Zig SSH client (KEX, userauth, channel) |
+//! | `ssh_wire.zig` | Binary packet framing, AES-CTR, HMAC-SHA2, name-lists |
+//! | `native_ssh.zig` | Pure-Zig SSH client (KEX, userauth, channel, e2e peer) |
 //! | `common.zig` | Plan, dial modes, `Runner`, client |
 //!
 //! # Design
 //!
 //! Pure Zig — no C crypto libraries and no libssh. Production `newClient`
-//! uses the **native** in-process SSH dial path (`DialMode.native`):
-//! curve25519-sha256 KEX, ssh-ed25519 host keys, password and OpenSSH
-//! ed25519 publickey userauth, session channel + exec for pack protocol.
+//! uses the **native** in-process SSH dial path (`DialMode.native`).
+//!
+//! Native client algorithms (first mutual wins per name-list):
+//! - KEX: `curve25519-sha256` (+ libssh alias)
+//! - Host key: `ssh-ed25519`, `rsa-sha2-256` (verify via std Certificate.rsa)
+//! - Encryption: `aes256-ctr`, `aes128-ctr`
+//! - MAC: `hmac-sha2-512`, `hmac-sha2-256`
+//! - Userauth: password and OpenSSH ed25519 publickey; session channel + exec
 //!
 //! **System `ssh`** (`DialMode.system_ssh` / `newClientSystemSsh`) remains an
 //! alternate path. Unit tests use `use_system_ssh=false` → `plan_only`.
 //!
 //! # Dial modes
 //!
-//! | Mode | API | Behavior |
-//! |------|-----|----------|
-//! | `native` | `newClient` default | Pure-Zig SSH client |
-//! | `system_ssh` | `newClientSystemSsh` / `dial_mode` | Spawn host `ssh` |
-//! | `plan_only` | `use_system_ssh=false` | In-memory plan (tests) |
+//! | Mode | API | Behavior | Owns |
+//! |------|-----|----------|------|
+//! | `native` | `newClient` default | Pure-Zig SSH client | `NativeDialParams` (host/user/command) |
+//! | `system_ssh` | `newClientSystemSsh` / `dial_mode` | Spawn host `ssh` | `CommandPlan` + temp PEM path |
+//! | `plan_only` | `use_system_ssh=false` | In-memory plan (tests) | `CommandPlan` |
+//!
+//! Host and user are always heap-owned on the plan so they outlive the
+//! `Endpoint` pointer passed to `Runner.command`. Auth credential slices
+//! (`password`, `pem_bytes`) remain borrowed from the caller-owned auth
+//! method for the duration of dial/userauth.
 //!
 //! # Implemented
 //!
 //! - **Native dial**: TCP + version exchange + binary packets + KEX
-//!   (`curve25519-sha256`) + host-key verify (`ssh-ed25519`) + NEWKEYS +
-//!   password / publickey (ed25519) userauth + session exec. Channel stdio
-//!   bridges to pack-protocol pipes.
+//!   (`curve25519-sha256`) + host-key verify (`ssh-ed25519`, `rsa-sha2-256`) +
+//!   AES-CTR (`aes256-ctr` / `aes128-ctr`) + HMAC-SHA2 (`hmac-sha2-512` /
+//!   `hmac-sha2-256`) + NEWKEYS + password / publickey (ed25519) userauth +
+//!   session exec. Channel stdio bridges to pack-protocol pipes. Loopback e2e
+//!   handshake is covered by a pure-Zig test peer.
 //! - **System-ssh dial**: `HostCommand` spawns `ssh` with port, user, optional
 //!   `-i`, optional insecure host-key options. Missing binary → `SshBinaryNotFound`.
 //! - **SSH agent**: OpenSSH wire protocol over `SSH_AUTH_SOCK` (list + sign).

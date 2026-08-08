@@ -35,8 +35,16 @@ pub const default_submodule_recursion_depth: SubmoduleRecursivity = 10;
 ///
 /// When `recurse_submodules > 0`, Update discovers nested modules from the
 /// `.gitmodules` blob at the checked-out commit in module storage (object
-/// graph; no nested worktree FS required). Each nested gitlink is updated
-/// with depth − 1. Zero means no recursion (go-git `NoRecurseSubmodules`).
+/// graph; no nested on-disk gitdir required). Each nested gitlink is updated
+/// with depth − 1 (saturating). Zero means no recursion
+/// (go-git `NoRecurseSubmodules`). Nested Init persists into the nested module
+/// storage config (go-git `Config.Submodules`) when `init` is true, and reloads
+/// on later nested Hosts for the same module path.
+///
+/// # Checkout
+///
+/// Module tree materialization uses worktree Checkout **without Force** (Merge
+/// reset), matching go-git `Checkout(&CheckoutOptions{Hash: hash})`.
 pub const SubmoduleUpdateOptions = struct {
     /// When true, call Init if the submodule is not yet initialized.
     init: bool = false,

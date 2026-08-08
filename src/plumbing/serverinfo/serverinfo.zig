@@ -156,15 +156,11 @@ fn writeInfoPacks(allocator: Allocator, s: anytype, fs: anytype) !void {
         const hex = p.string(&hex_buf);
         const line = try std.fmt.allocPrint(allocator, "P pack-{s}.pack\n", .{hex});
         defer allocator.free(line);
-        _ = try fileWrite(&info_packs, line);
+        _ = try info_packs.write(line);
     }
 
     // go-git: fmt.Fprintln(infoPacks) → trailing newline even when empty.
-    _ = try fileWrite(&info_packs, "\n");
-}
-
-fn fileWrite(file: anytype, data: []const u8) !usize {
-    return try file.write(data);
+    _ = try info_packs.write("\n");
 }
 
 /// Call `objectPacks` whether it returns a plain slice or an error union.
@@ -180,7 +176,11 @@ fn callObjectPacks(s: anytype) ![]const Hash {
 ///
 /// Prefers `s.allocator` when present (filesystem / memory Storage). Falls back
 /// to the caller's `allocator` for thin wrappers. Zero-length slices (memory
-/// empty packs) are never freed.
+/// empty packs, static `&.{}`) are never freed.
+///
+/// `objectPacks` returns `[]const Hash` but ownership of a non-empty heap
+/// slice still transfers to the caller (go-git frees the pack list). Cast away
+/// const only for that free.
 fn freeObjectPacks(allocator: Allocator, s: anytype, packs: []const Hash) void {
     if (packs.len == 0) return;
     const a = if (comptime @hasField(@TypeOf(s.*), "allocator"))

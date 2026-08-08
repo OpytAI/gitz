@@ -3,6 +3,16 @@
 //! Mirrors Git `resolve_relative_url` / go-git:
 //! when the configured submodule URL is a relative local path (`../X.git`),
 //! join it onto the parent repository's default remote URL path.
+//!
+//! Detection uses the **raw** configured URL (go-git): `transport.NewEndpoint`
+//! may absolutize local paths, which would hide relativity.
+//!
+//! Edge cases (go-git + Git path.Clean semantics):
+//! - Empty raw → not relative (caller treats as empty URL).
+//! - Scheme / SCP-like → not relative (used as-is).
+//! - Leading `/` or OS-absolute → not relative (preserved as-is).
+//! - `../` past the root of an absolute URL path stops at `/`.
+//! - Parent remote missing or with zero URLs → `ParentRemote*`.
 
 const std = @import("std");
 const memory = @import("memory");
@@ -27,13 +37,14 @@ pub const default_remote_name: []const u8 = "origin";
 
 /// True when `raw` must be resolved against the parent remote (go-git check).
 ///
-/// Relative when `IsLocalEndpoint` and not absolute (posix or OS path).
+/// Relative when `IsLocalEndpoint` and not absolute (posix path.IsAbs or OS Abs).
 pub fn isRelativeSubmoduleURL(raw: []const u8) bool {
     if (raw.len == 0) return false;
     if (!giturl.isLocalEndpoint(raw)) return false;
-    if (std.fs.path.isAbsolute(raw)) return false;
-    // Go also checks path.IsAbs (slash-leading) separately from filepath.IsAbs.
+    // path.IsAbs: slash-leading (Go path package, URL-style).
     if (raw[0] == '/') return false;
+    // filepath.IsAbs: OS absolute (drive letter, etc.).
+    if (std.fs.path.isAbsolute(raw)) return false;
     return true;
 }
 
@@ -76,7 +87,8 @@ fn lookupRemote(cfg: *const Config, name: []const u8) Error!*const RemoteConfig 
 /// Join a relative submodule URL onto a parent remote URL (owned result).
 ///
 /// go-git: parse parent with `NewEndpoint`, `path.Join(root.Path, relative)`,
-/// then `Endpoint.String()`.
+/// then `Endpoint.String()`. Only the path component is rewritten; scheme,
+/// user, host, and port come from the parent endpoint.
 pub fn resolveRelativeURL(
     allocator: Allocator,
     io: std.Io,
@@ -274,4 +286,92 @@ test "resolveSubmoduleURL absolute and relative" {
     const rel = try resolveSubmoduleURL(gpa, std.testing.io, &cfg, null, "../X.git");
     defer gpa.free(rel);
     try std.testing.expectEqualStrings("https://example.invalid/group/X.git", rel);
+}
+
+test "resolveRelativeURL file parent" {
+    const gpa = std.testing.allocator;
+    const got = try resolveRelativeURL(
+        gpa,
+        std.testing.io,
+        "file:///tmp/group/proj.git",
+        "../X.git",
+    );
+    defer gpa.free(got);
+    try std.testing.expectEqualStrings("file:///tmp/group/X.git", got);
+}
+
+test "resolveRelativeURL scp-like parent path without leading slash" {
+    const gpa = std.testing.allocator;
+    // SCP form → ssh endpoint; path is typically "group/proj.git" (no leading /).
+    const got = try resolveRelativeURL(
+        gpa,
+        std.testing.io,
+        "git@example.invalid:group/proj.git",
+        "../X.git",
+    );
+    defer gpa.free(got);
+    // Endpoint.String re-serializes; path join yields group/X.git.
+    try std.testing.expect(std.mem.indexOf(u8, got, "group/X.git") != null);
+    try std.testing.expect(std.mem.indexOf(u8, got, "proj.git") == null);
+}
+
+test "joinUrlPath edge cases" {
+    const gpa = std.testing.allocator;
+
+    const dot = try joinUrlPath(gpa, "/a/b", "./c");
+    defer gpa.free(dot);
+    try std.testing.expectEqualStrings("/a/b/c", dot);
+
+    const over = try joinUrlPath(gpa, "/a/b", "../../..");
+    defer gpa.free(over);
+    try std.testing.expectEqualStrings("/", over);
+
+    const empty_base = try joinUrlPath(gpa, "", "../X.git");
+    defer gpa.free(empty_base);
+    try std.testing.expectEqualStrings("../X.git", empty_base);
+
+    const sibling = try joinUrlPath(gpa, "repo.git", "../sibling");
+    defer gpa.free(sibling);
+    try std.testing.expectEqualStrings("sibling", sibling);
+}
+
+test "resolveSubmoduleURL relative needs parent remote" {
+    const gpa = std.testing.allocator;
+    var cfg = Config.init(gpa);
+    defer cfg.deinit();
+    try std.testing.expectError(
+        error.ParentRemoteNotFound,
+        resolveSubmoduleURL(gpa, std.testing.io, &cfg, null, "../X.git"),
+    );
+}
+
+test "resolveSubmoduleURL parent remote empty URLs" {
+    const gpa = std.testing.allocator;
+    var cfg = Config.init(gpa);
+    defer cfg.deinit();
+    // putRemote with empty url list is not allowed by putRemoteFull typically;
+    // insert a remote shell with zero URLs via putRemoteFull empty slice.
+    try cfg.putRemoteFull("origin", &[_][]const u8{}, &.{}, false);
+    try std.testing.expectError(
+        error.ParentRemoteEmptyURL,
+        resolveSubmoduleURL(gpa, std.testing.io, &cfg, null, "../X.git"),
+    );
+}
+
+test "isRelativeSubmoduleURL file scheme and scp are not relative" {
+    try std.testing.expect(!isRelativeSubmoduleURL("file:///tmp/X.git"));
+    try std.testing.expect(!isRelativeSubmoduleURL("file://tmp/X.git"));
+    try std.testing.expect(isRelativeSubmoduleURL("./nested.git"));
+    try std.testing.expect(isRelativeSubmoduleURL("nested/repo.git"));
+}
+
+test "resolveSubmoduleURL absolute local path not rewritten" {
+    const gpa = std.testing.allocator;
+    var cfg = Config.init(gpa);
+    defer cfg.deinit();
+    try cfg.putRemote("origin", &[_][]const u8{"https://example.invalid/group/proj.git"});
+
+    const abs = try resolveSubmoduleURL(gpa, std.testing.io, &cfg, null, "/abs/path/X.git");
+    defer gpa.free(abs);
+    try std.testing.expectEqualStrings("/abs/path/X.git", abs);
 }

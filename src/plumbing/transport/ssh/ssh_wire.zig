@@ -2,6 +2,9 @@
 //!
 //! Pure Zig — no C, no libssh. Used by `native_ssh.zig` for the in-process
 //! SSH client that drives git-upload-pack / git-receive-pack.
+//!
+//! Packet encryption: AES-128-CTR and AES-256-CTR (non-EtM).
+//! Packet MAC: HMAC-SHA2-256 and HMAC-SHA2-512 (RFC 6668).
 
 const std = @import("std");
 const testing = std.testing;
@@ -9,7 +12,9 @@ const testing = std.testing;
 const Allocator = std.mem.Allocator;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const HmacSha256 = std.crypto.auth.hmac.sha2.HmacSha256;
+const HmacSha512 = std.crypto.auth.hmac.sha2.HmacSha512;
 const Aes128 = std.crypto.core.aes.Aes128;
+const Aes256 = std.crypto.core.aes.Aes256;
 const AesEncryptCtx = std.crypto.core.aes.AesEncryptCtx;
 
 // ---------------------------------------------------------------------------
@@ -49,8 +54,16 @@ pub const msg_channel_failure: u8 = 100;
 
 pub const max_packet: usize = 256 * 1024;
 pub const packet_block: usize = 16;
-pub const mac_length: usize = 32; // hmac-sha2-256
+pub const max_mac_length: usize = 64; // hmac-sha2-512
+pub const max_enc_key_len: usize = 32; // aes256-ctr
+pub const aes_iv_len: usize = 16;
 pub const aes128_key_len: usize = 16;
+pub const aes256_key_len: usize = 32;
+pub const hmac_sha256_key_len: usize = 32;
+pub const hmac_sha512_key_len: usize = 64;
+
+/// Legacy alias (hmac-sha2-256 digest size). Prefer `MacAlg.digestLen`.
+pub const mac_length: usize = 32;
 pub const aes128_iv_len: usize = 16;
 pub const hmac_key_len: usize = 32;
 
@@ -65,6 +78,79 @@ pub const Error = error{
     SshProtocolError,
     /// Name-list negotiation found no common algorithm.
     SshNoCommonAlgorithm,
+    /// Negotiated algorithm name is not implemented.
+    SshUnsupportedAlgorithm,
+};
+
+// ---------------------------------------------------------------------------
+// Algorithm enums (client + peer)
+// ---------------------------------------------------------------------------
+
+pub const EncAlg = enum {
+    none,
+    aes128_ctr,
+    aes256_ctr,
+
+    pub fn fromName(alg_name: []const u8) Error!EncAlg {
+        if (std.mem.eql(u8, alg_name, "aes128-ctr")) return .aes128_ctr;
+        if (std.mem.eql(u8, alg_name, "aes256-ctr")) return .aes256_ctr;
+        return error.SshUnsupportedAlgorithm;
+    }
+
+    pub fn name(self: EncAlg) []const u8 {
+        return switch (self) {
+            .none => "none",
+            .aes128_ctr => "aes128-ctr",
+            .aes256_ctr => "aes256-ctr",
+        };
+    }
+
+    pub fn keyLen(self: EncAlg) usize {
+        return switch (self) {
+            .none => 0,
+            .aes128_ctr => aes128_key_len,
+            .aes256_ctr => aes256_key_len,
+        };
+    }
+
+    pub fn ivLen(self: EncAlg) usize {
+        return switch (self) {
+            .none => 0,
+            .aes128_ctr, .aes256_ctr => aes_iv_len,
+        };
+    }
+};
+
+pub const MacAlg = enum {
+    none,
+    hmac_sha2_256,
+    hmac_sha2_512,
+
+    pub fn fromName(alg_name: []const u8) Error!MacAlg {
+        if (std.mem.eql(u8, alg_name, "hmac-sha2-256")) return .hmac_sha2_256;
+        if (std.mem.eql(u8, alg_name, "hmac-sha2-512")) return .hmac_sha2_512;
+        return error.SshUnsupportedAlgorithm;
+    }
+
+    pub fn name(self: MacAlg) []const u8 {
+        return switch (self) {
+            .none => "none",
+            .hmac_sha2_256 => "hmac-sha2-256",
+            .hmac_sha2_512 => "hmac-sha2-512",
+        };
+    }
+
+    pub fn keyLen(self: MacAlg) usize {
+        return switch (self) {
+            .none => 0,
+            .hmac_sha2_256 => hmac_sha256_key_len,
+            .hmac_sha2_512 => hmac_sha512_key_len,
+        };
+    }
+
+    pub fn digestLen(self: MacAlg) usize {
+        return self.keyLen();
+    }
 };
 
 // ---------------------------------------------------------------------------
@@ -154,6 +240,13 @@ pub fn encodeMpint(allocator: Allocator, be_bytes: []const u8) Allocator.Error![
     return out;
 }
 
+/// Strip leading zero bytes from an SSH mpint body (for RSA e/n).
+pub fn stripMpintLeadingZeros(raw: []const u8) []const u8 {
+    var start: usize = 0;
+    while (start + 1 < raw.len and raw[start] == 0) : (start += 1) {}
+    return raw[start..];
+}
+
 /// Write an SSH string into a hash (length-prefixed).
 pub fn hashWriteString(h: *Sha256, s: []const u8) void {
     var len_buf: [4]u8 = undefined;
@@ -183,70 +276,175 @@ pub fn nameListContains(list: []const u8, name: []const u8) bool {
 }
 
 // ---------------------------------------------------------------------------
-// AES-128-CTR stream (stateful across packets)
+// AES-CTR stream (stateful across packets) — AES-128 and AES-256
 // ---------------------------------------------------------------------------
 
-/// Stateful AES-128-CTR matching Go `cipher.NewCTR` (full-block big-endian counter).
-pub const Aes128Ctr = struct {
-    ctx: AesEncryptCtx(Aes128),
-    counter: [16]u8,
-    /// Leftover keystream from the previous block.
-    ks: [16]u8 = undefined,
-    ks_off: usize = 16, // empty
+fn AesCtrImpl(comptime Aes: type) type {
+    return struct {
+        const Self = @This();
+        ctx: AesEncryptCtx(Aes),
+        counter: [16]u8,
+        ks: [16]u8 = undefined,
+        ks_off: usize = 16,
 
-    pub fn init(key: *const [16]u8, iv: *const [16]u8) Aes128Ctr {
-        return .{
-            .ctx = Aes128.initEnc(key.*),
-            .counter = iv.*,
-        };
-    }
-
-    fn refill(self: *Aes128Ctr) void {
-        self.ctx.encrypt(&self.ks, &self.counter);
-        // Increment counter as big-endian 128-bit integer.
-        var i: usize = 16;
-        while (i > 0) {
-            i -= 1;
-            const sum = @as(u16, self.counter[i]) + 1;
-            self.counter[i] = @truncate(sum);
-            if (sum < 256) break;
+        pub fn init(key: *const [Aes.key_bits / 8]u8, iv: *const [16]u8) Self {
+            return .{
+                .ctx = Aes.initEnc(key.*),
+                .counter = iv.*,
+                .ks_off = 16,
+            };
         }
-        self.ks_off = 0;
-    }
 
-    /// XOR `data` in place with the keystream (encrypt == decrypt).
-    pub fn xor(self: *Aes128Ctr, data: []u8) void {
-        var i: usize = 0;
-        while (i < data.len) {
-            if (self.ks_off >= 16) self.refill();
-            const n = @min(16 - self.ks_off, data.len - i);
-            for (0..n) |j| {
-                data[i + j] ^= self.ks[self.ks_off + j];
+        fn refill(self: *Self) void {
+            self.ctx.encrypt(&self.ks, &self.counter);
+            var i: usize = 16;
+            while (i > 0) {
+                i -= 1;
+                const sum = @as(u16, self.counter[i]) + 1;
+                self.counter[i] = @truncate(sum);
+                if (sum < 256) break;
             }
-            self.ks_off += n;
-            i += n;
+            self.ks_off = 0;
+        }
+
+        pub fn xor(self: *Self, data: []u8) void {
+            var i: usize = 0;
+            while (i < data.len) {
+                if (self.ks_off >= 16) self.refill();
+                const n = @min(16 - self.ks_off, data.len - i);
+                for (0..n) |j| {
+                    data[i + j] ^= self.ks[self.ks_off + j];
+                }
+                self.ks_off += n;
+                i += n;
+            }
+        }
+    };
+}
+
+/// Stateful AES-128-CTR matching Go `cipher.NewCTR` (full-block big-endian counter).
+pub const Aes128Ctr = AesCtrImpl(Aes128);
+/// Stateful AES-256-CTR (same counter convention as AES-128-CTR).
+pub const Aes256Ctr = AesCtrImpl(Aes256);
+
+/// Encryption engine for SSH packets (CTR modes).
+pub const AesCtr = union(enum) {
+    aes128: Aes128Ctr,
+    aes256: Aes256Ctr,
+
+    pub fn xor(self: *AesCtr, data: []u8) void {
+        switch (self.*) {
+            .aes128 => |*c| c.xor(data),
+            .aes256 => |*c| c.xor(data),
         }
     }
 };
 
 // ---------------------------------------------------------------------------
-// Packet codec (cleartext + AES-CTR + HMAC-SHA2-256)
+// Packet codec (cleartext + AES-CTR + HMAC-SHA2-*)
 // ---------------------------------------------------------------------------
 
 pub const PacketCipher = struct {
-    enc: ?Aes128Ctr = null,
-    mac_key: [hmac_key_len]u8 = undefined,
-    mac_enabled: bool = false,
+    enc: ?AesCtr = null,
+    mac_alg: MacAlg = .none,
+    mac_key: [max_mac_length]u8 = undefined,
 
     pub fn none() PacketCipher {
         return .{};
     }
 
+    pub fn macEnabled(self: *const PacketCipher) bool {
+        return self.mac_alg != .none;
+    }
+
+    pub fn macLength(self: *const PacketCipher) usize {
+        return self.mac_alg.digestLen();
+    }
+
+    /// Build a cipher from negotiated encryption + MAC names and key material.
+    pub fn initFromAlgs(
+        enc_alg: EncAlg,
+        key: []const u8,
+        iv: []const u8,
+        mac_alg: MacAlg,
+        mac_key: []const u8,
+    ) Error!PacketCipher {
+        var c: PacketCipher = .{ .mac_alg = mac_alg };
+        if (mac_alg != .none) {
+            const mk_len = mac_alg.keyLen();
+            if (mac_key.len < mk_len) return error.SshUnsupportedAlgorithm;
+            @memcpy(c.mac_key[0..mk_len], mac_key[0..mk_len]);
+        }
+        switch (enc_alg) {
+            .none => {},
+            .aes128_ctr => {
+                if (key.len < 16 or iv.len < 16) return error.SshUnsupportedAlgorithm;
+                c.enc = .{ .aes128 = Aes128Ctr.init(key[0..16], iv[0..16]) };
+            },
+            .aes256_ctr => {
+                if (key.len < 32 or iv.len < 16) return error.SshUnsupportedAlgorithm;
+                c.enc = .{ .aes256 = Aes256Ctr.init(key[0..32], iv[0..16]) };
+            },
+        }
+        return c;
+    }
+
     pub fn aes128CtrHmacSha256(key: *const [16]u8, iv: *const [16]u8, mac_key: *const [32]u8) PacketCipher {
-        return .{
-            .enc = Aes128Ctr.init(key, iv),
-            .mac_key = mac_key.*,
-            .mac_enabled = true,
+        return initFromAlgs(.aes128_ctr, key, iv, .hmac_sha2_256, mac_key) catch unreachable;
+    }
+
+    pub fn aes256CtrHmacSha256(key: *const [32]u8, iv: *const [16]u8, mac_key: *const [32]u8) PacketCipher {
+        return initFromAlgs(.aes256_ctr, key, iv, .hmac_sha2_256, mac_key) catch unreachable;
+    }
+
+    pub fn aes128CtrHmacSha512(key: *const [16]u8, iv: *const [16]u8, mac_key: *const [64]u8) PacketCipher {
+        return initFromAlgs(.aes128_ctr, key, iv, .hmac_sha2_512, mac_key) catch unreachable;
+    }
+
+    pub fn aes256CtrHmacSha512(key: *const [32]u8, iv: *const [16]u8, mac_key: *const [64]u8) PacketCipher {
+        return initFromAlgs(.aes256_ctr, key, iv, .hmac_sha2_512, mac_key) catch unreachable;
+    }
+
+    fn computeMac(self: *const PacketCipher, seq: u32, packet_body: []const u8, out: []u8) void {
+        var seq_buf: [4]u8 = undefined;
+        std.mem.writeInt(u32, &seq_buf, seq, .big);
+        switch (self.mac_alg) {
+            .none => {},
+            .hmac_sha2_256 => {
+                var hmac = HmacSha256.init(self.mac_key[0..hmac_sha256_key_len]);
+                hmac.update(&seq_buf);
+                hmac.update(packet_body);
+                hmac.final(out[0..32]);
+            },
+            .hmac_sha2_512 => {
+                var hmac = HmacSha512.init(self.mac_key[0..hmac_sha512_key_len]);
+                hmac.update(&seq_buf);
+                hmac.update(packet_body);
+                hmac.final(out[0..64]);
+            },
+        }
+    }
+
+    fn macEqual(self: *const PacketCipher, expected: []const u8, got: []const u8) bool {
+        const n = self.macLength();
+        if (expected.len < n or got.len < n) return false;
+        // Constant-time for fixed digest sizes we support.
+        return switch (self.mac_alg) {
+            .none => true,
+            .hmac_sha2_256 => blk: {
+                var a: [32]u8 = undefined;
+                var b: [32]u8 = undefined;
+                @memcpy(&a, expected[0..32]);
+                @memcpy(&b, got[0..32]);
+                break :blk std.crypto.timing_safe.eql([32]u8, a, b);
+            },
+            .hmac_sha2_512 => blk: {
+                var a: [64]u8 = undefined;
+                var b: [64]u8 = undefined;
+                @memcpy(&a, expected[0..64]);
+                @memcpy(&b, got[0..64]);
+                break :blk std.crypto.timing_safe.eql([64]u8, a, b);
+            },
         };
     }
 };
@@ -254,7 +452,8 @@ pub const PacketCipher = struct {
 /// Encode one SSH binary packet into `out` (owned). Payload is message body
 /// including the message type byte.
 ///
-/// When `cipher.mac_enabled`, appends HMAC-SHA2-256 over seq||unencrypted packet.
+/// When MAC is enabled, appends HMAC over seq||unencrypted packet (non-EtM).
+/// CTR state advances only over the encrypted packet body.
 pub fn encodePacket(
     allocator: Allocator,
     cipher: *PacketCipher,
@@ -263,15 +462,14 @@ pub fn encodePacket(
 ) (Allocator.Error || Error)![]u8 {
     if (payload.len > max_packet) return error.SshPacketTooLarge;
 
-    // padding_length chosen so (5 + payload + pad) % 16 == 0, pad >= 4.
-    // For non-EtM stream ciphers the whole packet including length is encrypted.
-    const aadlen: usize = 0;
-    var padding_length: usize = packet_block - (5 + payload.len - aadlen) % packet_block;
+    // padding_length so (4 + 1 + payload + pad) % block == 0, with pad >= 4.
+    var padding_length: usize = packet_block - ((5 + payload.len) % packet_block);
     if (padding_length < 4) padding_length += packet_block;
 
-    const length: u32 = @intCast(payload.len + 1 + padding_length); // padding_length byte + payload + pad
-    const packet_body_len: usize = 4 + 1 + payload.len + padding_length; // length field + rest
-    const total = packet_body_len + if (cipher.mac_enabled) mac_length else 0;
+    const length: u32 = @intCast(payload.len + 1 + padding_length);
+    const packet_body_len: usize = 4 + 1 + payload.len + padding_length;
+    const mac_len = cipher.macLength();
+    const total = packet_body_len + mac_len;
 
     var out = try allocator.alloc(u8, total);
     errdefer allocator.free(out);
@@ -279,24 +477,14 @@ pub fn encodePacket(
     std.mem.writeInt(u32, out[0..4], length, .big);
     out[4] = @intCast(padding_length);
     @memcpy(out[5 .. 5 + payload.len], payload);
-    // Deterministic padding (tests); production may use random.
     for (out[5 + payload.len .. 5 + payload.len + padding_length], 0..) |*b, i| {
         b.* = @truncate(i + 1);
     }
 
-    // MAC over sequence number + unencrypted packet (non-EtM).
-    if (cipher.mac_enabled) {
-        var seq_buf: [4]u8 = undefined;
-        std.mem.writeInt(u32, &seq_buf, seq, .big);
-        var mac_out: [mac_length]u8 = undefined;
-        var hmac = HmacSha256.init(&cipher.mac_key);
-        hmac.update(&seq_buf);
-        hmac.update(out[0..packet_body_len]);
-        hmac.final(&mac_out);
-        @memcpy(out[packet_body_len..][0..mac_length], &mac_out);
+    if (cipher.macEnabled()) {
+        cipher.computeMac(seq, out[0..packet_body_len], out[packet_body_len..][0..mac_len]);
     }
 
-    // Encrypt packet body (length + padding_length + payload + pad).
     if (cipher.enc) |*enc| {
         enc.xor(out[0..packet_body_len]);
     }
@@ -314,7 +502,6 @@ pub fn decodePacket(
     var prefix: [5]u8 = undefined;
     try reader.readSliceAll(&prefix);
 
-    // Decrypt prefix (length + padding_length).
     if (cipher.enc) |*enc| {
         enc.xor(&prefix);
     }
@@ -322,43 +509,44 @@ pub fn decodePacket(
     const length = std.mem.readInt(u32, prefix[0..4], .big);
     const padding_length: u32 = prefix[4];
 
+    if (length < 5) return error.SshPacketCorrupt;
+    if (padding_length < 4) return error.SshPacketCorrupt;
     if (length < padding_length + 1) return error.SshPacketCorrupt;
     if (length > max_packet) return error.SshPacketTooLarge;
 
-    const rest_len: usize = length - 1; // payload + padding (padding_length already read)
-    const mac_len: usize = if (cipher.mac_enabled) mac_length else 0;
+    const payload_len: usize = length - padding_length - 1;
+    const rest_len: usize = length - 1;
+    if (payload_len > rest_len) return error.SshPacketCorrupt;
+
+    const mac_len = cipher.macLength();
     const rest = try allocator.alloc(u8, rest_len + mac_len);
     defer allocator.free(rest);
     try reader.readSliceAll(rest);
 
-    const mac_bytes = rest[rest_len .. rest_len + mac_len];
     const data = rest[0..rest_len];
+    const mac_bytes = rest[rest_len .. rest_len + mac_len];
 
-    // Decrypt rest (payload + padding).
     if (cipher.enc) |*enc| {
         enc.xor(data);
     }
 
-    // Rebuild unencrypted packet for MAC: prefix + data.
-    if (cipher.mac_enabled) {
-        var seq_buf: [4]u8 = undefined;
-        std.mem.writeInt(u32, &seq_buf, seq, .big);
-        var expected: [mac_length]u8 = undefined;
-        var hmac = HmacSha256.init(&cipher.mac_key);
-        hmac.update(&seq_buf);
-        hmac.update(&prefix);
-        hmac.update(data);
-        hmac.final(&expected);
-        if (!std.mem.eql(u8, &expected, mac_bytes)) return error.SshMacFailure;
+    if (cipher.macEnabled()) {
+        // Reconstruct unencrypted packet for MAC: prefix + data.
+        var expected: [max_mac_length]u8 = undefined;
+        var mac_input: std.ArrayList(u8) = .empty;
+        defer mac_input.deinit(allocator);
+        try mac_input.appendSlice(allocator, &prefix);
+        try mac_input.appendSlice(allocator, data);
+        cipher.computeMac(seq, mac_input.items, expected[0..mac_len]);
+        if (!cipher.macEqual(expected[0..mac_len], mac_bytes)) {
+            return error.SshMacFailure;
+        }
     }
 
-    const payload_len = length - padding_length - 1;
-    if (payload_len > rest_len) return error.SshPacketCorrupt;
     return try allocator.dupe(u8, data[0..payload_len]);
 }
 
 /// Build KEXINIT payload (without outer packet framing). Returns owned bytes.
-/// `cookie` must be 16 bytes. `payload_for_hash` is the full message including type byte.
 pub fn buildKexInit(
     allocator: Allocator,
     cookie: *const [16]u8,
@@ -391,7 +579,6 @@ pub fn buildKexInit(
 
 /// Parsed KEXINIT fields needed for negotiation and session hash.
 pub const KexInitView = struct {
-    /// Full payload including message type (for I_C / I_S hash).
     raw: []const u8,
     kex_algorithms: []const u8,
     server_host_key_algorithms: []const u8,
@@ -418,7 +605,6 @@ pub fn parseKexInit(payload: []const u8) Error!KexInitView {
     _ = try readString(payload, &off); // lang s2c
     _ = try readBool(payload, &off);
     if (off + 4 > payload.len) return error.SshPacketCorrupt;
-    // reserved uint32 ignored
     return .{
         .raw = payload,
         .kex_algorithms = kex,
@@ -457,9 +643,7 @@ pub fn generateKeyMaterial(out: []u8, tag: u8, K: []const u8, H: []const u8, ses
         @memcpy(out[filled .. filled + n], digest[0..n]);
         filled += n;
         if (filled < out.len) {
-            // Keep only the concatenation of digests for extension (RFC).
             if (digests_len + 32 > digests_so_far.len) {
-                // Extremely large key; shift (not expected for AES-128 + HMAC-256).
                 @memcpy(digests_so_far[0..32], digest[0..]);
                 digests_len = 32;
             } else {
@@ -485,11 +669,26 @@ test "append and read SSH string" {
     try testing.expectEqual(@as(usize, 9), off);
 }
 
-test "name list negotiate" {
+test "name list negotiate first mutual" {
     const server = "diffie-hellman-group14-sha256,curve25519-sha256,ecdh-sha2-nistp256";
     const prefs = [_][]const u8{ "curve25519-sha256", "diffie-hellman-group14-sha256" };
     const n = try negotiate(&prefs, server);
     try testing.expectEqualStrings("curve25519-sha256", n);
+}
+
+test "name list negotiate expanded enc and mac prefs" {
+    // Client prefers stronger first; server offers both — first mutual wins.
+    const server_enc = "aes128-ctr,aes256-ctr";
+    const enc_prefs = [_][]const u8{ "aes256-ctr", "aes128-ctr" };
+    try testing.expectEqualStrings("aes256-ctr", try negotiate(&enc_prefs, server_enc));
+
+    const server_mac = "hmac-sha2-256,hmac-sha2-512";
+    const mac_prefs = [_][]const u8{ "hmac-sha2-512", "hmac-sha2-256" };
+    try testing.expectEqualStrings("hmac-sha2-512", try negotiate(&mac_prefs, server_mac));
+
+    // Server only offers weaker — client falls through.
+    try testing.expectEqualStrings("aes128-ctr", try negotiate(&enc_prefs, "aes128-ctr"));
+    try testing.expectEqualStrings("hmac-sha2-256", try negotiate(&mac_prefs, "hmac-sha2-256"));
 }
 
 test "name list negotiate miss" {
@@ -499,7 +698,6 @@ test "name list negotiate miss" {
 }
 
 test "encode mpint high bit pad" {
-    // 0x80 → needs leading 0x00
     const m = try encodeMpint(testing.allocator, &[_]u8{0x80});
     defer testing.allocator.free(m);
     try testing.expectEqual(@as(usize, 6), m.len);
@@ -517,11 +715,10 @@ test "encode mpint zero" {
 
 test "encode/decode cleartext packet roundtrip" {
     var cipher = PacketCipher.none();
-    const payload = [_]u8{ msg_newkeys };
+    const payload = [_]u8{msg_newkeys};
     const enc = try encodePacket(testing.allocator, &cipher, 0, &payload);
     defer testing.allocator.free(enc);
 
-    // length field
     const length = std.mem.readInt(u32, enc[0..4], .big);
     try testing.expect(length >= 5);
     try testing.expectEqual(@as(u8, msg_newkeys), enc[5]);
@@ -541,7 +738,6 @@ test "encode/decode aes128-ctr hmac-sha2-256 packet" {
     var enc_c = PacketCipher.aes128CtrHmacSha256(&key, &iv, &mac);
     var dec_c = PacketCipher.aes128CtrHmacSha256(&key, &iv, &mac);
 
-    // Real payload: type + string
     var pl: std.ArrayList(u8) = .empty;
     defer pl.deinit(testing.allocator);
     try pl.append(testing.allocator, msg_service_request);
@@ -556,23 +752,77 @@ test "encode/decode aes128-ctr hmac-sha2-256 packet" {
     try testing.expectEqualSlices(u8, pl.items, got);
 }
 
+test "encode/decode aes256-ctr hmac-sha2-512 packet" {
+    const key = [_]u8{0x11} ** 32;
+    const iv = [_]u8{0x22} ** 16;
+    const mac = [_]u8{0x33} ** 64;
+
+    var enc_c = PacketCipher.aes256CtrHmacSha512(&key, &iv, &mac);
+    var dec_c = PacketCipher.aes256CtrHmacSha512(&key, &iv, &mac);
+
+    var pl: std.ArrayList(u8) = .empty;
+    defer pl.deinit(testing.allocator);
+    try pl.append(testing.allocator, msg_service_request);
+    try appendString(&pl, testing.allocator, "ssh-userauth");
+
+    const wire_bytes = try encodePacket(testing.allocator, &enc_c, 7, pl.items);
+    defer testing.allocator.free(wire_bytes);
+    // MAC is 64 bytes.
+    try testing.expect(wire_bytes.len >= 64 + 16);
+
+    var reader = std.Io.Reader.fixed(wire_bytes);
+    const got = try decodePacket(testing.allocator, &dec_c, 7, &reader);
+    defer testing.allocator.free(got);
+    try testing.expectEqualSlices(u8, pl.items, got);
+}
+
+test "encode/decode aes256-ctr hmac-sha2-256 multi-packet stream" {
+    const key = [_]u8{0xaa} ** 32;
+    const iv = [_]u8{0xbb} ** 16;
+    const mac = [_]u8{0xcc} ** 32;
+    var enc_c = PacketCipher.aes256CtrHmacSha256(&key, &iv, &mac);
+    var dec_c = PacketCipher.aes256CtrHmacSha256(&key, &iv, &mac);
+
+    const p1 = [_]u8{msg_newkeys};
+    const p2 = [_]u8{ msg_service_accept, 0, 0, 0, 4, 't', 'e', 's', 't' };
+
+    const w1 = try encodePacket(testing.allocator, &enc_c, 0, &p1);
+    defer testing.allocator.free(w1);
+    const w2 = try encodePacket(testing.allocator, &enc_c, 1, &p2);
+    defer testing.allocator.free(w2);
+
+    var combined: std.ArrayList(u8) = .empty;
+    defer combined.deinit(testing.allocator);
+    try combined.appendSlice(testing.allocator, w1);
+    try combined.appendSlice(testing.allocator, w2);
+
+    var reader = std.Io.Reader.fixed(combined.items);
+    const g1 = try decodePacket(testing.allocator, &dec_c, 0, &reader);
+    defer testing.allocator.free(g1);
+    const g2 = try decodePacket(testing.allocator, &dec_c, 1, &reader);
+    defer testing.allocator.free(g2);
+    try testing.expectEqualSlices(u8, &p1, g1);
+    try testing.expectEqualSlices(u8, &p2, g2);
+}
+
 test "build and parse KEXINIT" {
     const cookie = [_]u8{0xab} ** 16;
     const raw = try buildKexInit(
         testing.allocator,
         &cookie,
         &.{"curve25519-sha256"},
-        &.{"ssh-ed25519"},
-        &.{"aes128-ctr"},
-        &.{"hmac-sha2-256"},
+        &.{ "ssh-ed25519", "rsa-sha2-256" },
+        &.{ "aes256-ctr", "aes128-ctr" },
+        &.{ "hmac-sha2-512", "hmac-sha2-256" },
         &.{"none"},
     );
     defer testing.allocator.free(raw);
     try testing.expectEqual(@as(u8, msg_kexinit), raw[0]);
     const view = try parseKexInit(raw);
     try testing.expectEqualStrings("curve25519-sha256", view.kex_algorithms);
-    try testing.expectEqualStrings("ssh-ed25519", view.server_host_key_algorithms);
-    try testing.expectEqualStrings("aes128-ctr", view.encryption_c2s);
+    try testing.expectEqualStrings("ssh-ed25519,rsa-sha2-256", view.server_host_key_algorithms);
+    try testing.expectEqualStrings("aes256-ctr,aes128-ctr", view.encryption_c2s);
+    try testing.expectEqualStrings("hmac-sha2-512,hmac-sha2-256", view.mac_c2s);
 }
 
 test "Aes128Ctr self-inverse" {
@@ -588,16 +838,84 @@ test "Aes128Ctr self-inverse" {
     try testing.expectEqualSlices(u8, &copy, &data);
 }
 
-test "generateKeyMaterial deterministic" {
+test "Aes256Ctr leftover keystream across calls" {
+    const key = [_]u8{0x55} ** 32;
+    const iv = [_]u8{0x66} ** 16;
+    var a = Aes256Ctr.init(&key, &iv);
+    var b = Aes256Ctr.init(&key, &iv);
+    var data = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 };
+    var copy = data;
+    a.xor(data[0..3]);
+    a.xor(data[3..10]);
+    a.xor(data[10..]);
+    b.xor(&copy);
+    try testing.expectEqualSlices(u8, &copy, &data);
+}
+
+test "Aes128Ctr leftover keystream across calls" {
+    const key = [_]u8{0x33} ** 16;
+    const iv = [_]u8{0x44} ** 16;
+    var a = Aes128Ctr.init(&key, &iv);
+    var b = Aes128Ctr.init(&key, &iv);
+    var data = [_]u8{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 };
+    var copy = data;
+    a.xor(data[0..3]);
+    a.xor(data[3..10]);
+    a.xor(data[10..]);
+    b.xor(&copy);
+    try testing.expectEqualSlices(u8, &copy, &data);
+}
+
+test "decodePacket rejects short padding" {
+    var wire_buf: [5 + 1 + 2]u8 = undefined;
+    const length: u32 = 1 + 1 + 2;
+    std.mem.writeInt(u32, wire_buf[0..4], length, .big);
+    wire_buf[4] = 2;
+    wire_buf[5] = msg_newkeys;
+    wire_buf[6] = 0;
+    wire_buf[7] = 0;
+
+    var cipher = PacketCipher.none();
+    var reader = std.Io.Reader.fixed(&wire_buf);
+    try testing.expectError(error.SshPacketCorrupt, decodePacket(testing.allocator, &cipher, 0, &reader));
+}
+
+test "decodePacket rejects MAC failure hmac-sha2-512" {
+    const key = [_]u8{0x01} ** 32;
+    const iv = [_]u8{0x02} ** 16;
+    const mac = [_]u8{0x03} ** 64;
+    var enc_c = PacketCipher.aes256CtrHmacSha512(&key, &iv, &mac);
+    const payload = [_]u8{msg_newkeys};
+    const wire_bytes = try encodePacket(testing.allocator, &enc_c, 0, &payload);
+    defer testing.allocator.free(wire_bytes);
+
+    var mangled = try testing.allocator.dupe(u8, wire_bytes);
+    defer testing.allocator.free(mangled);
+    mangled[mangled.len - 1] ^= 0xff;
+
+    var dec_c = PacketCipher.aes256CtrHmacSha512(&key, &iv, &mac);
+    var reader = std.Io.Reader.fixed(mangled);
+    try testing.expectError(error.SshMacFailure, decodePacket(testing.allocator, &dec_c, 0, &reader));
+}
+
+test "generateKeyMaterial deterministic and extends for aes256" {
     const K = "\x00\x01\x02\x03" ++ ("\x00" ** 28);
     const H = [_]u8{0xaa} ** 32;
     const sid = [_]u8{0xbb} ** 32;
-    var out1: [16]u8 = undefined;
-    var out2: [16]u8 = undefined;
-    generateKeyMaterial(&out1, 'A', K, &H, &sid);
-    generateKeyMaterial(&out2, 'A', K, &H, &sid);
+    var out1: [32]u8 = undefined;
+    var out2: [32]u8 = undefined;
+    generateKeyMaterial(&out1, 'C', K, &H, &sid);
+    generateKeyMaterial(&out2, 'C', K, &H, &sid);
     try testing.expectEqualSlices(u8, &out1, &out2);
-    var outB: [16]u8 = undefined;
-    generateKeyMaterial(&outB, 'B', K, &H, &sid);
+    var outB: [32]u8 = undefined;
+    generateKeyMaterial(&outB, 'D', K, &H, &sid);
     try testing.expect(!std.mem.eql(u8, &out1, &outB));
+}
+
+test "EncAlg MacAlg fromName" {
+    try testing.expectEqual(EncAlg.aes256_ctr, try EncAlg.fromName("aes256-ctr"));
+    try testing.expectEqual(EncAlg.aes128_ctr, try EncAlg.fromName("aes128-ctr"));
+    try testing.expectEqual(MacAlg.hmac_sha2_512, try MacAlg.fromName("hmac-sha2-512"));
+    try testing.expectEqual(MacAlg.hmac_sha2_256, try MacAlg.fromName("hmac-sha2-256"));
+    try testing.expectError(error.SshUnsupportedAlgorithm, EncAlg.fromName("3des-cbc"));
 }

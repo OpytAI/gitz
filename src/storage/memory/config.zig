@@ -1,8 +1,10 @@
 //! Minimal config storage for memory backend (go-git `ConfigStorage`).
 //!
-//! Storer-shaped config: `is_bare` + remotes + branches for BaseStorageSuite and
-//! repository CreateRemote/CreateBranch (without depending on `//src/config`).
-//! High-level remotes/branches/URLs with full gitconfig live in `//src/config`.
+//! Storer-shaped config: `is_bare` + remotes + branches + initialized submodules
+//! for BaseStorageSuite, repository CreateRemote/CreateBranch, and submodule
+//! Init persistence (go-git `Config.Submodules`) without depending on
+//! `//src/config`. High-level remotes/branches/URLs with full gitconfig live in
+//! `//src/config`.
 
 const std = @import("std");
 
@@ -58,6 +60,25 @@ pub const BranchConfig = struct {
     }
 };
 
+/// Minimal initialized-submodule entry (go-git `config.Submodule` subset).
+///
+/// Owned string fields. Used so Init survives across Host rebuilds for the same
+/// module storage (including nested recursive Update hosts).
+pub const SubmoduleEntry = struct {
+    name: []u8 = &.{},
+    path: []u8 = &.{},
+    url: []u8 = &.{},
+    branch: []u8 = &.{},
+
+    pub fn deinit(self: *SubmoduleEntry, allocator: Allocator) void {
+        freeOwned(allocator, self.name);
+        freeOwned(allocator, self.path);
+        freeOwned(allocator, self.url);
+        freeOwned(allocator, self.branch);
+        self.* = .{};
+    }
+};
+
 /// Minimal repository config (go-git `Config` subset for storage / CreateRemote / CreateBranch).
 pub const Config = struct {
     allocator: Allocator,
@@ -77,6 +98,8 @@ pub const Config = struct {
     committer_email: []u8 = &.{},
     remotes: std.StringHashMapUnmanaged(RemoteConfig) = .empty,
     branches: std.StringHashMapUnmanaged(BranchConfig) = .empty,
+    /// Initialized submodules (go-git `Config.Submodules`). Key = submodule name.
+    submodules: std.StringHashMapUnmanaged(SubmoduleEntry) = .empty,
 
     pub fn init(allocator: Allocator) Config {
         return .{ .allocator = allocator };
@@ -107,6 +130,14 @@ pub const Config = struct {
             freeOwned(self.allocator, e.key_ptr.*);
         }
         self.branches.deinit(self.allocator);
+
+        var sit = self.submodules.iterator();
+        while (sit.next()) |e| {
+            var sm = e.value_ptr.*;
+            sm.deinit(self.allocator);
+            freeOwned(self.allocator, e.key_ptr.*);
+        }
+        self.submodules.deinit(self.allocator);
 
         self.* = undefined;
     }
@@ -249,6 +280,59 @@ pub const Config = struct {
         if (self.branches.fetchRemove(name)) |old| {
             var bc = old.value;
             bc.deinit(self.allocator);
+            freeOwned(self.allocator, old.key);
+            return true;
+        }
+        return false;
+    }
+
+    /// Whether a submodule name is recorded as initialized (go-git Config.Submodules).
+    pub fn hasSubmodule(self: *const Config, name: []const u8) bool {
+        return self.submodules.contains(name);
+    }
+
+    /// Borrow stored submodule entry, if any.
+    pub fn getSubmodule(self: *const Config, name: []const u8) ?*const SubmoduleEntry {
+        return self.submodules.getPtr(name);
+    }
+
+    /// Insert or replace an initialized submodule (copies name/path/url/branch).
+    /// go-git Init path stores into `Config.Submodules` then `SetConfig`.
+    pub fn putSubmodule(
+        self: *Config,
+        name: []const u8,
+        path: []const u8,
+        url: []const u8,
+        branch: []const u8,
+    ) Allocator.Error!void {
+        var entry = SubmoduleEntry{};
+        errdefer entry.deinit(self.allocator);
+        entry.name = try dupeOrEmpty(self.allocator, name);
+        entry.path = try dupeOrEmpty(self.allocator, path);
+        entry.url = try dupeOrEmpty(self.allocator, url);
+        entry.branch = try dupeOrEmpty(self.allocator, branch);
+
+        const key = try self.allocator.dupe(u8, name);
+        errdefer freeOwned(self.allocator, key);
+
+        const gop = try self.submodules.getOrPut(self.allocator, key);
+        if (gop.found_existing) {
+            freeOwned(self.allocator, key);
+            var old = gop.value_ptr.*;
+            old.deinit(self.allocator);
+            gop.value_ptr.* = entry;
+        } else {
+            gop.value_ptr.* = entry;
+        }
+        // Success: map owns entry; cancel errdefer by clearing without free.
+        entry = .{};
+    }
+
+    /// Remove an initialized submodule by name. Returns true if it was present.
+    pub fn removeSubmodule(self: *Config, name: []const u8) bool {
+        if (self.submodules.fetchRemove(name)) |old| {
+            var sm = old.value;
+            sm.deinit(self.allocator);
             freeOwned(self.allocator, old.key);
             return true;
         }
@@ -485,4 +569,30 @@ test "Config setUser setAuthor setCommitter free on deinit" {
     try cfg.setUser("U2", "u2@e.com");
     try std.testing.expectEqualStrings("U2", cfg.user_name);
     try std.testing.expectEqualStrings("u2@e.com", cfg.user_email);
+}
+
+test "Config putSubmodule get remove round-trip" {
+    const allocator = std.testing.allocator;
+    var cfg = Config.init(allocator);
+    defer cfg.deinit();
+
+    try std.testing.expect(!cfg.hasSubmodule("basic"));
+    try cfg.putSubmodule("basic", "basic", "https://example.com/basic.git", "main");
+    try std.testing.expect(cfg.hasSubmodule("basic"));
+    const e = cfg.getSubmodule("basic") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("basic", e.name);
+    try std.testing.expectEqualStrings("basic", e.path);
+    try std.testing.expectEqualStrings("https://example.com/basic.git", e.url);
+    try std.testing.expectEqualStrings("main", e.branch);
+
+    // Replace updates fields.
+    try cfg.putSubmodule("basic", "libs/basic", "https://example.com/b2.git", "");
+    const e2 = cfg.getSubmodule("basic") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("libs/basic", e2.path);
+    try std.testing.expectEqualStrings("https://example.com/b2.git", e2.url);
+    try std.testing.expectEqualStrings("", e2.branch);
+
+    try std.testing.expect(cfg.removeSubmodule("basic"));
+    try std.testing.expect(!cfg.hasSubmodule("basic"));
+    try std.testing.expect(!cfg.removeSubmodule("basic"));
 }

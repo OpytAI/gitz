@@ -300,7 +300,8 @@ pub const Session = struct {
 
     pub fn uploadPack(
         self: *Session,
-        req: *const packp.UploadPackRequest,
+        // Non-const: packp encode sorts wants/haves (go-git mutates for wire order).
+        req: *packp.UploadPackRequest,
     ) !*packp.UploadPackResponse {
         if (req.isEmpty()) {
             try self.finish();
@@ -315,7 +316,7 @@ pub const Session = struct {
         try self.stdin.close();
 
         // Non-empty check on stdout.
-        ioutil.nonEmptyReader(self.stdout) catch |err| {
+        _ = ioutil.nonEmptyReader(self.stdout) catch |err| {
             if (err == error.EmptyReader) {
                 return transport.Error.EmptyUploadPackRequest;
             }
@@ -327,7 +328,8 @@ pub const Session = struct {
 
     pub fn receivePack(
         self: *Session,
-        req: *const packp.ReferenceUpdateRequest,
+        // Non-const: packp encode may order commands for the wire.
+        req: *packp.ReferenceUpdateRequest,
     ) !?*packp.ReportStatus {
         _ = try self.advertisedReferences();
         self.pack_run = true;
@@ -469,7 +471,7 @@ fn drainReader(r: *Reader) void {
 // upload-pack wire helpers
 // ---------------------------------------------------------------------------
 
-fn uploadPackWrite(w: *Writer, req: *const packp.UploadPackRequest) !void {
+fn uploadPackWrite(w: *Writer, req: *packp.UploadPackRequest) !void {
     // go-git uploadPack: UploadRequest.Encode + UploadHaves.Encode + "done".
     try req.upload_request.encode(w);
     try req.upload_haves.encode(w, true);

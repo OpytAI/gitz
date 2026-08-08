@@ -15,14 +15,17 @@
 //! # Design
 //!
 //! - `defaultClient` / `newClient` attach an owned `OsRoundTripper`
-//!   (verified `std.http.Client`, plus insecure HTTPS via `tls.Client`
+//!   (verified `std.http.Client`; insecure HTTPS via `tls.Client`
 //!   `no_verification` when `insecure_skip_tls` is set). Call `Client.deinit`
 //!   once when finished.
 //! - Inject `MockRoundTripper` (or any `RoundTripper`) for hermetic tests;
 //!   inject path does not own the RoundTripper.
 //! - Single request path: `Session.doRequest` → `RoundTripper.roundTrip`.
-//! - Redirect policy and final-URL capture live in `OsRoundTripper`; endpoint
-//!   mutation is `Session.applyRedirectUrl` (go-git `ModifyEndpointIfRedirect`).
+//! - Redirect policy is enforced in `OsRoundTripper` (verified + insecure)
+//!   using the same rules as `checkRedirectPolicy`. Endpoint mutation is
+//!   `Session.applyRedirectUrl` (go-git `ModifyEndpointIfRedirect`).
+//! - OS and mock RoundTrippers populate owned `Response.headers` (multi-value
+//!   via `HeaderMap.add`).
 //! - `asTransport` exposes the go-git Transport vtable for protocol install.
 //!
 //! # go-git test map
@@ -66,6 +69,7 @@ pub const Response = common.Response;
 pub const RoundTripper = common.RoundTripper;
 pub const MockRoundTripper = common.MockRoundTripper;
 pub const OsRoundTripper = os_round_tripper.OsRoundTripper;
+pub const headerMapFromHeadBytes = os_round_tripper.headerMapFromHeadBytes;
 
 pub const AuthMethod = common.AuthMethod;
 pub const BasicAuth = common.BasicAuth;

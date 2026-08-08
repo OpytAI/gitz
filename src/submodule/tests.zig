@@ -641,13 +641,16 @@ test "Status when path missing from index leaves expected zero" {
     try std.testing.expect(st.current.isZero());
 }
 
-test "expectedFromEntry returns hash" {
+test "expectedFromEntry returns hash only for submodule modes" {
     var e: index_format.Entry = .{
         .mode = filemode.Submodule,
         .hash = plumbing.newHash(expected_basic),
         .name = "basic",
     };
     try std.testing.expect(submodule.expectedFromEntry(&e).eql(plumbing.newHash(expected_basic)));
+
+    e.mode = filemode.Regular;
+    try std.testing.expect(submodule.expectedFromEntry(&e).isZero());
 }
 
 test "Update second fetch is AlreadyUpToDate and status stays clean" {
@@ -800,6 +803,206 @@ test "Update recurse discovers nested gitlink from module commit" {
     const gm = try readHostFile(gpa, fs, "parent/.gitmodules");
     defer gpa.free(gm);
     try std.testing.expect(std.mem.indexOf(u8, gm, "child") != null);
+}
+
+test "Update Merge rejects dirty worktree; clean re-Update succeeds" {
+    // go-git Checkout without Force uses Merge reset: unstaged dirt → UnstagedChanges.
+    // Clean re-Update (worktree matches index) succeeds without Force.
+    //
+    // Dirt length differs from "clean" so Mem (mtime always 0) still fails the
+    // index size metadata match and rehashes content (same pattern as worktree
+    // checkout dirty tests). Same-size dirt with mtime 0 is a Mem racy-git limit.
+    const gpa = std.testing.allocator;
+
+    const sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+    const mod = try sto.module("basic");
+    const head = try seedSimpleWorktree(mod, gpa, "clean", "f.txt");
+
+    const fs = try gpa.create(fs_pkg.Mem);
+    defer {
+        fs.deinit();
+        gpa.destroy(fs);
+    }
+    fs.* = try fs_pkg.Mem.init(gpa);
+    {
+        var f = try fs.create(submodule.gitmodules_file);
+        defer f.close() catch {};
+        _ = try f.write(
+            "[submodule \"basic\"]\n" ++
+                "\tpath = basic\n" ++
+                "\turl = https://github.com/example/basic.git\n",
+        );
+    }
+    const idx = try gpa.create(index_format.Index);
+    idx.* = index_format.Index.init(gpa);
+    idx.version = 2;
+    {
+        const e = try idx.add("basic");
+        e.mode = filemode.Submodule;
+        e.hash = head;
+    }
+    sto.setIndex(idx);
+
+    var host = Host.init(gpa, sto, fs);
+    defer host.deinit();
+
+    const sm = try submodule.getSubmodule(&host, "basic");
+    defer {
+        sm.deinit();
+        gpa.destroy(sm);
+    }
+
+    const o = submodule.SubmoduleUpdateOptions{ .init = true, .no_fetch = true };
+    try sm.update(&o);
+
+    // Dirty the materialised file (longer than "clean") → Merge aborts.
+    {
+        var f = try fs.openFile("basic/f.txt", fs_pkg.O.WRONLY | fs_pkg.O.TRUNC, 0o644);
+        defer f.close() catch {};
+        _ = try f.write("dirty-longer");
+    }
+    const dirty = try readHostFile(gpa, fs, "basic/f.txt");
+    defer gpa.free(dirty);
+    try std.testing.expectEqualStrings("dirty-longer", dirty);
+
+    try std.testing.expectError(error.UnstagedChanges, sm.update(&o));
+
+    // Restore worktree to clean content; re-Update succeeds (Merge, no Force).
+    {
+        var f = try fs.openFile("basic/f.txt", fs_pkg.O.WRONLY | fs_pkg.O.TRUNC, 0o644);
+        defer f.close() catch {};
+        _ = try f.write("clean");
+    }
+    try sm.update(&o);
+    const clean = try readHostFile(gpa, fs, "basic/f.txt");
+    defer gpa.free(clean);
+    try std.testing.expectEqualStrings("clean", clean);
+}
+
+test "Init persists into storer config; new Host reloads registry" {
+    // go-git Init → Config.Submodules + SetConfig. Nested Host on same storer
+    // must see initialized names without re-Init.
+    const gpa = std.testing.allocator;
+    var fx = try Fixture.create(gpa);
+    defer fx.deinit();
+
+    {
+        const sm = try submodule.getSubmodule(&fx.host, "basic");
+        defer {
+            sm.deinit();
+            gpa.destroy(sm);
+        }
+        try sm.init();
+    }
+
+    // Storer config holds the entry.
+    const cfg = try fx.sto.config();
+    try std.testing.expect(cfg.hasSubmodule("basic"));
+    const entry = cfg.getSubmodule("basic") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings("basic", entry.path);
+
+    // Fresh Host on same storer reloads Init state.
+    var host2 = Host.init(gpa, fx.sto, fx.fs);
+    defer host2.deinit();
+    try std.testing.expect(host2.isInitialized("basic"));
+    try std.testing.expect(!host2.isInitialized("nested"));
+
+    var list = try submodule.listSubmodules(&host2, null);
+    defer list.free(gpa);
+    for (list.items) |m| {
+        if (std.mem.eql(u8, m.config().name, "basic")) {
+            try std.testing.expect(m.initialized);
+        } else {
+            try std.testing.expect(!m.initialized);
+        }
+    }
+}
+
+test "Update relative URL resolves against superproject origin" {
+    const gpa = std.testing.allocator;
+    const sync = @import("utils/sync");
+    const fixtures = @import("transport_test_fixtures");
+    const server_pkg = @import("server");
+    defer sync.deinitPools(gpa);
+
+    const remote_sto = try memory.newStorage(gpa);
+    defer {
+        remote_sto.deinit();
+        gpa.destroy(remote_sto);
+    }
+    const head = try fixtures.populateRepo(remote_sto, gpa);
+    // MapLoader key matches the resolved relative URL path join.
+    const parent_url = "file://parent-group/super.git";
+    const resolved_url = "file://parent-group/basic.git";
+
+    const sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+    // Superproject origin used for relative join.
+    {
+        const cfg = try sto.config();
+        try cfg.putRemote("origin", &[_][]const u8{parent_url});
+    }
+    const fs = try gpa.create(fs_pkg.Mem);
+    defer {
+        fs.deinit();
+        gpa.destroy(fs);
+    }
+    fs.* = try fs_pkg.Mem.init(gpa);
+    {
+        var f = try fs.create(submodule.gitmodules_file);
+        defer f.close() catch {};
+        _ = try f.write(
+            "[submodule \"basic\"]\n" ++
+                "\tpath = basic\n" ++
+                "\turl = ../basic.git\n",
+        );
+    }
+    const idx = try gpa.create(index_format.Index);
+    idx.* = index_format.Index.init(gpa);
+    idx.version = 2;
+    {
+        const e = try idx.add("basic");
+        e.mode = filemode.Submodule;
+        e.hash = head;
+    }
+    sto.setIndex(idx);
+
+    var host = Host.init(gpa, sto, fs);
+    defer host.deinit();
+
+    var loader = server_pkg.MapLoader.init(gpa);
+    defer loader.deinit();
+    var ep = try fixtures.makeEndpoint(gpa, resolved_url);
+    defer ep.deinit();
+    try loader.put(&ep, remote_sto);
+    var client = server_pkg.newClient(gpa, loader.asLoader());
+
+    const sm = try submodule.getSubmodule(&host, "basic");
+    defer {
+        sm.deinit();
+        gpa.destroy(sm);
+    }
+
+    const o = submodule.SubmoduleUpdateOptions{
+        .init = true,
+        .no_fetch = false,
+        .embedded = &client,
+    };
+    try sm.update(&o);
+
+    const mod = try sto.module("basic");
+    const mod_head = try mod.reference(plumbing.HEAD);
+    try std.testing.expect(mod_head.hash.eql(head));
+    const content = try readHostFile(gpa, fs, "basic/hello.txt");
+    defer gpa.free(content);
+    try std.testing.expectEqualStrings("hello", content);
 }
 
 test "Update recurse zero is intentional no-op for nested" {

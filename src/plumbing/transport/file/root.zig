@@ -11,15 +11,15 @@
 //! | `ServeUploadPack` / `ServeReceivePack` | `serveUploadPack` / `serveReceivePack` |
 //! | `adjustPathForWindows` | `adjustPathForWindows` |
 //!
-//! # Dual path
+//! # Dual path (see `client.zig` for full notes)
 //!
-//! 1. **Hermetic** — `FileClient.setLoader` → `LocalCommand` (in-process server).
+//! 1. **Hermetic** — `setLoader` → `LocalCommand` (in-process MapLoader/FS).
 //! 2. **Host spawn** — no loader + `use_host_spawn` (default) → `lookPath` /
-//!    `prefixExecPath` + `HostCommand` (`std.process.spawn`, argv `bin path`).
+//!    `prefixExecPath` + `HostCommand` (argv `{ bin, path }`).
 //! 3. **Unit dry** — no loader + `setUseHostSpawn(false)` → `LocalCommand`
 //!    without serve (Commander wiring only).
 //!
-//! Loader wins while set. Host spawn is the go-git default.
+//! Loader wins while set. Host spawn matches go-git DefaultClient.
 //!
 //! # go-git test map
 //!

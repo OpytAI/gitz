@@ -159,6 +159,17 @@ pub const AuthKind = enum {
 };
 
 /// Logical SSH client configuration used by the transport runner.
+///
+/// # Ownership
+///
+/// `ClientConfig` is a **borrowed view**. String slices (`password`, `pem_bytes`,
+/// `identity_file`, `agent_sock`, …) and callbacks are not freed by the config.
+///
+/// - `PublicKeys` / `newPublicKeys*` own PEM bytes; `clientConfig` returns a view.
+/// - `newSSHAgentAuth` owns the socket path; agent connections are open/close
+///   per `signers_callback` call (no long-lived agent socket on the config).
+/// - The runner may copy the struct into a plan; credential slices remain
+///   valid only while the caller-owned auth method is alive through dial.
 pub const ClientConfig = struct {
     user: []const u8 = "",
     auth_kind: AuthKind = .none,
@@ -623,7 +634,11 @@ pub const PublicKeys = struct {
 
     pub fn deinit(self: *PublicKeys) void {
         if (self.allocator) |a| {
-            if (self.owned_pem) |p| a.free(p);
+            if (self.owned_pem) |p| {
+                // Best-effort wipe of private key material before free.
+                @memset(p, 0);
+                a.free(p);
+            }
             if (self.owned_identity_path) |p| a.free(p);
             self.pem_info.deinit(a);
         }

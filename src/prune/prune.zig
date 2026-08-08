@@ -60,8 +60,17 @@ pub fn deleteObject(sto: *Storage, hash: Hash) anyerror!void {
 /// go-git `Repository.Prune`.
 ///
 /// 1. Walk all hash refs and mark reachable objects.
-/// 2. Iterate every loose object hash via `forEachObjectHash`.
+/// 2. Snapshot every loose object hash via `forEachObjectHash`.
 /// 3. Call `opt.handler` for each hash not in the seen set (after optional age filter).
+///
+/// # Concurrent-safe design
+///
+/// Hashes are collected first so the handler may re-enter storage without
+/// racing the iterator. Collection uses a **stack-local context** passed into
+/// context-aware `forEachObjectHash` — no process-local statics. Distinct
+/// `prune` calls (and distinct storages) do not share collect state and may
+/// run concurrently. A single `*Storage` is still not thread-safe for
+/// concurrent mutation of objects/refs during the walk or handler.
 ///
 /// Memory has no real mtimes: when `only_objects_older_than` is set,
 /// `looseObjectTime` fails and every candidate is skipped (non-fatal; go-git).
@@ -70,39 +79,31 @@ pub fn prune(allocator: Allocator, sto: *Storage, opt: PruneOptions) anyerror!vo
     defer walker.deinit();
     try walker.walkAllRefs();
 
-    const Ctx = struct {
-        walker: *const ObjectWalker,
-        sto: *Storage,
-        opt: PruneOptions,
+    // Snapshot hashes so handler can delete without mutating the iterator.
+    var all: std.ArrayList(Hash) = .empty;
+    defer all.deinit(allocator);
 
-        fn onHash(ctx: *@This(), hash: Hash) anyerror!void {
-            if (ctx.walker.isSeen(hash)) return;
-
-            if (ctx.opt.only_objects_older_than) |cutoff| {
-                // Errors are non-fatal (packed, concurrent delete, unsupported).
-                const t = ctx.sto.looseObjectTime(hash) catch return;
-                // go-git: skip when !t.Before(OnlyObjectsOlderThan) → t >= cutoff.
-                if (t >= cutoff) return;
-            }
-            return ctx.opt.handler(hash);
+    const Collect = struct {
+        list: *std.ArrayList(Hash),
+        gpa: Allocator,
+        fn cb(self: *@This(), hash: Hash) anyerror!void {
+            try self.list.append(self.gpa, hash);
         }
     };
+    var collect = Collect{ .list = &all, .gpa = allocator };
+    try sto.forEachObjectHash(&collect, Collect.cb);
 
-    var ctx = Ctx{
-        .walker = &walker,
-        .sto = sto,
-        .opt = opt,
-    };
+    for (all.items) |hash| {
+        if (walker.isSeen(hash)) continue;
 
-    // Capture sto-bound callback for forEachObjectHash (fn(Hash)!void).
-    const Bridge = struct {
-        var c: *Ctx = undefined;
-        fn cb(hash: Hash) anyerror!void {
-            return c.onHash(hash);
+        if (opt.only_objects_older_than) |cutoff| {
+            // Errors are non-fatal (packed, concurrent delete, unsupported).
+            const t = sto.looseObjectTime(hash) catch continue;
+            // go-git: skip when !t.Before(OnlyObjectsOlderThan) → t >= cutoff.
+            if (t >= cutoff) continue;
         }
-    };
-    Bridge.c = &ctx;
-    try sto.forEachObjectHash(Bridge.cb);
+        try opt.handler(hash);
+    }
 }
 
 /// Variant of `prune` that takes a function pointer handler.

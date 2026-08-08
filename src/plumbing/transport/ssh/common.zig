@@ -2,21 +2,25 @@
 //!
 //! Pure Zig dial paths (no libssh / no C):
 //!
-//! 1. Builds a **command plan** (host:port, shell-quoted remote command, auth).
+//! 1. Builds a **command plan** (owned host/user/command strings + auth view).
 //! 2. Implements `transport_common.Commander` via `Runner`.
 //! 3. Accepts an injectable test commander (mock `Command`) for unit tests.
-//! 4. **Native** in-process SSH client (`DialMode.native`, default for `newClient`).
+//! 4. **Native** in-process SSH client (`DialMode.native`, default for `newClient`)
+//!    with curve25519-sha256 KEX, aes256/128-ctr, hmac-sha2-512/256, ed25519 and
+//!    rsa-sha2-256 host-key verify.
 //! 5. **System `ssh`** spawn via `HostCommand` (`DialMode.system_ssh`).
 //! 6. **Plan-only** (`DialMode.plan_only` / `use_system_ssh=false`) for unit tests.
 //!
 //! # Dial modes
 //!
-//! | Mode | When | Behavior |
-//! |------|------|----------|
-//! | `native` | `newClient` default; `use_system_ssh=true` | Pure-Zig SSH client |
-//! | `system_ssh` | `dial_mode=.system_ssh` | Spawns host `ssh` with pipes |
-//! | `plan_only` | `use_system_ssh=false` or `dial_mode=.plan_only` | In-memory plan only |
-//! | mock via `test_commander` | set on `Runner` | Plan built then delegated to mock |
+//! | Mode | When | Behavior | Ownership after `command` |
+//! |------|------|----------|---------------------------|
+//! | `native` | `newClient` default | Pure-Zig SSH client | `NativeCommand` → `NativeDialParams` |
+//! | `system_ssh` | `dial_mode=.system_ssh` | Spawns host `ssh` | `HostCommand` → `CommandPlan` |
+//! | `plan_only` | `use_system_ssh=false` | In-memory plan only | `PlanCommand` → `CommandPlan` |
+//! | mock | `test_commander` set | Plan built then mock | plan discarded after build |
+//!
+//! Host and user are always heap-copied so the plan/command outlives `Endpoint`.
 //!
 //! System `ssh` uses ambient `SSH_AUTH_SOCK` for agent auth and `-i` for
 //! `ClientConfig.identity_file` / temp PEM. Native dial uses password and
@@ -147,19 +151,32 @@ pub var DefaultAuthBuilder: AuthBuilderFn = defaultAuthBuilder;
 
 /// Built description of an SSH remote invocation.
 ///
-/// Ownership: `remote_command`, `host_with_port`, `ssh_args` (each element +
-/// slice), `identity_path`, and optional `owned_user` are freed by `deinit`.
-/// Other string fields are borrowed (auth / endpoint lifetime).
+/// # Ownership (no UAF when Endpoint goes out of scope after `command`)
+///
+/// | Field | Owner |
+/// |-------|--------|
+/// | `remote_command`, `host_with_port`, `ssh_args`, `identity_path` | plan |
+/// | `owned_host` / `host` | plan (`host` views owned bytes) |
+/// | `owned_user` / `user` | plan when `owned_user` set (always from runner) |
+/// | `auth_name`, `key_type` | static / borrowed (immortal or auth-owned) |
+/// | `client_config` string slices (`password`, `pem_bytes`, …) | **borrowed**
+///   from caller-owned auth; auth must outlive dial/userauth |
+///
+/// Dial modes transfer owned fields into `PlanCommand` / `HostCommand` /
+/// `NativeDialParams` and clear them on the plan so `deinit` is safe.
 pub const CommandPlan = struct {
     allocator: Allocator,
     /// Remote shell command: `git-upload-pack '/path'`.
     remote_command: []u8 = &.{},
     /// `host:port` (or `[host]:port` for IPv6 when needed).
     host_with_port: []u8 = &.{},
+    /// Owned host name (runner always sets this; tests may leave null + set `host`).
+    owned_host: ?[]u8 = null,
+    /// Host view used for argv / dial.
     host: []const u8 = "",
     port: i32 = DefaultPort,
     user: []const u8 = "",
-    /// When set, plan owns `user` (default-agent snapshot).
+    /// When set, plan owns `user` (runner always snapshots user).
     owned_user: ?[]u8 = null,
     auth_name: []const u8 = "",
     auth_kind: auth_mod.AuthKind = .none,
@@ -183,6 +200,7 @@ pub const CommandPlan = struct {
         for (self.ssh_args) |arg| a.free(arg);
         if (self.ssh_args.len > 0) a.free(self.ssh_args);
         if (self.identity_path.len > 0) a.free(self.identity_path);
+        if (self.owned_host) |h| a.free(h);
         if (self.owned_user) |u| a.free(u);
         self.* = .{ .allocator = a };
     }
@@ -452,9 +470,13 @@ fn spawnSupportedComptime() bool {
 
 /// Real SSH command via system `ssh` binary (pack protocol over stdin/stdout).
 ///
-/// Heap-owned by `Runner` (freed in `Runner.deinit`). Spawns on first pipe
-/// access or `start` so Session order (pipes then start) matches Zig's atomic
-/// `process.spawn`. Temp PEM identity files (mode 0o600) are deleted in `deinit`.
+/// Heap-owned by `Runner` (freed in `Runner.deinit`). Lifecycle matches file
+/// transport `HostCommand`:
+/// - `ensureSpawned` owns the child until `close`/`kill`/`deinit`.
+/// - Stdin close flushes and closes the write end (child sees EOF).
+/// - `close` waits and reaps; `kill` terminates then reaps.
+/// - Temp PEM identity files (mode 0o600) are deleted in `deinit`.
+/// - Do not read pipes after `close`/`kill` (no UAF use of reaped FDs).
 pub const HostCommand = struct {
     allocator: Allocator,
     io: Io,
@@ -478,7 +500,7 @@ pub const HostCommand = struct {
     pipes_ready: bool = false,
 
     pub fn deinit(self: *HostCommand) void {
-        self.kill() catch {};
+        self.reapKill();
         self.cleanupTempIdentity();
         if (self.ssh_bin.len > 0) self.allocator.free(self.ssh_bin);
         self.plan.deinit();
@@ -493,8 +515,38 @@ pub const HostCommand = struct {
         }
     }
 
+    /// Kill and reap if still live; clear child and pipes_ready.
+    fn reapKill(self: *HostCommand) void {
+        self.closeStdin() catch {};
+        if (self.child) |*c| {
+            if (c.id != null) {
+                c.kill(self.io);
+            }
+            self.child = null;
+        }
+        self.pipes_ready = false;
+        self.connected = false;
+        self.started = false;
+        self.stdin_closed = true;
+    }
+
+    /// Wait and reap if still live; clear child and pipes_ready.
+    fn reapWait(self: *HostCommand) void {
+        self.closeStdin() catch {};
+        if (self.child) |*c| {
+            if (c.id != null) {
+                _ = c.wait(self.io) catch {};
+            }
+            self.child = null;
+        }
+        self.pipes_ready = false;
+        self.connected = false;
+        self.started = false;
+    }
+
     fn ensureSpawned(self: *HostCommand) anyerror!void {
         if (self.pipes_ready) return;
+        if (self.closed) return Error.CommandFailed;
 
         if (comptime !spawnSupportedComptime()) {
             return Error.SpawnUnsupported;
@@ -525,7 +577,7 @@ pub const HostCommand = struct {
         for (argv_owned, 0..) |a, i| argv_ptrs[i] = a;
         if (self.ssh_bin.len > 0) argv_ptrs[0] = self.ssh_bin;
 
-        const child = std.process.spawn(self.io, .{
+        var child = std.process.spawn(self.io, .{
             .argv = argv_ptrs,
             .stdin = .pipe,
             .stdout = .pipe,
@@ -536,25 +588,18 @@ pub const HostCommand = struct {
             if (err == error.FileNotFound) return Error.SshBinaryNotFound;
             return err;
         };
+        errdefer if (child.id != null) child.kill(self.io);
+
+        const stdin = child.stdin orelse return Error.CommandFailed;
+        const stdout = child.stdout orelse return Error.CommandFailed;
+        const stderr = child.stderr orelse return Error.CommandFailed;
+
+        self.stdin_writer_impl = File.Writer.initStreaming(stdin, self.io, &self.stdin_buf);
+        self.stdout_reader_impl = File.Reader.initStreaming(stdout, self.io, &self.stdout_buf);
+        self.stderr_reader_impl = File.Reader.initStreaming(stderr, self.io, &self.stderr_buf);
+
         self.child = child;
         self.connected = true;
-
-        const c = &self.child.?;
-        self.stdin_writer_impl = File.Writer.initStreaming(
-            c.stdin orelse return Error.CommandFailed,
-            self.io,
-            &self.stdin_buf,
-        );
-        self.stdout_reader_impl = File.Reader.initStreaming(
-            c.stdout orelse return Error.CommandFailed,
-            self.io,
-            &self.stdout_buf,
-        );
-        self.stderr_reader_impl = File.Reader.initStreaming(
-            c.stderr orelse return Error.CommandFailed,
-            self.io,
-            &self.stderr_buf,
-        );
         self.pipes_ready = true;
     }
 
@@ -598,47 +643,23 @@ pub const HostCommand = struct {
 
     pub fn start(self: *HostCommand) anyerror!void {
         if (self.started) return Error.AlreadyConnected;
+        if (self.closed) return Error.CommandFailed;
         try self.ensureSpawned();
         self.started = true;
     }
 
+    /// Wait for the child (go-git `Close`). Pipe FDs are invalid after return.
     pub fn close(self: *HostCommand) anyerror!void {
         if (self.closed) return;
         self.closed = true;
-        self.closeStdin() catch {};
-        if (self.child) |*c| {
-            if (c.stdout) |f| {
-                f.close(self.io);
-                c.stdout = null;
-            }
-            if (c.stderr) |f| {
-                f.close(self.io);
-                c.stderr = null;
-            }
-            if (c.id != null) {
-                _ = c.wait(self.io) catch {};
-            }
-            self.child = null;
-        }
-        self.connected = false;
-        self.started = false;
-        self.pipes_ready = false;
+        self.reapWait();
     }
 
+    /// Terminate then reap (go-git `CommandKiller.Kill`). Pipe FDs invalid after.
     pub fn kill(self: *HostCommand) anyerror!void {
         if (self.closed and self.child == null) return;
         self.closed = true;
-        self.closeStdin() catch {};
-        if (self.child) |*c| {
-            if (c.id != null) {
-                c.kill(self.io);
-            }
-            self.child = null;
-        }
-        self.connected = false;
-        self.started = false;
-        self.pipes_ready = false;
-        self.stdin_closed = true;
+        self.reapKill();
     }
 
     pub fn asCommand(self: *HostCommand) transport_common.Command {
@@ -768,8 +789,10 @@ pub const Runner = struct {
             cfg.host_key_callback = auth_mod.HostKeyCallback.insecureIgnoreHostKey();
         }
 
-        var plan = try self.buildPlan(cmd, ep, &cfg, auth_name, owned_user);
-        owned_user = null; // transferred into plan
+        // buildPlan always takes ownership of owned_user (frees on error).
+        const user_for_plan = owned_user;
+        owned_user = null;
+        var plan = try self.buildPlan(cmd, ep, &cfg, auth_name, user_for_plan);
         errdefer plan.deinit();
 
         if (self.last_plan) |*old| old.deinit();
@@ -789,14 +812,17 @@ pub const Runner = struct {
                     .allocator = self.allocator,
                     .plan = plan,
                 };
+                plan = .{ .allocator = self.allocator }; // moved; disarm errdefer plan.deinit
+                errdefer pc.deinit();
                 try self.owned_cmds.append(self.allocator, pc);
                 return pc.asCommand();
             },
             .native => {
                 const nc = try self.allocator.create(native_ssh.NativeCommand);
                 errdefer self.allocator.destroy(nc);
-                // Move plan fields into NativeDialParams (plan ownership transfers).
+                // Move plan fields into NativeDialParams (owned host/user/command).
                 const params = planToNativeParams(self.allocator, &plan);
+                plan = .{ .allocator = self.allocator }; // transferred; disarm errdefer
                 nc.* = .{
                     .allocator = self.allocator,
                     .io = self.io,
@@ -807,16 +833,12 @@ pub const Runner = struct {
                 return nc.asCommand();
             },
             .system_ssh => {
-                const bin = try lookPath(self.allocator, self.io, "ssh");
-                if (bin == null) {
-                    plan.deinit();
-                    return Error.SshBinaryNotFound;
-                }
-                const bin_owned = bin.?;
+                // Miss: leave `plan` to outer errdefer.
+                const bin_opt = try lookPath(self.allocator, self.io, "ssh");
+                const bin_owned = bin_opt orelse return Error.SshBinaryNotFound;
 
                 const hc = self.allocator.create(HostCommand) catch |err| {
                     self.allocator.free(bin_owned);
-                    plan.deinit();
                     return err;
                 };
                 hc.* = .{
@@ -825,9 +847,9 @@ pub const Runner = struct {
                     .plan = plan,
                     .ssh_bin = bin_owned,
                 };
+                plan = .{ .allocator = self.allocator }; // moved into hc
                 self.owned_host_cmds.append(self.allocator, hc) catch |err| {
-                    hc.plan.deinit();
-                    self.allocator.free(hc.ssh_bin);
+                    hc.deinit(); // plan + ssh_bin + temp identity
                     self.allocator.destroy(hc);
                     return err;
                 };
@@ -837,8 +859,11 @@ pub const Runner = struct {
     }
 
     /// Transfer owned plan fields into native dial params; free argv / identity leftovers.
+    ///
+    /// After return, `plan` only retains the allocator (safe for `deinit`).
+    /// `client_config` credential slices remain borrowed from caller auth.
     fn planToNativeParams(allocator: Allocator, plan: *CommandPlan) native_ssh.NativeDialParams {
-        // Free fields native dial does not need (argv for system ssh).
+        // Free fields native dial does not need (system-ssh argv / identity path).
         for (plan.ssh_args) |a| allocator.free(a);
         if (plan.ssh_args.len > 0) allocator.free(plan.ssh_args);
         plan.ssh_args = &.{};
@@ -850,8 +875,9 @@ pub const Runner = struct {
 
         const remote = plan.remote_command;
         const host_port = plan.host_with_port;
-        const owned_user = plan.owned_user;
+        const owned_host = plan.owned_host;
         const host = plan.host;
+        const owned_user = plan.owned_user;
         const port = plan.port;
         const user = plan.user;
         const insecure = plan.insecure_ignore_host_key;
@@ -859,18 +885,20 @@ pub const Runner = struct {
         if (owned_user) |u| cfg.user = u;
         cfg.identity_file = "";
 
-        // Prevent plan.deinit (errdefer) from double-freeing transferred fields.
+        // Prevent plan.deinit from double-freeing transferred fields.
         plan.remote_command = &.{};
         plan.host_with_port = &.{};
+        plan.owned_host = null;
+        plan.host = "";
         plan.owned_user = null;
         plan.user = "";
-        plan.host = "";
         plan.client_config = .{};
 
         return .{
             .allocator = allocator,
             .remote_command = remote,
             .host_with_port = host_port,
+            .owned_host = owned_host,
             .host = host,
             .port = port,
             .user = user,
@@ -886,60 +914,58 @@ pub const Runner = struct {
         ep: *const Endpoint,
         cfg: *const auth_mod.ClientConfig,
         auth_name: []const u8,
-        owned_user: ?[]u8,
+        owned_user_in: ?[]u8,
     ) !CommandPlan {
-        const remote = try endpointToCommand(self.allocator, cmd, ep);
-        errdefer self.allocator.free(remote);
+        // Single errdefer owns all heap fields. Take owned_user_in immediately
+        // so error paths never leak the caller's snapshot.
+        var draft: CommandPlan = .{ .allocator = self.allocator };
+        draft.owned_user = owned_user_in;
+        if (owned_user_in) |u| draft.user = u;
+        errdefer draft.deinit();
 
-        const host_port = try getHostWithPort(self.allocator, ep, default_ssh_config);
-        errdefer self.allocator.free(host_port);
+        draft.remote_command = try endpointToCommand(self.allocator, cmd, ep);
+        draft.host_with_port = try getHostWithPort(self.allocator, ep, default_ssh_config);
+
+        // Always own host so Command/plan outlives the Endpoint pointer.
+        const host_owned = try self.allocator.dupe(u8, ep.host);
+        draft.owned_host = host_owned;
+        draft.host = host_owned;
 
         var port = ep.port;
         if (port <= 0) port = DefaultPort;
-        if (parsePortFromHostPort(host_port)) |p| {
+        if (parsePortFromHostPort(draft.host_with_port)) |p| {
             port = p;
         }
+        draft.port = port;
 
-        const user = if (owned_user) |u| u else effectiveUser(ep, cfg, &self.options);
-        const host = ep.host;
+        // Always own user (agent path may already provide owned_user_in).
+        if (draft.owned_user == null) {
+            const u = try self.allocator.dupe(u8, effectiveUser(ep, cfg, &self.options));
+            draft.owned_user = u;
+            draft.user = u;
+        }
 
-        const insecure = self.options.insecure_ignore_host_key or
+        draft.insecure_ignore_host_key = self.options.insecure_ignore_host_key or
             (cfg.host_key_callback != null and isInsecureCallback(cfg.host_key_callback.?));
 
-        var identity_path: []u8 = &.{};
         if (cfg.identity_file.len > 0) {
-            identity_path = try self.allocator.dupe(u8, cfg.identity_file);
+            draft.identity_path = try self.allocator.dupe(u8, cfg.identity_file);
         }
-        errdefer if (identity_path.len > 0) self.allocator.free(identity_path);
 
-        // Stable client_config for the plan: keep fields the runner uses.
-        // Borrowed slices (password, pem_bytes, callbacks) outlive the plan when
-        // the caller owns the auth method; default-agent path stores only stable data.
+        // Stable client_config: borrowed credential slices need caller-owned auth.
         var plan_cfg = cfg.*;
-        plan_cfg.user = user;
-        plan_cfg.identity_file = if (identity_path.len > 0) identity_path else cfg.identity_file;
+        plan_cfg.user = draft.user;
+        plan_cfg.identity_file = if (draft.identity_path.len > 0) draft.identity_path else cfg.identity_file;
         plan_cfg.key_type = cfg.key_type;
-
-        var draft: CommandPlan = .{
-            .allocator = self.allocator,
-            .remote_command = remote,
-            .host_with_port = host_port,
-            .host = host,
-            .port = port,
-            .user = user,
-            .owned_user = owned_user,
-            .auth_name = auth_name,
-            .auth_kind = cfg.auth_kind,
-            .identity_path = identity_path,
-            .key_type = cfg.key_type,
-            .insecure_ignore_host_key = insecure,
-            .client_config = plan_cfg,
-        };
+        draft.auth_name = auth_name;
+        draft.auth_kind = cfg.auth_kind;
+        draft.key_type = cfg.key_type;
+        draft.client_config = plan_cfg;
 
         const full_argv = try buildSshArgv(
             self.allocator,
             &draft,
-            if (identity_path.len > 0) identity_path else null,
+            if (draft.identity_path.len > 0) draft.identity_path else null,
         );
         defer freeSshArgv(self.allocator, full_argv);
 
@@ -953,7 +979,11 @@ pub const Runner = struct {
             try args_list.append(self.allocator, try self.allocator.dupe(u8, a));
         }
         draft.ssh_args = try args_list.toOwnedSlice(self.allocator);
-        return draft;
+
+        // Success: transfer draft out without errdefer deinit.
+        const out = draft;
+        draft = .{ .allocator = self.allocator };
+        return out;
     }
 };
 
@@ -989,10 +1019,19 @@ fn authKindFromName(name: []const u8) auth_mod.AuthKind {
 }
 
 fn clonePlan(allocator: Allocator, src: *const CommandPlan) Allocator.Error!CommandPlan {
-    const remote = try allocator.dupe(u8, src.remote_command);
-    errdefer allocator.free(remote);
-    const host_port = try allocator.dupe(u8, src.host_with_port);
-    errdefer allocator.free(host_port);
+    var out: CommandPlan = .{ .allocator = allocator };
+    errdefer out.deinit();
+
+    out.remote_command = try allocator.dupe(u8, src.remote_command);
+    out.host_with_port = try allocator.dupe(u8, src.host_with_port);
+
+    // Always own host in the clone (src.host may view src.owned_host).
+    const host_src = if (src.owned_host) |h| h else src.host;
+    if (host_src.len > 0) {
+        const h = try allocator.dupe(u8, host_src);
+        out.owned_host = h;
+        out.host = h;
+    }
 
     var args: std.ArrayList([]u8) = .empty;
     errdefer {
@@ -1003,38 +1042,33 @@ fn clonePlan(allocator: Allocator, src: *const CommandPlan) Allocator.Error!Comm
         try args.append(allocator, try allocator.dupe(u8, a));
     }
 
-    var identity: []u8 = &.{};
     if (src.identity_path.len > 0) {
-        identity = try allocator.dupe(u8, src.identity_path);
+        out.identity_path = try allocator.dupe(u8, src.identity_path);
     }
-    errdefer if (identity.len > 0) allocator.free(identity);
 
-    var owned_user: ?[]u8 = null;
-    if (src.owned_user) |u| {
-        owned_user = try allocator.dupe(u8, u);
+    // Always snapshot user into owned_user for last_plan independence.
+    const user_src = if (src.owned_user) |u| u else src.user;
+    if (user_src.len > 0) {
+        const u = try allocator.dupe(u8, user_src);
+        out.owned_user = u;
+        out.user = u;
     }
-    errdefer if (owned_user) |u| allocator.free(u);
 
     var cfg = src.client_config;
-    if (owned_user) |u| cfg.user = u;
-    if (identity.len > 0) cfg.identity_file = identity;
+    if (out.owned_user) |u| cfg.user = u;
+    if (out.identity_path.len > 0) cfg.identity_file = out.identity_path;
 
-    return .{
-        .allocator = allocator,
-        .remote_command = remote,
-        .host_with_port = host_port,
-        .host = src.host,
-        .port = src.port,
-        .user = if (owned_user) |u| u else src.user,
-        .owned_user = owned_user,
-        .auth_name = src.auth_name,
-        .auth_kind = src.auth_kind,
-        .ssh_args = try args.toOwnedSlice(allocator),
-        .identity_path = identity,
-        .key_type = src.key_type,
-        .insecure_ignore_host_key = src.insecure_ignore_host_key,
-        .client_config = cfg,
-    };
+    out.port = src.port;
+    out.auth_name = src.auth_name;
+    out.auth_kind = src.auth_kind;
+    out.ssh_args = try args.toOwnedSlice(allocator);
+    out.key_type = src.key_type;
+    out.insecure_ignore_host_key = src.insecure_ignore_host_key;
+    out.client_config = cfg;
+
+    const result = out;
+    out = .{ .allocator = allocator }; // disarm errdefer
+    return result;
 }
 
 /// Apply ClientOptions onto auth ClientConfig (go-git `overrideConfig` subset).
@@ -1615,4 +1649,39 @@ test "runner native dial closed port returns connect error" {
     try testing.expectEqual(@as(usize, 1), runner.owned_native_cmds.items.len);
     const result = cmd.start();
     try testing.expectError(native_ssh.Error.SshConnectFailed, result);
+}
+
+test "plan owns host and user independent of Endpoint lifetime" {
+    var runner = Runner.init(testing.allocator, .{});
+    defer runner.deinit();
+    runner.use_system_ssh = false;
+
+    var pw = auth_mod.Password{ .user = "planuser", .password = "p" };
+    runner.ssh_auth = pw.asAuthMethod();
+
+    // Stack-local host buffer that will be overwritten after command().
+    var host_buf = "example.com".*;
+    var ep = Endpoint{
+        .allocator = testing.allocator,
+        .host = &host_buf,
+        .path = @constCast("/r.git"),
+        .user = @constCast("planuser"),
+    };
+
+    _ = try runner.command("git-upload-pack", &ep, pw.asTransportAuth());
+    // Mutate original endpoint host storage — plan must keep its own copy.
+    @memset(&host_buf, 'X');
+
+    const plan = runner.last_plan orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("example.com", plan.host);
+    try testing.expect(plan.owned_host != null);
+    try testing.expectEqualStrings("planuser", plan.user);
+    try testing.expect(plan.owned_user != null);
+}
+
+test "newClientSystemSsh sets system_ssh dial mode" {
+    var c = try newClientSystemSsh(testing.allocator, null);
+    defer c.deinit();
+    try testing.expect(c.getRunner().dial_mode == .system_ssh);
+    try testing.expect(c.getRunner().effectiveDialMode() == .system_ssh);
 }

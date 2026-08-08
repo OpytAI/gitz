@@ -826,8 +826,13 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             };
         }
 
-        pub fn forEachObjectHash(self: *Self, fun: anytype) anyerror!void {
-            return self.dir.forEachObjectHash(fun);
+        /// Context-aware `ForEachObjectHash` (see DotGit.forEachObjectHash).
+        pub fn forEachObjectHash(
+            self: *Self,
+            ctx: anytype,
+            comptime fun: *const fn (@TypeOf(ctx), Hash) anyerror!void,
+        ) anyerror!void {
+            return self.dir.forEachObjectHash(ctx, fun);
         }
 
         pub fn objectPacks(self: *Self) (Allocator.Error || fs_pkg.Error)![]Hash {

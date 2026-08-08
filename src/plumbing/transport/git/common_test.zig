@@ -1,7 +1,9 @@
 //! Unit tests for git:// transport (hermetic — no network).
 //!
-//! Covers go-git `plumbing/transport/git` behavior that does not need a daemon:
-//! DefaultPort, auth rejection, GitProtoRequest host fields, Start encode.
+//! Covers go-git `plumbing/transport/git` client wire behavior with BufferConn:
+//! DefaultPort, auth rejection, GitProtoRequest host fields, Start encode,
+//! session lifecycle. Full protocol e2e lives in `e2e_test.zig` (in-process
+//! MapLoader server + live git-daemon).
 
 const std = @import("std");
 const testing = std.testing;
@@ -147,6 +149,26 @@ test "joinHostPort brackets IPv6 host" {
     try testing.expectEqualStrings("[::1]:9418", s);
 }
 
+test "joinHostPort does not double-bracket already-bracketed IPv6" {
+    // gitz endpoints keep brackets; JoinHostPort must not produce [[::1]]:port.
+    const s = try common.joinHostPort(testing.allocator, "[::1]", 1234);
+    defer testing.allocator.free(s);
+    try testing.expectEqualStrings("[::1]:1234", s);
+}
+
+test "bareHost strips brackets" {
+    try testing.expectEqualStrings("::1", common.bareHost("[::1]"));
+    try testing.expectEqualStrings("example.com", common.bareHost("example.com"));
+}
+
+test "requestHost IPv6 non-default port is single-bracketed" {
+    var ep = try makeEp(testing.allocator, "[::1]", 1234, "/repo.git");
+    defer ep.deinit();
+    const host = try common.requestHost(testing.allocator, &ep);
+    defer testing.allocator.free(host);
+    try testing.expectEqualStrings("[::1]:1234", host);
+}
+
 // ---------------------------------------------------------------------------
 // Command Start encodes GitProtoRequest on buffer connection
 // ---------------------------------------------------------------------------
@@ -279,4 +301,111 @@ test "defaultClient builds pack-protocol client over runner" {
     try req.decode(&r);
     try testing.expectEqualStrings("git-upload-pack", req.request_command);
     try testing.expectEqualStrings("/repo", req.pathname);
+}
+
+test "Command close is idempotent and drops connection" {
+    var runner = common.Runner.init(testing.allocator, testing.io);
+    defer runner.deinit();
+    var buf = common.BufferConn.init(testing.allocator);
+    defer buf.deinit();
+    runner.setDial(&buf, common.BufferConn.dialFn);
+
+    var ep = try makeEp(testing.allocator, "localhost", common.DefaultPort, "/r");
+    defer ep.deinit();
+
+    const cmd = try runner.command("git-upload-pack", &ep, null);
+    try cmd.close();
+    try testing.expect(buf.closed);
+    try cmd.close();
+    try cmd.kill();
+    try testing.expect(buf.closed);
+}
+
+test "Command Start after close fails NotConnected" {
+    var runner = common.Runner.init(testing.allocator, testing.io);
+    defer runner.deinit();
+    var buf = common.BufferConn.init(testing.allocator);
+    defer buf.deinit();
+    runner.setDial(&buf, common.BufferConn.dialFn);
+
+    var ep = try makeEp(testing.allocator, "localhost", common.DefaultPort, "/r");
+    defer ep.deinit();
+
+    const cmd = try runner.command("git-upload-pack", &ep, null);
+    try cmd.close();
+    try testing.expectError(error.NotConnected, cmd.start());
+    try testing.expectError(error.NotConnected, cmd.stdoutPipe());
+}
+
+test "dial failure is not retained on Runner" {
+    const fail_dial = struct {
+        fn dial(
+            _: ?*anyopaque,
+            _: Allocator,
+            _: std.Io,
+            _: []const u8,
+            _: u16,
+        ) anyerror!common.Conn {
+            return error.ConnectionRefused;
+        }
+    }.dial;
+
+    var runner = common.Runner.init(testing.allocator, testing.io);
+    defer runner.deinit();
+    runner.setDial(null, fail_dial);
+
+    var ep = try makeEp(testing.allocator, "localhost", common.DefaultPort, "/r");
+    defer ep.deinit();
+
+    try testing.expectError(error.ConnectionRefused, runner.command("git-upload-pack", &ep, null));
+    try testing.expectEqual(@as(usize, 0), runner.owned.items.len);
+}
+
+test "Command Start encodes GitProtoRequest for IPv6 host non-default port" {
+    var runner = common.Runner.init(testing.allocator, testing.io);
+    defer runner.deinit();
+    var buf = common.BufferConn.init(testing.allocator);
+    defer buf.deinit();
+    runner.setDial(&buf, common.BufferConn.dialFn);
+
+    var ep = try makeEp(testing.allocator, "[::1]", 1234, "/ipv6.git");
+    defer ep.deinit();
+
+    const cmd = try runner.command("git-upload-pack", &ep, null);
+    try testing.expectEqualStrings("[::1]", buf.dial_host);
+    try testing.expectEqual(@as(u16, 1234), buf.dial_port);
+
+    try cmd.start();
+
+    var r: std.Io.Reader = .fixed(buf.written());
+    var req = packp.GitProtoRequest.init(testing.allocator);
+    defer req.deinit();
+    try req.decode(&r);
+    try testing.expectEqualStrings("git-upload-pack", req.request_command);
+    try testing.expectEqualStrings("/ipv6.git", req.pathname);
+    try testing.expectEqualStrings("[::1]:1234", req.host);
+
+    try cmd.close();
+}
+
+test "session over BufferConn decodes empty stdout as empty-class error" {
+    // Hermetic stand-in for upload-pack suite: Start encodes, advertise is empty.
+    var runner = common.Runner.init(testing.allocator, testing.io);
+    defer runner.deinit();
+    var buf = common.BufferConn.init(testing.allocator);
+    defer buf.deinit();
+    // Empty read_data → EmptyInput on advertise decode.
+    buf.read_data = "";
+    runner.setDial(&buf, common.BufferConn.dialFn);
+
+    var client = common.defaultClient(testing.allocator, &runner);
+    var ep = try makeEp(testing.allocator, "localhost", common.DefaultPort, "/empty");
+    defer ep.deinit();
+
+    var sess = try client.newUploadPackSession(&ep, null);
+    defer sess.close() catch {};
+
+    // Empty stream without stderr → UnexpectedEndOfStream (not soft multi-error).
+    try testing.expectError(error.UnexpectedEndOfStream, sess.advertisedReferences());
+    try testing.expect(buf.written().len > 0);
 }

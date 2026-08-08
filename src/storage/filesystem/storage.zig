@@ -244,8 +244,13 @@ pub fn Storage(comptime Fs: type) type {
             return self.object_storage.lazyWriter();
         }
 
-        pub fn forEachObjectHash(self: *Self, fun: anytype) anyerror!void {
-            return self.object_storage.forEachObjectHash(fun);
+        /// Context-aware `ForEachObjectHash` (see ObjectStorage.forEachObjectHash).
+        pub fn forEachObjectHash(
+            self: *Self,
+            ctx: anytype,
+            comptime fun: *const fn (@TypeOf(ctx), Hash) anyerror!void,
+        ) anyerror!void {
+            return self.object_storage.forEachObjectHash(ctx, fun);
         }
 
         /// go-git `Close` — release cached pack images / DotGit descriptors.

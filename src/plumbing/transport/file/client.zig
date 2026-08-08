@@ -5,25 +5,25 @@
 //!
 //! go-git always spawns host `git-upload-pack` / `git-receive-pack` via
 //! LookPath + subprocess. gitz supports that path plus a hermetic in-process
-//! path. `Runner.command` chooses exactly one:
+//! path. `Runner.command` chooses exactly one path per call:
 //!
 //! 1. **Hermetic loader** — `loader != null` (`FileClient.setLoader`).
 //!    Returns `LocalCommand` and serves advertise/pack in-process
 //!    (MapLoader / FilesystemLoader). No LookPath, no host binary.
-//! 2. **Host spawn** — no loader and `use_host_spawn == true` (default).
-//!    Resolves the service binary with `lookPath` (and go-git
-//!    `prefixExecPath` fallback via `git --exec-path`), then returns
-//!    `HostCommand` (`std.process.spawn`, argv = `bin path`).
-//! 3. **Local dry** — no loader and `use_host_spawn == false`.
+//! 2. **Host spawn** — `loader == null` and `use_host_spawn == true` (default).
+//!    Resolves the service binary with `lookPath`, then go-git
+//!    `prefixExecPath` (`git --exec-path` + join) on miss, then returns
+//!    `HostCommand` (`std.process.spawn`, argv = `{ bin, path }`).
+//! 3. **Unit dry** — `loader == null` and `use_host_spawn == false`.
 //!    Returns `LocalCommand` without serve. Unit tests exercise Commander
 //!    wiring without PATH binaries or subprocesses.
 //!
-//! `setLoader` wins over `setUseHostSpawn`: a loader forces path 1 even when
-//! host spawn is enabled. Clearing the loader restores path 2 or 3 from the
-//! current `use_host_spawn` flag.
+//! Loader always wins while non-null. Clearing the loader restores path 2 or 3
+//! from the current `use_host_spawn` flag. Auth is ignored on all paths
+//! (go-git emptyAuth).
 //!
-//! Use `server.newClient` + MapLoader for fully in-process remotes when the
-//! Commander session path is not required.
+//! For in-process remotes that do not need the Commander session path, use
+//! `server.newClient` + MapLoader directly.
 
 const std = @import("std");
 const transport = @import("transport");
@@ -202,6 +202,10 @@ pub fn lookPath(
 
 /// go-git `prefixExecPath`: resolve `cmd` under `git --exec-path` when PATH
 /// LookPath misses (e.g. `git-upload-pack` only in `/usr/lib/git-core`).
+///
+/// Spawns `git --exec-path`, reads one line, reaps the child, then joins the
+/// path with `cmd` and re-checks via `lookPath`. Always reaps (wait, else kill)
+/// so the temporary child never leaks.
 fn prefixExecPath(
     allocator: Allocator,
     io: Io,
@@ -217,7 +221,7 @@ fn prefixExecPath(
         .stdout = .pipe,
         .stderr = .ignore,
     }) catch return Error.CommandNotFound;
-    // Reap on all exit paths (wait clears id; kill if still live).
+    // Reap on every exit: wait clears id and closes pipe FDs; kill if still live.
     defer if (child.id != null) child.kill(io);
 
     var line_buf: [512]u8 = undefined;
@@ -233,7 +237,8 @@ fn prefixExecPath(
         }
     }
 
-    _ = child.wait(io) catch {};
+    // Prefer wait (go-git Wait); defer kill only if wait never ran.
+    if (child.id != null) _ = child.wait(io) catch {};
 
     var exec_path = line_buf[0..n];
     while (exec_path.len > 0) {
@@ -246,6 +251,7 @@ fn prefixExecPath(
 
     const candidate = try std.fs.path.join(allocator, &.{ exec_path, cmd });
     defer allocator.free(candidate);
+    // lookPath on absolute/with-separator only access-checks and dupes.
     return lookPath(allocator, io, environ, candidate);
 }
 
@@ -499,12 +505,19 @@ pub const LocalCommand = struct {
 /// `transport_common.Command`. Spawns on first pipe access or `start` so the
 /// Session order (pipes then start) works with Zig's atomic `process.spawn`.
 ///
-/// Lifecycle:
-/// - `ensureSpawned` owns the child until `close`/`kill`/`deinit`.
+/// # Ownership
+///
+/// - Takes ownership of `bin_owned` and `path_owned` at `init`.
+/// - `deinit` always reaps the child (kill) then frees both strings.
+/// - `Runner.command` must `errdefer hc.deinit()` until `owned` retains `hc`.
+///
+/// # Lifecycle
+///
+/// - `ensureSpawned` owns the child until `close` / `kill` / `deinit`.
 /// - Stdin close flushes and closes the write end (child sees EOF).
 /// - `close` waits and reaps; `kill` terminates then reaps.
-/// - After wait/kill, pipe FDs are closed by Zig Child cleanup. Callers must
-///   not read `stdoutPipe`/`stderrPipe` after `close`/`kill` (no UAF use).
+/// - Zig `Child.wait` / `Child.kill` close remaining pipe FDs (cleanup).
+/// - After wait/kill, do not read `stdoutPipe` / `stderrPipe` (FD closed).
 pub const HostCommand = struct {
     allocator: Allocator,
     io: Io,
@@ -532,6 +545,7 @@ pub const HostCommand = struct {
     started: bool = false,
     closed: bool = false,
 
+    /// Takes ownership of `bin_owned` and `path_owned` (freed in `deinit`).
     pub fn init(
         allocator: Allocator,
         io: Io,
@@ -549,6 +563,9 @@ pub const HostCommand = struct {
     }
 
     pub fn deinit(self: *HostCommand) void {
+        // Always kill-reap on destroy so abandoned commands do not leak.
+        self.closed = true;
+        self.closeStdin() catch {};
         self.reapKill();
         self.allocator.free(self.bin_owned);
         self.allocator.free(self.path_owned);
@@ -560,10 +577,15 @@ pub const HostCommand = struct {
     }
 
     /// Kill and reap if still live; clear child and pipes_ready.
+    ///
+    /// After this, `child` is null and pipe FDs owned by Child are closed.
+    /// File.Reader/Writer copies must not be used.
     fn reapKill(self: *HostCommand) void {
         if (self.child) |*c| {
             if (c.id != null) {
                 c.kill(self.io);
+            } else {
+                // Already reaped (id null ⇒ wait/kill cleaned pipes).
             }
             self.child = null;
         }
@@ -574,7 +596,11 @@ pub const HostCommand = struct {
     fn reapWait(self: *HostCommand) void {
         if (self.child) |*c| {
             if (c.id != null) {
-                _ = c.wait(self.io) catch {};
+                // wait always runs Child cleanup (closes remaining pipe FDs).
+                _ = c.wait(self.io) catch {
+                    // If wait fails after partial progress, force kill+cleanup.
+                    if (c.id != null) c.kill(self.io);
+                };
             }
             self.child = null;
         }
@@ -599,6 +625,7 @@ pub const HostCommand = struct {
         const stderr = child.stderr orelse return error.CommandFailed;
 
         // Pipes do not support seek — use streaming File readers/writers.
+        // Handles are borrowed from Child until wait/kill closes them.
         self.stdin_file_writer = std.Io.File.Writer.initStreaming(stdin, self.io, &self.stdin_buf);
         self.stdout_file_reader = std.Io.File.Reader.initStreaming(stdout, self.io, &self.stdout_buf);
         self.stderr_file_reader = std.Io.File.Reader.initStreaming(stderr, self.io, &self.stderr_buf);
@@ -637,6 +664,7 @@ pub const HostCommand = struct {
         self.stdin_closed = true;
         if (!self.pipes_ready) return;
         // Flush buffered writes, then close the write end so the child sees EOF.
+        // Null Child.stdin so later wait/kill cleanup does not double-close.
         self.stdin_file_writer.interface.flush() catch {};
         if (self.child) |*c| {
             if (c.stdin) |f| {
@@ -780,17 +808,26 @@ pub const Runner = struct {
         // --- Path 2: host spawn → LookPath + HostCommand ---
         if (self.use_host_spawn) {
             const resolved = try self.resolveBinary(cmd);
-            // resolveBinary with host spawn always returns lookPath-owned bin.
-            std.debug.assert(resolved.bin_owned);
-            const bin_owned: []u8 = @constCast(resolved.bin);
-            errdefer self.allocator.free(bin_owned);
-
-            const path_owned = try self.allocator.dupe(u8, path);
-            errdefer self.allocator.free(path_owned);
-
-            const hc = try self.allocator.create(HostCommand);
-            errdefer self.allocator.destroy(hc);
+            // Host spawn always owns the resolved path (lookPath / prefixExecPath).
+            const bin_owned = switch (resolved.bin) {
+                .owned => |b| b,
+                .borrowed => unreachable,
+            };
+            const path_owned = self.allocator.dupe(u8, path) catch |err| {
+                self.allocator.free(bin_owned);
+                return err;
+            };
+            const hc = self.allocator.create(HostCommand) catch |err| {
+                self.allocator.free(bin_owned);
+                self.allocator.free(path_owned);
+                return err;
+            };
             hc.* = HostCommand.init(self.allocator, self.io, bin_owned, path_owned);
+            // HostCommand owns bin/path; deinit frees them and reaps any child.
+            errdefer {
+                hc.deinit();
+                self.allocator.destroy(hc);
+            }
             try self.owned.append(self.allocator, .{ .host = hc });
             return hc.asCommand();
         }
@@ -825,12 +862,27 @@ pub const Runner = struct {
         service: Service,
     };
 
-    const Resolved = struct {
-        bin: []const u8,
+    /// Binary resolution result. Host spawn always yields `.owned`; dry path yields `.borrowed`.
+    pub const Resolved = struct {
         service: Service,
-        /// When true, `bin` is allocator-owned (from lookPath / prefixExecPath)
-        /// and must be freed by the caller (or transferred into HostCommand).
-        bin_owned: bool = false,
+        bin: Bin,
+        pub const Bin = union(enum) {
+            /// Configured label (not LookPath'd); do not free.
+            borrowed: []const u8,
+            /// lookPath / prefixExecPath result; caller owns (or transfer to HostCommand).
+            owned: []u8,
+
+            pub fn bytes(self: Bin) []const u8 {
+                return switch (self) {
+                    .borrowed => |b| b,
+                    .owned => |b| b,
+                };
+            }
+
+            pub fn isOwned(self: Bin) bool {
+                return self == .owned;
+            }
+        };
     };
 
     /// Map service name → configured bin label (no host LookPath).
@@ -855,17 +907,17 @@ pub const Runner = struct {
     ///
     /// On LookPath miss, try go-git `prefixExecPath` (`git --exec-path` join).
     /// Still missing → `Error.CommandNotFound`.
-    /// When `bin_owned` is true, caller owns `bin`.
+    /// When `bin` is `.owned`, caller must free or transfer into `HostCommand`.
     pub fn resolveBinary(self: *const Runner, cmd: []const u8) (Error || Allocator.Error)!Resolved {
         const mapped = try self.mapService(cmd);
         if (!self.use_host_spawn) {
-            return .{ .bin = mapped.bin, .service = mapped.service, .bin_owned = false };
+            return .{ .service = mapped.service, .bin = .{ .borrowed = mapped.bin } };
         }
         const found = lookPath(self.allocator, self.io, self.environ, mapped.bin) catch |err| switch (err) {
             Error.CommandNotFound => try prefixExecPath(self.allocator, self.io, self.environ, mapped.bin),
             else => |e| return e,
         };
-        return .{ .bin = found, .service = mapped.service, .bin_owned = true };
+        return .{ .service = mapped.service, .bin = .{ .owned = found } };
     }
 };
 

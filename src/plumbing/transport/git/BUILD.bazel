@@ -1,15 +1,22 @@
 load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
 
 # go-git plumbing/transport/git — git:// TCP transport.
-_SRCS = [
+# common_test.zig is part of the library (imported from root test block) so
+# //src:gitz_test can resolve the import. e2e_test.zig stays test-only (heavy deps).
+_LIB_SRCS = [
     "common.zig",
     "common_test.zig",
+]
+
+_TEST_SRCS = _LIB_SRCS + [
+    "root.zig",
+    "e2e_test.zig",
 ]
 
 zig_library(
     name = "git",
     main = "root.zig",
-    srcs = _SRCS,
+    srcs = _LIB_SRCS,
     import_name = "transport_git",
     visibility = ["//visibility:public"],
     deps = [
@@ -19,15 +26,25 @@ zig_library(
     ],
 )
 
+# Live git-daemon e2e needs localhost TCP + host `git` binary.
 zig_test(
     name = "git_test",
     size = "small",
-    main = "root.zig",
-    srcs = _SRCS,
+    main = "test_root.zig",
+    srcs = _TEST_SRCS,
+    tags = [
+        "requires-network",
+    ],
     deps = [
+        "//src/plumbing",
         "//src/plumbing/transport",
         "//src/plumbing/transport/internal/common",
+        "//src/plumbing/transport/server",
+        "//src/plumbing/transport/test:fixtures",
         "//src/plumbing/protocol/packp",
+        "//src/plumbing/protocol/packp/capability",
+        "//src/storage/memory",
+        "//src/utils/sync",
     ],
 )
 

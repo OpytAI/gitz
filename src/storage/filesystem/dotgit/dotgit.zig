@@ -446,12 +446,20 @@ pub fn DotGit(comptime Fs: type) type {
         }
 
         /// Iterate loose object hashes (go-git `ForEachObjectHash`).
-        /// Callback may return `error.Stop` to end early.
-        pub fn forEachObjectHash(self: *Self, fun: anytype) anyerror!void {
+        ///
+        /// Context-aware: `fun(ctx, hash)`. Stack context is passed explicitly
+        /// (no process-local statics). Concurrent-safe for distinct DotGit /
+        /// filesystem instances; a single store is not thread-safe for concurrent
+        /// mutation. Callback may return `error.Stop` to end early with success.
+        pub fn forEachObjectHash(
+            self: *Self,
+            ctx: anytype,
+            comptime fun: *const fn (@TypeOf(ctx), Hash) anyerror!void,
+        ) anyerror!void {
             const all = try self.objects();
             defer freeHashes(self.allocator(), all);
             for (all) |h| {
-                @call(.auto, fun, .{h}) catch |err| {
+                fun(ctx, h) catch |err| {
                     const any: anyerror = err;
                     if (any == error.Stop) return;
                     return any;

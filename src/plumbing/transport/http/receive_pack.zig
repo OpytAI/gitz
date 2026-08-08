@@ -34,8 +34,8 @@ pub const ReceivePackSession = struct {
     ///
     /// Returns null when the response body is empty (go-git empty reader → nil).
     /// Caller owns a non-null report: free with `packp.freeReportStatus`.
-    /// go-git also returns `report.Error()` as a second result; callers check
-    /// `report.err()` / `report.isOk()` after a successful decode.
+    /// After a successful decode, check `report.err()` / `report.isOk()` for
+    /// the remote command status (go-git's second return value).
     pub fn receivePack(
         self: *ReceivePackSession,
         req: *packp.ReferenceUpdateRequest,

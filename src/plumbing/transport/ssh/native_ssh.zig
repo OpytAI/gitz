@@ -1,17 +1,19 @@
 //! Pure-Zig native SSH client for git pack protocol over SSH.
 //!
-//! Implements a minimum viable SSH-2.0 client:
+//! SSH-2.0 client surface used by the transport runner:
 //! - TCP connect via `std.Io.net`
-//! - Version exchange
-//! - Binary packets (cleartext then AES-128-CTR + HMAC-SHA2-256)
+//! - Version exchange and binary packets
+//! - Encryption: `aes256-ctr`, `aes128-ctr` (AES-CTR, non-EtM)
+//! - MAC: `hmac-sha2-512`, `hmac-sha2-256` (RFC 6668)
 //! - KEX: `curve25519-sha256` (+ libssh alias)
-//! - Host key: `ssh-ed25519` verify via `HostKeyCallback`
-//! - NEWKEYS
-//! - Userauth: `password` and `publickey` (OpenSSH ed25519 PEM)
+//! - Host key: `ssh-ed25519` verify; `rsa-sha2-256` verify via
+//!   `std.crypto.Certificate.rsa` (PKCS#1 v1.5 + SHA-256)
+//! - NEWKEYS, password and publickey (OpenSSH ed25519 PEM) userauth
 //! - Channel session + exec of `CommandPlan.remote_command`
 //! - Bridge channel stdio to `transport_common.Command` pipes
 //!
-//! No C, no libssh. System `ssh` remains an alternate dial mode.
+//! Wire negotiation picks the first mutual algorithm from each client
+//! preference list. No C, no libssh. System `ssh` remains an alternate dial.
 
 const std = @import("std");
 const transport_common = @import("transport_common");
@@ -26,21 +28,37 @@ const testing = std.testing;
 const Sha256 = std.crypto.hash.sha2.Sha256;
 const X25519 = std.crypto.dh.X25519;
 const Ed25519 = std.crypto.sign.Ed25519;
+const Rsa = std.crypto.Certificate.rsa;
 const HostName = std.Io.net.HostName;
 const IpAddress = std.Io.net.IpAddress;
 const Stream = std.Io.net.Stream;
+const Server = std.Io.net.Server;
 
 /// Dial parameters for `NativeCommand` (owned strings freed by `deinit`).
+///
 /// Built from `CommandPlan` in `common.zig` without importing that module
 /// (avoids a circular dependency).
+///
+/// # Ownership
+///
+/// | Field | Owner |
+/// |-------|--------|
+/// | `remote_command`, `host_with_port` | this struct |
+/// | `owned_host` / `host` | this struct (`host` views `owned_host`) |
+/// | `owned_user` / `user` | this struct when `owned_user` set |
+/// | `client_config` string slices | **borrowed** from caller-owned auth |
+///   (auth method must outlive connect / userauth) |
 pub const NativeDialParams = struct {
     allocator: Allocator,
     remote_command: []u8 = &.{},
     host_with_port: []u8 = &.{},
+    /// Owned host name (always set by runner transfer path).
+    owned_host: ?[]u8 = null,
+    /// View of host for dial (points at `owned_host` or static test literal).
     host: []const u8 = "",
     port: i32 = 22,
     user: []const u8 = "",
-    /// When set, plan owns `user`.
+    /// When set, this struct owns `user`.
     owned_user: ?[]u8 = null,
     insecure_ignore_host_key: bool = false,
     client_config: auth_mod.ClientConfig = .{},
@@ -49,6 +67,7 @@ pub const NativeDialParams = struct {
         const a = self.allocator;
         if (self.remote_command.len > 0) a.free(self.remote_command);
         if (self.host_with_port.len > 0) a.free(self.host_with_port);
+        if (self.owned_host) |h| a.free(h);
         if (self.owned_user) |u| a.free(u);
         self.* = .{ .allocator = a };
     }
@@ -77,14 +96,23 @@ pub const Error = error{
     SshInvalidPrivateKey,
     /// Connection closed unexpectedly.
     SshConnectionClosed,
+    /// Command already started / connected (mirrors transport common).
+    AlreadyConnected,
 };
 
-// Preferred algorithm lists (client order).
+// Preferred algorithm lists (client order: first mutual wins).
 const kex_prefs = [_][]const u8{ "curve25519-sha256", "curve25519-sha256@libssh.org" };
-const host_key_prefs = [_][]const u8{"ssh-ed25519"};
-const enc_prefs = [_][]const u8{"aes128-ctr"};
-const mac_prefs = [_][]const u8{"hmac-sha2-256"};
+const host_key_prefs = [_][]const u8{ "ssh-ed25519", "rsa-sha2-256" };
+const enc_prefs = [_][]const u8{ "aes256-ctr", "aes128-ctr" };
+const mac_prefs = [_][]const u8{ "hmac-sha2-512", "hmac-sha2-256" };
 const comp_prefs = [_][]const u8{"none"};
+
+// Server-side lists for the pure-Zig loopback test peer (same set as client).
+const peer_kex_algs = [_][]const u8{ "curve25519-sha256", "curve25519-sha256@libssh.org" };
+const peer_host_key_algs = [_][]const u8{"ssh-ed25519"};
+const peer_enc_algs = [_][]const u8{ "aes256-ctr", "aes128-ctr" };
+const peer_mac_algs = [_][]const u8{ "hmac-sha2-512", "hmac-sha2-256" };
+const peer_comp_algs = [_][]const u8{"none"};
 
 // ---------------------------------------------------------------------------
 // OpenSSH ed25519 private key decode
@@ -101,7 +129,12 @@ pub const Ed25519Key = struct {
     allocator: Allocator,
 
     pub fn deinit(self: *Ed25519Key) void {
-        if (self.public_blob.len > 0) self.allocator.free(self.public_blob);
+        @memset(&self.seed, 0);
+        @memset(&self.public, 0);
+        if (self.public_blob.len > 0) {
+            @memset(self.public_blob, 0);
+            self.allocator.free(self.public_blob);
+        }
         self.* = undefined;
     }
 
@@ -280,6 +313,8 @@ pub const NativeConn = struct {
     }
 
     /// TCP connect + full SSH handshake + channel open (no exec yet).
+    ///
+    /// On any failure after TCP open, the stream is closed (no FD leak).
     pub fn connect(
         self: *NativeConn,
         host: []const u8,
@@ -288,6 +323,7 @@ pub const NativeConn = struct {
         cfg: *const auth_mod.ClientConfig,
         host_with_port: []const u8,
     ) !void {
+        errdefer self.closeStream();
         try self.tcpConnect(host, port);
         try self.exchangeVersions();
         try self.doKex(cfg, host_with_port);
@@ -357,12 +393,21 @@ pub const NativeConn = struct {
                 continue;
             }
             switch (payload[0]) {
-                wire.msg_ignore, wire.msg_debug, wire.msg_ext_info, wire.msg_global_request => {
-                    // Reply failure to global requests with want_reply when present.
-                    if (payload[0] == wire.msg_global_request and payload.len >= 5) {
-                        // best-effort: ignore
-                    }
+                wire.msg_ignore, wire.msg_debug, wire.msg_ext_info => {
                     self.allocator.free(payload);
+                    continue;
+                },
+                wire.msg_global_request => {
+                    // RFC 4254: when want_reply is true, respond with REQUEST_FAILURE.
+                    var off: usize = 1;
+                    const want_reply = blk: {
+                        _ = wire.readString(payload, &off) catch break :blk false;
+                        break :blk wire.readBool(payload, &off) catch false;
+                    };
+                    self.allocator.free(payload);
+                    if (want_reply) {
+                        self.writePacket(&[_]u8{wire.msg_request_failure}) catch {};
+                    }
                     continue;
                 },
                 wire.msg_disconnect => {
@@ -397,11 +442,16 @@ pub const NativeConn = struct {
 
         const server_view = wire.parseKexInit(server_kex_payload) catch return error.SshKexFailed;
         _ = wire.negotiate(&kex_prefs, server_view.kex_algorithms) catch return error.SshKexFailed;
-        _ = wire.negotiate(&host_key_prefs, server_view.server_host_key_algorithms) catch return error.SshKexFailed;
-        _ = wire.negotiate(&enc_prefs, server_view.encryption_c2s) catch return error.SshKexFailed;
-        _ = wire.negotiate(&enc_prefs, server_view.encryption_s2c) catch return error.SshKexFailed;
-        _ = wire.negotiate(&mac_prefs, server_view.mac_c2s) catch return error.SshKexFailed;
-        _ = wire.negotiate(&mac_prefs, server_view.mac_s2c) catch return error.SshKexFailed;
+        const host_key_alg = wire.negotiate(&host_key_prefs, server_view.server_host_key_algorithms) catch return error.SshKexFailed;
+        const enc_c2s_name = wire.negotiate(&enc_prefs, server_view.encryption_c2s) catch return error.SshKexFailed;
+        const enc_s2c_name = wire.negotiate(&enc_prefs, server_view.encryption_s2c) catch return error.SshKexFailed;
+        const mac_c2s_name = wire.negotiate(&mac_prefs, server_view.mac_c2s) catch return error.SshKexFailed;
+        const mac_s2c_name = wire.negotiate(&mac_prefs, server_view.mac_s2c) catch return error.SshKexFailed;
+        // Direction-independent: require both directions pick the same family.
+        if (!std.mem.eql(u8, enc_c2s_name, enc_s2c_name)) return error.SshKexFailed;
+        if (!std.mem.eql(u8, mac_c2s_name, mac_s2c_name)) return error.SshKexFailed;
+        const enc_alg = wire.EncAlg.fromName(enc_c2s_name) catch return error.SshKexFailed;
+        const mac_alg = wire.MacAlg.fromName(mac_c2s_name) catch return error.SshKexFailed;
 
         // Ephemeral X25519.
         var eph = X25519.KeyPair.generate(self.io);
@@ -438,41 +488,66 @@ pub const NativeConn = struct {
         var H: [32]u8 = undefined;
         h.final(&H);
 
-        // Verify host key signature (ssh-ed25519).
-        try verifyHostKeyEd25519(host_key_blob, signature_blob, &H);
+        // Verify host key signature for the negotiated host-key algorithm.
+        try verifyHostKeySignature(host_key_alg, host_key_blob, signature_blob, &H);
 
         // Host key callback.
         if (cfg.host_key_callback) |cb| {
             var hk_off: usize = 0;
-            const algo = wire.readString(host_key_blob, &hk_off) catch return error.SshKexFailed;
-            const key_body = wire.readString(host_key_blob, &hk_off) catch return error.SshKexFailed;
-            cb.check(host_with_port, host_with_port, algo, key_body) catch return error.SshHostKeyRejected;
+            const key_type = wire.readString(host_key_blob, &hk_off) catch return error.SshKexFailed;
+            // Report the negotiated host-key algorithm (rsa-sha2-256 vs ssh-rsa type).
+            const report_algo = if (std.mem.eql(u8, host_key_alg, "rsa-sha2-256"))
+                host_key_alg
+            else
+                key_type;
+            // Ed25519: one string (32-byte pub). RSA: e + n mpints after type.
+            const key_body = if (std.mem.eql(u8, key_type, "ssh-ed25519"))
+                (wire.readString(host_key_blob, &hk_off) catch return error.SshKexFailed)
+            else
+                host_key_blob[hk_off..];
+            cb.check(host_with_port, host_with_port, report_algo, key_body) catch return error.SshHostKeyRejected;
         }
 
         self.session_id = try self.allocator.dupe(u8, &H);
 
-        // Derive keys (client direction A/C/E, server B/D/F).
-        var iv_c2s: [16]u8 = undefined;
-        var iv_s2c: [16]u8 = undefined;
-        var key_c2s: [16]u8 = undefined;
-        var key_s2c: [16]u8 = undefined;
-        var mac_c2s: [32]u8 = undefined;
-        var mac_s2c: [32]u8 = undefined;
-        wire.generateKeyMaterial(&iv_c2s, 'A', K_mpint, &H, self.session_id);
-        wire.generateKeyMaterial(&iv_s2c, 'B', K_mpint, &H, self.session_id);
-        wire.generateKeyMaterial(&key_c2s, 'C', K_mpint, &H, self.session_id);
-        wire.generateKeyMaterial(&key_s2c, 'D', K_mpint, &H, self.session_id);
-        wire.generateKeyMaterial(&mac_c2s, 'E', K_mpint, &H, self.session_id);
-        wire.generateKeyMaterial(&mac_s2c, 'F', K_mpint, &H, self.session_id);
+        // Derive keys sized for negotiated algs (client A/C/E, server B/D/F).
+        const iv_len = enc_alg.ivLen();
+        const key_len = enc_alg.keyLen();
+        const mac_key_len = mac_alg.keyLen();
+
+        var iv_c2s: [wire.aes_iv_len]u8 = undefined;
+        var iv_s2c: [wire.aes_iv_len]u8 = undefined;
+        var key_c2s: [wire.max_enc_key_len]u8 = undefined;
+        var key_s2c: [wire.max_enc_key_len]u8 = undefined;
+        var mac_c2s: [wire.max_mac_length]u8 = undefined;
+        var mac_s2c: [wire.max_mac_length]u8 = undefined;
+        wire.generateKeyMaterial(iv_c2s[0..iv_len], 'A', K_mpint, &H, self.session_id);
+        wire.generateKeyMaterial(iv_s2c[0..iv_len], 'B', K_mpint, &H, self.session_id);
+        wire.generateKeyMaterial(key_c2s[0..key_len], 'C', K_mpint, &H, self.session_id);
+        wire.generateKeyMaterial(key_s2c[0..key_len], 'D', K_mpint, &H, self.session_id);
+        wire.generateKeyMaterial(mac_c2s[0..mac_key_len], 'E', K_mpint, &H, self.session_id);
+        wire.generateKeyMaterial(mac_s2c[0..mac_key_len], 'F', K_mpint, &H, self.session_id);
 
         // NEWKEYS — after send, encrypt outbound; after recv, decrypt inbound.
         try self.writePacket(&[_]u8{wire.msg_newkeys});
-        self.send_cipher = wire.PacketCipher.aes128CtrHmacSha256(&key_c2s, &iv_c2s, &mac_c2s);
+        self.send_cipher = wire.PacketCipher.initFromAlgs(
+            enc_alg,
+            key_c2s[0..key_len],
+            iv_c2s[0..iv_len],
+            mac_alg,
+            mac_c2s[0..mac_key_len],
+        ) catch return error.SshKexFailed;
 
         const peer_newkeys = try self.readPacket();
         defer self.allocator.free(peer_newkeys);
         if (peer_newkeys.len < 1 or peer_newkeys[0] != wire.msg_newkeys) return error.SshKexFailed;
-        self.recv_cipher = wire.PacketCipher.aes128CtrHmacSha256(&key_s2c, &iv_s2c, &mac_s2c);
+        self.recv_cipher = wire.PacketCipher.initFromAlgs(
+            enc_alg,
+            key_s2c[0..key_len],
+            iv_s2c[0..iv_len],
+            mac_alg,
+            mac_s2c[0..mac_key_len],
+        ) catch return error.SshKexFailed;
     }
 
     fn doUserauth(self: *NativeConn, user: []const u8, cfg: *const auth_mod.ClientConfig) !void {
@@ -620,12 +695,15 @@ pub const NativeConn = struct {
             return error.SshChannelFailed;
         }
         var off: usize = 1;
+        // recipient channel number (must match our local channel).
         const recipient = wire.readU32(reply, &off) catch return error.SshChannelFailed;
-        _ = recipient; // our local channel
+        if (recipient != self.local_channel) return error.SshChannelFailed;
         self.remote_channel = wire.readU32(reply, &off) catch return error.SshChannelFailed;
         self.send_window = wire.readU32(reply, &off) catch return error.SshChannelFailed;
         _ = wire.readU32(reply, &off) catch return error.SshChannelFailed; // max packet
         self.channel_open = true;
+        self.channel_closed = false;
+        self.channel_eof_recv = false;
     }
 
     /// Send exec request for the remote git command.
@@ -868,6 +946,21 @@ fn bareHost(host: []const u8) []const u8 {
     return host;
 }
 
+fn verifyHostKeySignature(
+    host_key_alg: []const u8,
+    host_key_blob: []const u8,
+    signature_blob: []const u8,
+    H: *const [32]u8,
+) Error!void {
+    if (std.mem.eql(u8, host_key_alg, "ssh-ed25519")) {
+        return verifyHostKeyEd25519(host_key_blob, signature_blob, H);
+    }
+    if (std.mem.eql(u8, host_key_alg, "rsa-sha2-256")) {
+        return verifyHostKeyRsaSha256(host_key_blob, signature_blob, H);
+    }
+    return error.SshKexFailed;
+}
+
 fn verifyHostKeyEd25519(host_key_blob: []const u8, signature_blob: []const u8, H: *const [32]u8) Error!void {
     var off: usize = 0;
     const algo = wire.readString(host_key_blob, &off) catch return error.SshKexFailed;
@@ -886,11 +979,51 @@ fn verifyHostKeyEd25519(host_key_blob: []const u8, signature_blob: []const u8, H
     sig.verify(H, pk) catch return error.SshKexFailed;
 }
 
+/// Verify `rsa-sha2-256` host key signature (RFC 8332) over exchange hash `H`.
+///
+/// Host key blob format is the classic `ssh-rsa` public key (string + e + n).
+/// Signature blob uses algorithm name `rsa-sha2-256` and PKCS#1 v1.5 + SHA-256.
+/// Uses `std.crypto.Certificate.rsa` (no third-party RSA library).
+fn verifyHostKeyRsaSha256(host_key_blob: []const u8, signature_blob: []const u8, H: *const [32]u8) Error!void {
+    var off: usize = 0;
+    const algo = wire.readString(host_key_blob, &off) catch return error.SshKexFailed;
+    if (!std.mem.eql(u8, algo, "ssh-rsa")) return error.SshKexFailed;
+    const e_raw = wire.readString(host_key_blob, &off) catch return error.SshKexFailed;
+    const n_raw = wire.readString(host_key_blob, &off) catch return error.SshKexFailed;
+    const e = wire.stripMpintLeadingZeros(e_raw);
+    const n = wire.stripMpintLeadingZeros(n_raw);
+
+    var s_off: usize = 0;
+    const sig_algo = wire.readString(signature_blob, &s_off) catch return error.SshKexFailed;
+    if (!std.mem.eql(u8, sig_algo, "rsa-sha2-256")) return error.SshKexFailed;
+    const sig_bytes = wire.readString(signature_blob, &s_off) catch return error.SshKexFailed;
+
+    const pk = Rsa.PublicKey.fromBytes(e, n) catch return error.SshKexFailed;
+
+    // PKCS1v1_5Signature.verify is specialized on modulus length (bytes).
+    switch (sig_bytes.len) {
+        inline 128, 256, 384, 512 => |modulus_len| {
+            if (sig_bytes.len != modulus_len) return error.SshKexFailed;
+            var sig_arr: [modulus_len]u8 = undefined;
+            @memcpy(&sig_arr, sig_bytes[0..modulus_len]);
+            Rsa.PKCS1v1_5Signature.verify(modulus_len, sig_arr, H, pk, Sha256) catch return error.SshKexFailed;
+        },
+        else => return error.SshKexFailed,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // NativeCommand — transport_common.Command
 // ---------------------------------------------------------------------------
 
 /// SSH command via pure-Zig native client (pack protocol over channel stdio).
+///
+/// Lifecycle (parity with file `HostCommand` / SSH `HostCommand`):
+/// - `ensureConnected` owns the TCP+SSH session until `close`/`kill`/`deinit`.
+/// - Stdin close flushes and sends channel EOF.
+/// - `close` sends channel close then shuts the stream; `kill` aborts the stream.
+/// - Heap-owned by `Runner` (freed in `Runner.deinit`).
+/// - Do not read pipes after `close`/`kill` (no UAF use of dead stream).
 pub const NativeCommand = struct {
     allocator: Allocator,
     io: Io,
@@ -902,18 +1035,26 @@ pub const NativeCommand = struct {
 
     pub fn deinit(self: *NativeCommand) void {
         self.kill() catch {};
+        self.destroyConn();
+        self.params.deinit();
+        self.* = undefined;
+    }
+
+    fn destroyConn(self: *NativeCommand) void {
         if (self.conn) |c| {
             c.deinit();
             self.allocator.destroy(c);
             self.conn = null;
         }
-        self.params.deinit();
-        self.* = undefined;
     }
 
     fn ensureConnected(self: *NativeCommand) anyerror!void {
+        if (self.closed) return error.SshConnectionClosed;
         if (self.connected) return;
-        if (self.conn != null) return;
+        if (self.conn != null) {
+            // Half-open residual: tear down and retry path is not expected.
+            return error.SshProtocolError;
+        }
 
         const c = try self.allocator.create(NativeConn);
         errdefer {
@@ -938,13 +1079,11 @@ pub const NativeCommand = struct {
         c.bindPipes();
         self.conn = c;
         self.connected = true;
-        // On success errdefer is discarded when this function returns.
     }
 
     pub fn stderrPipe(self: *NativeCommand) anyerror!*Reader {
         try self.ensureConnected();
-        const c = self.conn.?;
-        return &c.stderr_reader;
+        return &self.conn.?.stderr_reader;
     }
 
     pub fn stdinPipe(self: *NativeCommand) anyerror!transport_common.WriteCloser {
@@ -971,22 +1110,27 @@ pub const NativeCommand = struct {
 
     pub fn stdoutPipe(self: *NativeCommand) anyerror!*Reader {
         try self.ensureConnected();
-        const c = self.conn.?;
-        return &c.stdout_reader;
+        return &self.conn.?.stdout_reader;
     }
 
     pub fn start(self: *NativeCommand) anyerror!void {
         if (self.started) return error.AlreadyConnected;
+        if (self.closed) return error.SshConnectionClosed;
         try self.ensureConnected();
-        const c = self.conn.?;
-        try c.exec(self.params.remote_command);
+        try self.conn.?.exec(self.params.remote_command);
         self.started = true;
     }
 
+    /// Graceful channel close then TCP close (go-git Command.Close).
     pub fn close(self: *NativeCommand) anyerror!void {
         if (self.closed) return;
         self.closed = true;
         if (self.conn) |c| {
+            if (!c.stdin_closed) {
+                c.stdin_closed = true;
+                c.stdin_writer.flush() catch {};
+                c.sendEof() catch {};
+            }
             c.sendClose() catch {};
             c.closeStream();
         }
@@ -994,6 +1138,7 @@ pub const NativeCommand = struct {
         self.started = false;
     }
 
+    /// Abort stream immediately (go-git CommandKiller.Kill). Pipes invalid after.
     pub fn kill(self: *NativeCommand) anyerror!void {
         if (self.closed and self.conn == null) return;
         self.closed = true;
@@ -1136,11 +1281,13 @@ test "native dial closed port yields SshConnectFailed" {
 
 test "NativeCommand connect closed port is not unimplemented" {
     const io = singleThreadedIo();
+    const host_owned = try testing.allocator.dupe(u8, "127.0.0.1");
     const params = NativeDialParams{
         .allocator = testing.allocator,
         .remote_command = try testing.allocator.dupe(u8, "git-upload-pack '/r.git'"),
         .host_with_port = try testing.allocator.dupe(u8, "127.0.0.1:1"),
-        .host = "127.0.0.1",
+        .owned_host = host_owned,
+        .host = host_owned,
         .port = 1,
         .user = "git",
         .insecure_ignore_host_key = true,
@@ -1160,6 +1307,34 @@ test "NativeCommand connect closed port is not unimplemented" {
 
     const err = cmd.start();
     try testing.expectError(error.SshConnectFailed, err);
+}
+
+test "NativeCommand close after failed start is idempotent" {
+    const io = singleThreadedIo();
+    const host_owned = try testing.allocator.dupe(u8, "127.0.0.1");
+    var cmd = NativeCommand{
+        .allocator = testing.allocator,
+        .io = io,
+        .params = .{
+            .allocator = testing.allocator,
+            .remote_command = try testing.allocator.dupe(u8, "git-upload-pack '/r.git'"),
+            .host_with_port = try testing.allocator.dupe(u8, "127.0.0.1:1"),
+            .owned_host = host_owned,
+            .host = host_owned,
+            .port = 1,
+            .user = "git",
+            .insecure_ignore_host_key = true,
+            .client_config = .{
+                .auth_kind = .password,
+                .password = "x",
+            },
+        },
+    };
+    defer cmd.deinit();
+    _ = cmd.start() catch {};
+    try cmd.close();
+    try cmd.close();
+    try cmd.kill();
 }
 
 test "curve25519 shared secret self-consistency" {
@@ -1188,4 +1363,537 @@ test "session hash includes version strings as SSH strings" {
     var out2: [32]u8 = undefined;
     h2.final(&out2);
     try testing.expectEqualSlices(u8, &out, &out2);
+}
+
+// ---------------------------------------------------------------------------
+// rsa-sha2-256 host-key verify (fixed vector from OpenSSL PKCS#1 v1.5 SHA-256)
+// ---------------------------------------------------------------------------
+
+test "verifyHostKeyRsaSha256 accepts known vector" {
+    // H = SHA256("gitz-rsa-sha2-256-hostkey-test-vector")
+    // 2048-bit RSA; signature produced with openssl dgst -sha256 -sign.
+    const H = [_]u8{
+        0x80, 0xeb, 0xbe, 0x73, 0xd0, 0x36, 0x94, 0x0a, 0x40, 0x3b, 0xb5, 0x6c, 0x5c, 0xe0, 0xab, 0x0c,
+        0x95, 0xb4, 0x4c, 0xc7, 0x3f, 0x10, 0x5b, 0x47, 0x78, 0x5d, 0x3b, 0xb8, 0x0f, 0x01, 0xd0, 0x50,
+    };
+    const host_blob = try hexDecode(testing.allocator, "000000077373682d727361000000030100010000010100b4bd8f7ce62dbd43296b3ab321edac68fefa1cb2af43d70341d70ceb939118155143e3119d8eb3c1f02ba6913182aa32fc1e747f2e55593f79963adc2cb9d6336c31b61321c7ad4f51395d98628354d2cde425620ef9fd8b637b00236d887a156463804c67a289404a07be4769f5eda605868cad0dc0ac32e4089bd831d126e203b4b53748826df829e643d8a7af1eab57beac3d92aac590e4800bb6b75e5d6d5a2a575e79ad40f80b969042f63149921d8d92827a42140e887108f19cfa348c74cf9e983df81a90f694a54a654a44cf657921c111d8d190ef8ff6f78a7f0518c563e3117d5d69f2bd6e9e6e8bf450c49711d8fccac0b465e16ed37d15331183");
+    defer testing.allocator.free(host_blob);
+    const sig_blob = try hexDecode(testing.allocator, "0000000c7273612d736861322d323536000001005f3d8f7b9d436bd10707114fe853656ac5791bf9782e067bf77bef6717fa332b9897ece3818f55198b17b72666cc546dc7bdf248e754ee4bb0e85213beacc2fcb3e3eaec190e2f1b9e7d6a34e5e3a6c94f1f5fb10ed1319a7cc95f67e765a3dd8b302feee3a0b187bb4baf8ca85df007bb99d02302c506f22ca1553533ebac15defe73262967339f03117fccb97d3e8554a5ffcfe4bb190caed90456b95420a124d5be07f7169ea6453082bdd2d5c4f999d1e3c1349bda3eb366c77e8a477d4c6549ab04602980442f35ff2c573a893df67f56c1fc445159d6291edc8d52151db5eede05ac9a11671605e679d86a68c41ecc8f8fe8ea8a418a86f188045202d7");
+    defer testing.allocator.free(sig_blob);
+
+    try verifyHostKeyRsaSha256(host_blob, sig_blob, &H);
+
+    // Flip a signature byte → reject.
+    var bad = try testing.allocator.dupe(u8, sig_blob);
+    defer testing.allocator.free(bad);
+    bad[bad.len - 1] ^= 0x01;
+    try testing.expectError(error.SshKexFailed, verifyHostKeyRsaSha256(host_blob, bad, &H));
+}
+
+test "verifyHostKeyRsaSha256 rejects ed25519 blob" {
+    const H = [_]u8{0x11} ** 32;
+    const blob = try buildEd25519PublicBlob(testing.allocator, &([_]u8{0x22} ** 32));
+    defer testing.allocator.free(blob);
+    const sig = try buildEd25519SignatureBlob(testing.allocator, &([_]u8{0x33} ** 64));
+    defer testing.allocator.free(sig);
+    try testing.expectError(error.SshKexFailed, verifyHostKeyRsaSha256(blob, sig, &H));
+}
+
+fn hexDecode(allocator: Allocator, hex: []const u8) ![]u8 {
+    if (hex.len % 2 != 0) return error.SshProtocolError;
+    const out = try allocator.alloc(u8, hex.len / 2);
+    errdefer allocator.free(out);
+    _ = try std.fmt.hexToBytes(out, hex);
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Pure-Zig SSH test peer (server half) for loopback e2e
+// ---------------------------------------------------------------------------
+
+const peer_server_version: []const u8 = "SSH-2.0-gitz_testpeer_0.1";
+
+const TestPeerConn = struct {
+    allocator: Allocator,
+    io: Io,
+    stream: Stream,
+    stream_live: bool = true,
+    reader_impl: Stream.Reader = undefined,
+    writer_impl: Stream.Writer = undefined,
+    read_buf: [16384]u8 = undefined,
+    write_buf: [16384]u8 = undefined,
+    send_seq: u32 = 0,
+    recv_seq: u32 = 0,
+    send_cipher: wire.PacketCipher = .none(),
+    recv_cipher: wire.PacketCipher = .none(),
+    client_version: []u8 = &.{},
+    host_kp: Ed25519.KeyPair,
+    session_id: []u8 = &.{},
+
+    fn deinit(self: *TestPeerConn) void {
+        if (self.stream_live) {
+            self.stream.close(self.io);
+            self.stream_live = false;
+        }
+        if (self.client_version.len > 0) self.allocator.free(self.client_version);
+        if (self.session_id.len > 0) self.allocator.free(self.session_id);
+        self.* = undefined;
+    }
+
+    fn rebind(self: *TestPeerConn) void {
+        self.reader_impl = self.stream.reader(self.io, &self.read_buf);
+        self.writer_impl = self.stream.writer(self.io, &self.write_buf);
+    }
+
+    fn writer(self: *TestPeerConn) *Writer {
+        return &self.writer_impl.interface;
+    }
+
+    fn reader(self: *TestPeerConn) *Reader {
+        return &self.reader_impl.interface;
+    }
+
+    fn writePacket(self: *TestPeerConn, payload: []const u8) !void {
+        self.rebind();
+        const wire_bytes = try wire.encodePacket(self.allocator, &self.send_cipher, self.send_seq, payload);
+        defer self.allocator.free(wire_bytes);
+        try self.writer().writeAll(wire_bytes);
+        try self.writer().flush();
+        self.send_seq +%= 1;
+    }
+
+    fn readPacket(self: *TestPeerConn) ![]u8 {
+        self.rebind();
+        while (true) {
+            const payload = wire.decodePacket(self.allocator, &self.recv_cipher, self.recv_seq, self.reader()) catch |err| {
+                if (err == error.EndOfStream) return error.SshConnectionClosed;
+                return err;
+            };
+            self.recv_seq +%= 1;
+            if (payload.len == 0) {
+                self.allocator.free(payload);
+                continue;
+            }
+            switch (payload[0]) {
+                wire.msg_ignore, wire.msg_debug, wire.msg_ext_info => {
+                    self.allocator.free(payload);
+                    continue;
+                },
+                wire.msg_disconnect => {
+                    self.allocator.free(payload);
+                    return error.SshConnectionClosed;
+                },
+                else => return payload,
+            }
+        }
+    }
+
+    fn exchangeVersions(self: *TestPeerConn) !void {
+        self.rebind();
+        // Read client version line.
+        var line_buf: [255]u8 = undefined;
+        var n: usize = 0;
+        while (n < line_buf.len) {
+            var b: [1]u8 = undefined;
+            self.reader().readSliceAll(&b) catch return error.SshVersionExchangeFailed;
+            if (b[0] == '\n') break;
+            if (b[0] != '\r') {
+                line_buf[n] = b[0];
+                n += 1;
+            }
+        }
+        if (n == 0 or !std.mem.startsWith(u8, line_buf[0..n], "SSH-")) return error.SshVersionExchangeFailed;
+        self.client_version = try self.allocator.dupe(u8, line_buf[0..n]);
+
+        try self.writer().writeAll(peer_server_version);
+        try self.writer().writeAll("\r\n");
+        try self.writer().flush();
+    }
+
+    fn doKex(self: *TestPeerConn) !void {
+        const client_kex = try self.readPacket();
+        defer self.allocator.free(client_kex);
+        if (client_kex.len < 1 or client_kex[0] != wire.msg_kexinit) return error.SshKexFailed;
+        const client_view = wire.parseKexInit(client_kex) catch return error.SshKexFailed;
+
+        // Negotiate with server-as-preference lists against client name-lists.
+        // Client prefs win in real SSH; here peer offers the full set so the
+        // client's first mutual choice is selected by the client side. Peer
+        // still records the same names so keys match.
+        const enc_name = wire.negotiate(&enc_prefs, client_view.encryption_c2s) catch return error.SshKexFailed;
+        const mac_name = wire.negotiate(&mac_prefs, client_view.mac_c2s) catch return error.SshKexFailed;
+        _ = wire.negotiate(&kex_prefs, client_view.kex_algorithms) catch return error.SshKexFailed;
+        _ = wire.negotiate(&host_key_prefs, client_view.server_host_key_algorithms) catch return error.SshKexFailed;
+        const enc_alg = wire.EncAlg.fromName(enc_name) catch return error.SshKexFailed;
+        const mac_alg = wire.MacAlg.fromName(mac_name) catch return error.SshKexFailed;
+
+        var cookie: [16]u8 = undefined;
+        self.io.random(&cookie);
+        const server_kex = try wire.buildKexInit(
+            self.allocator,
+            &cookie,
+            &peer_kex_algs,
+            &peer_host_key_algs,
+            &peer_enc_algs,
+            &peer_mac_algs,
+            &peer_comp_algs,
+        );
+        defer self.allocator.free(server_kex);
+        try self.writePacket(server_kex);
+
+        // ECDH init from client.
+        const ecdh_init = try self.readPacket();
+        defer self.allocator.free(ecdh_init);
+        if (ecdh_init.len < 1 or ecdh_init[0] != wire.msg_kex_ecdh_init) return error.SshKexFailed;
+        var i_off: usize = 1;
+        const client_eph = wire.readString(ecdh_init, &i_off) catch return error.SshKexFailed;
+        if (client_eph.len != 32) return error.SshKexFailed;
+
+        var eph = X25519.KeyPair.generate(self.io);
+        const shared = X25519.scalarmult(eph.secret_key, client_eph[0..32].*) catch return error.SshKexFailed;
+        const K_mpint = try wire.encodeMpint(self.allocator, &shared);
+        defer self.allocator.free(K_mpint);
+
+        // Host key blob (ed25519).
+        const host_pub = self.host_kp.public_key.toBytes();
+        const host_key_blob = try buildEd25519PublicBlob(self.allocator, &host_pub);
+        defer self.allocator.free(host_key_blob);
+
+        // H
+        var h = Sha256.init(.{});
+        wire.hashWriteString(&h, self.client_version);
+        wire.hashWriteString(&h, peer_server_version);
+        wire.hashWriteString(&h, client_kex);
+        wire.hashWriteString(&h, server_kex);
+        wire.hashWriteString(&h, host_key_blob);
+        wire.hashWriteString(&h, client_eph);
+        wire.hashWriteString(&h, &eph.public_key);
+        h.update(K_mpint);
+        var H: [32]u8 = undefined;
+        h.final(&H);
+        self.session_id = try self.allocator.dupe(u8, &H);
+
+        // Sign H with host key.
+        const sig = self.host_kp.sign(&H, null) catch return error.SshKexFailed;
+        const sig_bytes = sig.toBytes();
+        const sig_blob = try buildEd25519SignatureBlob(self.allocator, &sig_bytes);
+        defer self.allocator.free(sig_blob);
+
+        var reply: std.ArrayList(u8) = .empty;
+        defer reply.deinit(self.allocator);
+        try reply.append(self.allocator, wire.msg_kex_ecdh_reply);
+        try wire.appendString(&reply, self.allocator, host_key_blob);
+        try wire.appendString(&reply, self.allocator, &eph.public_key);
+        try wire.appendString(&reply, self.allocator, sig_blob);
+        try self.writePacket(reply.items);
+
+        // Key material — server send uses B/D/F, recv uses A/C/E.
+        const iv_len = enc_alg.ivLen();
+        const key_len = enc_alg.keyLen();
+        const mac_key_len = mac_alg.keyLen();
+        var iv_c2s: [wire.aes_iv_len]u8 = undefined;
+        var iv_s2c: [wire.aes_iv_len]u8 = undefined;
+        var key_c2s: [wire.max_enc_key_len]u8 = undefined;
+        var key_s2c: [wire.max_enc_key_len]u8 = undefined;
+        var mac_c2s: [wire.max_mac_length]u8 = undefined;
+        var mac_s2c: [wire.max_mac_length]u8 = undefined;
+        wire.generateKeyMaterial(iv_c2s[0..iv_len], 'A', K_mpint, &H, self.session_id);
+        wire.generateKeyMaterial(iv_s2c[0..iv_len], 'B', K_mpint, &H, self.session_id);
+        wire.generateKeyMaterial(key_c2s[0..key_len], 'C', K_mpint, &H, self.session_id);
+        wire.generateKeyMaterial(key_s2c[0..key_len], 'D', K_mpint, &H, self.session_id);
+        wire.generateKeyMaterial(mac_c2s[0..mac_key_len], 'E', K_mpint, &H, self.session_id);
+        wire.generateKeyMaterial(mac_s2c[0..mac_key_len], 'F', K_mpint, &H, self.session_id);
+
+        // NEWKEYS: send then arm send cipher; read peer NEWKEYS then arm recv.
+        try self.writePacket(&[_]u8{wire.msg_newkeys});
+        self.send_cipher = wire.PacketCipher.initFromAlgs(
+            enc_alg,
+            key_s2c[0..key_len],
+            iv_s2c[0..iv_len],
+            mac_alg,
+            mac_s2c[0..mac_key_len],
+        ) catch return error.SshKexFailed;
+
+        const peer_newkeys = try self.readPacket();
+        defer self.allocator.free(peer_newkeys);
+        if (peer_newkeys.len < 1 or peer_newkeys[0] != wire.msg_newkeys) return error.SshKexFailed;
+        self.recv_cipher = wire.PacketCipher.initFromAlgs(
+            enc_alg,
+            key_c2s[0..key_len],
+            iv_c2s[0..iv_len],
+            mac_alg,
+            mac_c2s[0..mac_key_len],
+        ) catch return error.SshKexFailed;
+    }
+
+    fn doUserauth(self: *TestPeerConn) !void {
+        // SERVICE_REQUEST
+        const svc = try self.readPacket();
+        defer self.allocator.free(svc);
+        if (svc.len < 1 or svc[0] != wire.msg_service_request) return error.SshAuthFailed;
+
+        var accept: std.ArrayList(u8) = .empty;
+        defer accept.deinit(self.allocator);
+        try accept.append(self.allocator, wire.msg_service_accept);
+        try wire.appendString(&accept, self.allocator, "ssh-userauth");
+        try self.writePacket(accept.items);
+
+        // USERAUTH_REQUEST loop — accept password "test" or any publickey.
+        while (true) {
+            const req = try self.readPacket();
+            defer self.allocator.free(req);
+            if (req.len < 1 or req[0] != wire.msg_userauth_request) return error.SshAuthFailed;
+            var off: usize = 1;
+            _ = wire.readString(req, &off) catch return error.SshAuthFailed; // user
+            _ = wire.readString(req, &off) catch return error.SshAuthFailed; // service
+            const method = wire.readString(req, &off) catch return error.SshAuthFailed;
+
+            if (std.mem.eql(u8, method, "password")) {
+                _ = wire.readBool(req, &off) catch return error.SshAuthFailed;
+                const password = wire.readString(req, &off) catch return error.SshAuthFailed;
+                if (std.mem.eql(u8, password, "test")) {
+                    try self.writePacket(&[_]u8{wire.msg_userauth_success});
+                    return;
+                }
+                var fail: std.ArrayList(u8) = .empty;
+                defer fail.deinit(self.allocator);
+                try fail.append(self.allocator, wire.msg_userauth_failure);
+                try wire.appendString(&fail, self.allocator, "password,publickey");
+                try wire.appendBool(&fail, self.allocator, false);
+                try self.writePacket(fail.items);
+                continue;
+            }
+            if (std.mem.eql(u8, method, "publickey")) {
+                // Accept any signed publickey request (e2e path may use password only).
+                const has_sig = wire.readBool(req, &off) catch false;
+                if (has_sig) {
+                    try self.writePacket(&[_]u8{wire.msg_userauth_success});
+                    return;
+                }
+                // Without signature → PK_OK then wait for real attempt.
+                const pk_algo = wire.readString(req, &off) catch return error.SshAuthFailed;
+                const pk_blob = wire.readString(req, &off) catch return error.SshAuthFailed;
+                var pk_ok: std.ArrayList(u8) = .empty;
+                defer pk_ok.deinit(self.allocator);
+                try pk_ok.append(self.allocator, wire.msg_userauth_pk_ok);
+                try wire.appendString(&pk_ok, self.allocator, pk_algo);
+                try wire.appendString(&pk_ok, self.allocator, pk_blob);
+                try self.writePacket(pk_ok.items);
+                continue;
+            }
+            // none / other → failure listing methods.
+            var fail: std.ArrayList(u8) = .empty;
+            defer fail.deinit(self.allocator);
+            try fail.append(self.allocator, wire.msg_userauth_failure);
+            try wire.appendString(&fail, self.allocator, "password,publickey");
+            try wire.appendBool(&fail, self.allocator, false);
+            try self.writePacket(fail.items);
+        }
+    }
+
+    fn doChannel(self: *TestPeerConn) !void {
+        // CHANNEL_OPEN session
+        const open = try self.readPacket();
+        defer self.allocator.free(open);
+        if (open.len < 1 or open[0] != wire.msg_channel_open) return error.SshChannelFailed;
+        var off: usize = 1;
+        _ = wire.readString(open, &off) catch return error.SshChannelFailed; // "session"
+        const sender = wire.readU32(open, &off) catch return error.SshChannelFailed;
+        _ = wire.readU32(open, &off) catch return error.SshChannelFailed; // window
+        _ = wire.readU32(open, &off) catch return error.SshChannelFailed; // max packet
+
+        const peer_channel: u32 = 0;
+        var conf: std.ArrayList(u8) = .empty;
+        defer conf.deinit(self.allocator);
+        try conf.append(self.allocator, wire.msg_channel_open_confirmation);
+        try wire.appendU32(&conf, self.allocator, sender); // recipient = client's channel
+        try wire.appendU32(&conf, self.allocator, peer_channel); // sender channel
+        try wire.appendU32(&conf, self.allocator, initial_window);
+        try wire.appendU32(&conf, self.allocator, max_packet_channel);
+        try self.writePacket(conf.items);
+
+        // Wait for CHANNEL_REQUEST exec
+        while (true) {
+            const msg = try self.readPacket();
+            defer self.allocator.free(msg);
+            if (msg.len < 1) return error.SshChannelFailed;
+            switch (msg[0]) {
+                wire.msg_channel_request => {
+                    var roff: usize = 1;
+                    _ = wire.readU32(msg, &roff) catch return error.SshChannelFailed;
+                    const req_type = wire.readString(msg, &roff) catch return error.SshChannelFailed;
+                    const want_reply = wire.readBool(msg, &roff) catch false;
+                    if (std.mem.eql(u8, req_type, "exec")) {
+                        _ = wire.readString(msg, &roff) catch {}; // command
+                        if (want_reply) {
+                            var ok: std.ArrayList(u8) = .empty;
+                            defer ok.deinit(self.allocator);
+                            try ok.append(self.allocator, wire.msg_channel_success);
+                            try wire.appendU32(&ok, self.allocator, sender);
+                            try self.writePacket(ok.items);
+                        }
+                        // Empty stdout: optional fixed banner then EOF + close.
+                        // Banner on extended data is optional; send channel EOF+close.
+                        var eof_msg: std.ArrayList(u8) = .empty;
+                        defer eof_msg.deinit(self.allocator);
+                        try eof_msg.append(self.allocator, wire.msg_channel_eof);
+                        try wire.appendU32(&eof_msg, self.allocator, sender);
+                        try self.writePacket(eof_msg.items);
+
+                        var close_msg: std.ArrayList(u8) = .empty;
+                        defer close_msg.deinit(self.allocator);
+                        try close_msg.append(self.allocator, wire.msg_channel_close);
+                        try wire.appendU32(&close_msg, self.allocator, sender);
+                        try self.writePacket(close_msg.items);
+                        return;
+                    }
+                    if (want_reply) {
+                        var fail: std.ArrayList(u8) = .empty;
+                        defer fail.deinit(self.allocator);
+                        try fail.append(self.allocator, wire.msg_channel_failure);
+                        try wire.appendU32(&fail, self.allocator, sender);
+                        try self.writePacket(fail.items);
+                    }
+                },
+                wire.msg_channel_data, wire.msg_channel_window_adjust, wire.msg_channel_eof, wire.msg_channel_close => {
+                    // Drain client traffic until we get exec.
+                    continue;
+                },
+                else => return error.SshChannelFailed,
+            }
+        }
+    }
+
+    fn serve(self: *TestPeerConn) !void {
+        try self.exchangeVersions();
+        try self.doKex();
+        try self.doUserauth();
+        try self.doChannel();
+    }
+};
+
+/// Accept one TCP connection on `server` and run the minimal SSH peer.
+fn runTestPeer(io: Io, server: *Server, host_kp: Ed25519.KeyPair, err_out: *?anyerror) void {
+    const stream = server.accept(io) catch |e| {
+        err_out.* = e;
+        return;
+    };
+    var peer = TestPeerConn{
+        .allocator = testing.allocator,
+        .io = io,
+        .stream = stream,
+        .host_kp = host_kp,
+    };
+    defer peer.deinit();
+    peer.rebind();
+    peer.serve() catch |e| {
+        err_out.* = e;
+        return;
+    };
+    err_out.* = null;
+}
+
+test "NativeCommand e2e loopback password auth handshake" {
+    // Multi-threaded Io: peer accept blocks while client connects.
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var listen_addr = try IpAddress.parse("127.0.0.1", 0);
+    var server = try listen_addr.listen(io, .{ .reuse_address = true });
+    defer server.deinit(io);
+    const port = server.socket.address.getPort();
+    try testing.expect(port != 0);
+
+    const host_seed = [_]u8{0x99} ** 32;
+    const host_kp = try Ed25519.KeyPair.generateDeterministic(host_seed);
+
+    var peer_err: ?anyerror = error.SshProtocolError; // set until peer finishes
+    var group: Io.Group = .init;
+    try group.concurrent(io, runTestPeer, .{ io, &server, host_kp, &peer_err });
+    // Ensure the peer is awaited/cancelled even if the client path fails.
+    defer group.cancel(io);
+
+    const host_owned = try testing.allocator.dupe(u8, "127.0.0.1");
+    var host_port_buf: [32]u8 = undefined;
+    const host_port_str = try std.fmt.bufPrint(&host_port_buf, "127.0.0.1:{d}", .{port});
+    const host_with_port = try testing.allocator.dupe(u8, host_port_str);
+
+    var cmd = NativeCommand{
+        .allocator = testing.allocator,
+        .io = io,
+        .params = .{
+            .allocator = testing.allocator,
+            .remote_command = try testing.allocator.dupe(u8, "git-upload-pack '/test.git'"),
+            .host_with_port = host_with_port,
+            .owned_host = host_owned,
+            .host = host_owned,
+            .port = @intCast(port),
+            .user = "git",
+            .insecure_ignore_host_key = true,
+            .client_config = .{
+                .user = "git",
+                .auth_kind = .password,
+                .password = "test",
+                .host_key_callback = auth_mod.HostKeyCallback.insecureIgnoreHostKey(),
+            },
+        },
+    };
+    defer cmd.deinit();
+
+    try cmd.start();
+    // Exec completed; channel may already be EOF from peer.
+    try cmd.close();
+
+    try group.await(io);
+    if (peer_err) |e| return e;
+}
+
+test "NativeCommand e2e rejects wrong password" {
+    var threaded: Io.Threaded = .init(testing.allocator, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var listen_addr = try IpAddress.parse("127.0.0.1", 0);
+    var server = try listen_addr.listen(io, .{ .reuse_address = true });
+    defer server.deinit(io);
+    const port = server.socket.address.getPort();
+
+    const host_seed = [_]u8{0x77} ** 32;
+    const host_kp = try Ed25519.KeyPair.generateDeterministic(host_seed);
+
+    var peer_err: ?anyerror = error.SshProtocolError;
+    var group: Io.Group = .init;
+    try group.concurrent(io, runTestPeer, .{ io, &server, host_kp, &peer_err });
+    defer group.cancel(io);
+
+    const host_owned = try testing.allocator.dupe(u8, "127.0.0.1");
+    var host_port_buf: [32]u8 = undefined;
+    const host_port_str = try std.fmt.bufPrint(&host_port_buf, "127.0.0.1:{d}", .{port});
+
+    var cmd = NativeCommand{
+        .allocator = testing.allocator,
+        .io = io,
+        .params = .{
+            .allocator = testing.allocator,
+            .remote_command = try testing.allocator.dupe(u8, "git-upload-pack '/r.git'"),
+            .host_with_port = try testing.allocator.dupe(u8, host_port_str),
+            .owned_host = host_owned,
+            .host = host_owned,
+            .port = @intCast(port),
+            .user = "git",
+            .insecure_ignore_host_key = true,
+            .client_config = .{
+                .auth_kind = .password,
+                .password = "wrong-password",
+                .host_key_callback = auth_mod.HostKeyCallback.insecureIgnoreHostKey(),
+            },
+        },
+    };
+    defer cmd.deinit();
+
+    const start_err = cmd.start();
+    try testing.expectError(error.SshAuthFailed, start_err);
+    // Peer may still be looping on auth; cancel the group.
+    group.cancel(io);
 }

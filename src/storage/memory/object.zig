@@ -146,12 +146,21 @@ pub const ObjectStorage = struct {
     }
 
     /// Visit every object hash (go-git `ForEachObjectHash`).
+    ///
+    /// Context-aware callback: `fun(ctx, hash)`. Stack (or heap) context is
+    /// passed explicitly — no process-local statics. Concurrent-safe for
+    /// distinct `ObjectStorage` instances; a single storage is still not
+    /// thread-safe for concurrent mutation.
+    ///
     /// If `fun` returns `error.Stop`, iteration ends with success (storer.ErrStop).
-    /// `fun` is any callable `fn (Hash) !void` (or pointer-to-function).
-    pub fn forEachObjectHash(self: *const ObjectStorage, fun: anytype) anyerror!void {
+    pub fn forEachObjectHash(
+        self: *const ObjectStorage,
+        ctx: anytype,
+        comptime fun: *const fn (@TypeOf(ctx), Hash) anyerror!void,
+    ) anyerror!void {
         var it = self.objects.keyIterator();
         while (it.next()) |key| {
-            @call(.auto, fun, .{key.*}) catch |err| {
+            fun(ctx, key.*) catch |err| {
                 const e: anyerror = err;
                 if (e == error.Stop) return;
                 return e;
@@ -453,22 +462,22 @@ test "ObjectStorage forEachObjectHash and Stop" {
     _ = try store.setEncodedObject(try makeBlob(std.testing.allocator, "y"));
 
     const Counter = struct {
-        var n: usize = 0;
-        fn cb(_: Hash) anyerror!void {
-            n += 1;
+        n: usize = 0,
+        fn cb(self: *@This(), _: Hash) anyerror!void {
+            self.n += 1;
         }
-        fn stopAfterOne(_: Hash) anyerror!void {
-            n += 1;
+        fn stopAfterOne(self: *@This(), _: Hash) anyerror!void {
+            self.n += 1;
             return error.Stop;
         }
     };
-    Counter.n = 0;
-    try store.forEachObjectHash(Counter.cb);
-    try std.testing.expectEqual(@as(usize, 2), Counter.n);
+    var counter = Counter{};
+    try store.forEachObjectHash(&counter, Counter.cb);
+    try std.testing.expectEqual(@as(usize, 2), counter.n);
 
-    Counter.n = 0;
-    try store.forEachObjectHash(Counter.stopAfterOne);
-    try std.testing.expectEqual(@as(usize, 1), Counter.n);
+    counter.n = 0;
+    try store.forEachObjectHash(&counter, Counter.stopAfterOne);
+    try std.testing.expectEqual(@as(usize, 1), counter.n);
 }
 
 test "ObjectStorage objectPacks empty and addAlternate" {

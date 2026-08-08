@@ -6,7 +6,11 @@
 //! | `DefaultPort` | `DefaultPort` |
 //! | `runner.Command` | `Runner.command` |
 //! | `command.Start` | `GitCommand.start` (encodes `GitProtoRequest`) |
-//! | `net.Dial("tcp", …)` | `DialFn` (default TCP; injectable for tests) |
+//! | `net.Dial("tcp", …)` | `DialFn` / `defaultDial` (injectable) |
+//!
+//! Production dial: `defaultDial` resolves IPv4/IPv6 literals via
+//! `IpAddress.parse`, else `HostName.connect`. Bracketed IPv6 hosts (`[::1]`)
+//! are stripped for connect. Unit tests inject `BufferConn.dialFn` — no network.
 
 const std = @import("std");
 const transport = @import("transport");
@@ -37,7 +41,8 @@ pub const DefaultPort: i32 = 9418;
 
 /// Reader/writer pair used by a git:// command (go-git `net.Conn` analogue).
 ///
-/// Produced by `DialFn`. `close` releases connection resources.
+/// Produced by `DialFn`. `close` releases connection resources exactly once
+/// from the caller's side (`GitCommand.close` nulls `conn` first).
 pub const Conn = struct {
     ptr: *anyopaque,
     reader: *Reader,
@@ -63,6 +68,9 @@ pub const DialFn = *const fn (
 // ---------------------------------------------------------------------------
 
 /// Captures writes and serves a fixed read buffer (test double for `net.Conn`).
+///
+/// Set `read_data` before dial to feed a canned advertise / pack stream.
+/// `written()` includes the `GitProtoRequest` bytes from `Start`.
 pub const BufferConn = struct {
     allocator: Allocator,
     write_alloc: Writer.Allocating,
@@ -117,6 +125,7 @@ pub const BufferConn = struct {
     ) anyerror!Conn {
         _ = io;
         const self: *BufferConn = @ptrCast(@alignCast(ctx.?));
+        if (self.closed) return error.ConnectionClosed;
         if (self.dial_host_owned) |h| allocator.free(h);
         self.dial_host_owned = try allocator.dupe(u8, host);
         self.dial_host = self.dial_host_owned.?;
@@ -129,10 +138,12 @@ pub const BufferConn = struct {
 // Default TCP dial (production)
 // ---------------------------------------------------------------------------
 
+/// Heap state for one TCP connection. Destroyed exactly once in `closeFn`.
 const TcpConnState = struct {
     allocator: Allocator,
     io: Io,
     stream: Stream = undefined,
+    stream_open: bool = false,
     reader_impl: Stream.Reader = undefined,
     writer_impl: Stream.Writer = undefined,
     read_buf: [8192]u8 = undefined,
@@ -149,13 +160,23 @@ const TcpConnState = struct {
 
     fn closeFn(ptr: *anyopaque) anyerror!void {
         const self: *TcpConnState = @ptrCast(@alignCast(ptr));
-        self.stream.close(self.io);
+        // Always free the heap object; close the stream at most once.
         const a = self.allocator;
+        if (self.stream_open) {
+            self.stream_open = false;
+            self.stream.close(self.io);
+        }
         a.destroy(self);
     }
 };
 
 /// Real TCP dial (go-git `net.Dial("tcp", host:port)`).
+///
+/// - Literal IPv4 / IPv6 → `IpAddress.parse` + `connect`
+/// - Host name → `HostName.init` + `connect`
+/// - Bracketed IPv6 (`[::1]`) → strip brackets before parse/connect
+/// - On success, returned `Conn.close` closes the stream and frees state
+/// - On failure after connect, stream is closed and state freed (no leak)
 pub fn defaultDial(
     ctx: ?*anyopaque,
     allocator: Allocator,
@@ -178,13 +199,20 @@ pub fn defaultDial(
         const hn = try HostName.init(bare);
         tc.stream = try hn.connect(io, port, .{ .mode = .stream });
     }
+    tc.stream_open = true;
+    // If reader/writer setup ever gains fallible steps, close the stream first.
+    errdefer {
+        tc.stream_open = false;
+        tc.stream.close(io);
+    }
 
     tc.reader_impl = tc.stream.reader(io, &tc.read_buf);
     tc.writer_impl = tc.stream.writer(io, &tc.write_buf);
     return tc.asConn();
 }
 
-fn bareHost(host: []const u8) []const u8 {
+/// Strip surrounding `[]` from an IPv6 host literal (endpoint / URL form).
+pub fn bareHost(host: []const u8) []const u8 {
     if (host.len >= 2 and host[0] == '[' and host[host.len - 1] == ']') {
         return host[1 .. host.len - 1];
     }
@@ -229,6 +257,9 @@ pub const Runner = struct {
     }
 
     /// go-git `(*runner).Command`.
+    ///
+    /// Connects at create time (go-git). Auth is rejected. On dial failure the
+    /// command is not retained. On append failure the connection is released.
     pub fn command(
         self: *Runner,
         cmd: []const u8,
@@ -236,7 +267,7 @@ pub const Runner = struct {
         auth: ?AuthMethod,
     ) anyerror!Command {
         // Auth not allowed — git protocol has no authentication.
-        if (auth != null) return error.InvalidAuthMethod;
+        if (auth != null) return transport.Error.InvalidAuthMethod;
 
         const c = try self.allocator.create(GitCommand);
         errdefer self.allocator.destroy(c);
@@ -265,7 +296,8 @@ pub const newClient = defaultClient;
 /// Single git:// command over one TCP (or mock) connection.
 ///
 /// Heap-owned by `Runner` (freed in `Runner.deinit`). `close` only drops the
-/// connection — safe to call more than once.
+/// connection — safe to call more than once. Stdin close is a no-op (go-git
+/// `WriteNopCloser`); only `close`/`kill` tear down TCP.
 pub const GitCommand = struct {
     allocator: Allocator,
     command_name: []const u8,
@@ -284,14 +316,18 @@ pub const GitCommand = struct {
     }
 
     fn connect(self: *GitCommand, runner: *Runner) !void {
-        if (self.connected) return error.AlreadyConnected;
+        if (self.connected) return transport.Error.AlreadyConnected;
         const port = connectPort(self.endpoint);
         const host = self.endpoint.host;
+        // Dial owns the Conn until close/release. On dial error, no state kept.
         self.conn = try runner.dial_fn(runner.dial_ctx, self.allocator, runner.io, host, port);
         self.connected = true;
     }
 
     /// go-git `(*command).Start` — encode `GitProtoRequest` on the connection.
+    ///
+    /// Wire form: one pkt-line `command pathname\0host=host\0` (see packp).
+    /// Flushes after encode so the daemon sees the request immediately.
     pub fn start(self: *GitCommand) anyerror!void {
         const conn = self.conn orelse return error.NotConnected;
 
@@ -309,6 +345,7 @@ pub const GitCommand = struct {
     ///
     /// When `endpoint.port != DefaultPort`, formats `host:port` (Go `net.JoinHostPort`).
     /// When equal to `DefaultPort`, uses bare host. Port `0` is not default → `host:0`.
+    /// Endpoint hosts may already be bracketed IPv6; `joinHostPort` does not double-wrap.
     pub fn protoHost(self: *GitCommand) Allocator.Error![]const u8 {
         if (self.endpoint.port != DefaultPort) {
             if (self.host_owned) |h| self.allocator.free(h);
@@ -318,7 +355,7 @@ pub const GitCommand = struct {
         return self.endpoint.host;
     }
 
-    /// go-git `StderrPipe` — no dedicated error channel.
+    /// go-git `StderrPipe` — no dedicated error channel (returns error; session treats as null).
     pub fn stderrPipe(self: *GitCommand) anyerror!*Reader {
         _ = self;
         return error.NoStderrChannel;
@@ -341,6 +378,8 @@ pub const GitCommand = struct {
     }
 
     /// go-git `Close` — close TCP connection (idempotent).
+    ///
+    /// Nulls `conn` before calling `Conn.close` so a failing close cannot double-free.
     pub fn close(self: *GitCommand) anyerror!void {
         if (!self.connected) return;
         self.connected = false;
@@ -377,13 +416,16 @@ pub fn connectPort(ep: *const Endpoint) u16 {
     return @intCast(ep.port);
 }
 
-/// go-git / Go `net.JoinHostPort`.
+/// Go `net.JoinHostPort` for dial/GitProtoRequest host fields.
+///
+/// If `host` is an unbracketed IPv6 literal (contains `:`), wrap in `[]`.
+/// If already bracketed (`[::1]`), do not double-wrap (gitz endpoints keep brackets).
 pub fn joinHostPort(allocator: Allocator, host: []const u8, port: i32) Allocator.Error![]u8 {
-    // Go: if host contains ':', wrap in brackets (even if already bracketed).
-    if (std.mem.indexOfScalar(u8, host, ':') != null) {
-        return try std.fmt.allocPrint(allocator, "[{s}]:{d}", .{ host, port });
+    const bare = bareHost(host);
+    if (std.mem.indexOfScalar(u8, bare, ':') != null) {
+        return try std.fmt.allocPrint(allocator, "[{s}]:{d}", .{ bare, port });
     }
-    return try std.fmt.allocPrint(allocator, "{s}:{d}", .{ host, port });
+    return try std.fmt.allocPrint(allocator, "{s}:{d}", .{ bare, port });
 }
 
 /// Build GitProtoRequest host string without allocating a command

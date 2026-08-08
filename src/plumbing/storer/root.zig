@@ -26,7 +26,9 @@
 //!
 //! - **DeltaObjectStorer:** `deltaObject(object_type, hash)` — like `encodedObject` but leave deltas unresolved.
 //! - **Transactioner:** `begin()` → **Transaction** with `setEncodedObject` / `encodedObject` / `commit` / `rollback`.
-//! - **LooseObjectStorer:** `forEachObjectHash`, `looseObjectTime`, `deleteLooseObject`.
+//! - **LooseObjectStorer:** `forEachObjectHash(ctx, fun)`, `looseObjectTime`,
+//!   `deleteLooseObject`. `forEachObjectHash` takes an explicit context plus a
+//!   callback `fn (ctx, Hash) !void` (no process-local static bridges).
 //! - **PackedObjectStorer:** `objectPacks`, `deleteOldObjectPackAndIndex`.
 //! - **PackfileWriter:** `packfileWriter()` when the backend supports direct pack ingest.
 //!   Callers type-assert (capability flag). If absent, write objects via `setEncodedObject`.

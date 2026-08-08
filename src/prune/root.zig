@@ -3,6 +3,14 @@
 //! Ports `object_walker.go` and `prune.go`. Free functions take
 //! `*memory.Storage` (LooseObjectStorer method set on memory backend).
 //!
+//! Memory `deleteLooseObject` returns `error.NotSupported` (go-git memory).
+//! `prune` still walks and reports unreferenced hashes via the handler;
+//! callers that need real deletes use a filesystem storage backend.
+//!
+//! Collect for `forEachObjectHash` uses stack-local context (no process-local
+//! statics). Concurrent prune on distinct storages is safe; one storage is not
+//! safe for concurrent mutation during walk/handler.
+//!
 //! # go-git surface
 //!
 //! | go-git | Zig |

@@ -284,7 +284,12 @@ fn hashedHostFieldMatches(hosts_field: []const u8, hostname: []const u8) bool {
 }
 
 /// HMAC-SHA1(key=salt, data=hostname) constant-time equals expected MAC.
+///
+/// OpenSSH hashed host format (`|1|salt|hash`): salt is the HMAC key and the
+/// host string (plain name or `[host]:port`) is the message. Comparison is
+/// constant-time to avoid host oracle via timing.
 fn hmacHostMatches(hostname: []const u8, salt: []const u8, expected_mac: []const u8) bool {
+    if (salt.len == 0) return false;
     if (expected_mac.len != HmacSha1.mac_length) return false;
     var mac: [HmacSha1.mac_length]u8 = undefined;
     HmacSha1.create(&mac, hostname, salt);

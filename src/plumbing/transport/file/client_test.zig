@@ -261,8 +261,8 @@ test "resolveBinary with use_host_spawn=false skips LookPath" {
     runner.use_host_spawn = false;
 
     const r = try runner.resolveBinary(transport.UploadPackServiceName);
-    try testing.expectEqualStrings("/non-existent-up", r.bin);
-    try testing.expect(!r.bin_owned);
+    try testing.expectEqualStrings("/non-existent-up", r.bin.bytes());
+    try testing.expect(!r.bin.isOwned());
 }
 
 test "resolveBinary with use_host_spawn finds true" {
@@ -272,9 +272,9 @@ test "resolveBinary with use_host_spawn finds true" {
     try testing.expect(runner.use_host_spawn);
 
     const r = try runner.resolveBinary(transport.UploadPackServiceName);
-    defer if (r.bin_owned) gpa.free(r.bin);
-    try testing.expect(r.bin_owned);
-    try testing.expect(std.fs.path.isAbsolute(r.bin));
+    defer if (r.bin == .owned) gpa.free(r.bin.owned);
+    try testing.expect(r.bin.isOwned());
+    try testing.expect(std.fs.path.isAbsolute(r.bin.bytes()));
 }
 
 test "resolveBinary missing bin CommandNotFound" {
@@ -295,9 +295,9 @@ test "resolveBinary git-upload-pack via PATH or prefixExecPath" {
     defer runner.deinit();
 
     const r = try runner.resolveBinary(transport.UploadPackServiceName);
-    defer if (r.bin_owned) gpa.free(r.bin);
-    try testing.expect(r.bin_owned);
-    try testing.expect(std.mem.indexOf(u8, r.bin, "git-upload-pack") != null);
+    defer if (r.bin == .owned) gpa.free(r.bin.owned);
+    try testing.expect(r.bin.isOwned());
+    try testing.expect(std.mem.indexOf(u8, r.bin.bytes(), "git-upload-pack") != null);
 }
 
 test "HostCommand argv construction via Runner.command" {
@@ -483,7 +483,7 @@ test "hermetic MapLoader advertise via DefaultClient" {
         ar.capabilities.supports(capability.Sideband));
 }
 
-test "hermetic MapLoader missing repo maps to not found class" {
+test "hermetic MapLoader missing repo maps to RepositoryNotFound" {
     const gpa = testing.allocator;
     defer sync.deinitPools(gpa);
 
@@ -500,19 +500,8 @@ test "hermetic MapLoader missing repo maps to not found class" {
     var sess = try client.newUploadPackSession(&ep, null);
     defer sess.close() catch {};
 
-    // LocalCommand writes not-found phrase to stderr; common maps to RepositoryNotFound
-    // or UnexpectedEndOfStream depending on decode path.
-    const result = sess.advertisedReferences();
-    if (result) |_| {
-        try testing.expect(false);
-    } else |err| {
-        try testing.expect(
-            err == error.RepositoryNotFound or
-                err == error.UnexpectedEndOfStream or
-                err == error.EmptyRemoteRepository or
-                err == error.UnknownRemoteError,
-        );
-    }
+    // LocalCommand writes the local not-found phrase to stderr; Session maps it.
+    try testing.expectError(error.RepositoryNotFound, sess.advertisedReferences());
 }
 
 test "hermetic loader preferred over host spawn" {
@@ -560,4 +549,41 @@ test "runner owned deinit frees host and local variants" {
     try testing.expect(runner.owned.items.len == 2);
     try testing.expect(runner.owned.items[1] == .local);
     // defer runner.deinit frees both variants (leak detector is the assert).
+}
+
+test "HostCommand close is idempotent and blocks re-spawn" {
+    const gpa = testing.allocator;
+    var runner = file.Runner.init(gpa, "true", "true");
+    defer runner.deinit();
+
+    var ep = try makeEp(gpa, "file:///tmp/host-close-idempotent");
+    defer ep.deinit();
+
+    const cmd = try runner.command(transport.UploadPackServiceName, &ep, null);
+    try cmd.start();
+    try cmd.close();
+    try cmd.close();
+    try cmd.kill();
+    // After close, further pipe access must fail (no resurrected child).
+    try testing.expectError(error.CommandFailed, cmd.stdoutPipe());
+}
+
+test "lookPath skips empty PATH components" {
+    // Empty PATH entries must not resolve against cwd (false positive).
+    const gpa = testing.allocator;
+    // A bare name that does not exist on a typical PATH.
+    try testing.expectError(
+        file.Error.CommandNotFound,
+        file.lookPath(gpa, testing.io, testing.environ, "gitz-empty-path-component-miss-zzzz"),
+    );
+}
+
+test "mapService rejects unknown labels" {
+    const gpa = testing.allocator;
+    var runner = file.Runner.init(gpa, "git-upload-pack", "git-receive-pack");
+    defer runner.deinit();
+    try testing.expectError(file.Error.CommandNotFound, runner.mapService("not-a-service"));
+    const up = try runner.mapService(transport.UploadPackServiceName);
+    try testing.expectEqualStrings("git-upload-pack", up.bin);
+    try testing.expect(up.service == .upload_pack);
 }

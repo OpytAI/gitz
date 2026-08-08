@@ -170,8 +170,15 @@ fn singleThreadedIo() Io {
 
 /// Connected SSH agent client over a Unix domain socket.
 ///
-/// Readers/writers are rebound on each I/O call so return-by-value is safe
-/// (buffers live inside this struct).
+/// # Lifecycle
+///
+/// - `connect` opens the Unix socket; pair with `disconnect` (or `defer disconnect()`).
+/// - `listIdentities` / `sign` open no extra resources beyond reply allocations
+///   the caller frees. The client does not retain agent state across calls.
+/// - `newSSHAgentAuth` does **not** hold a live `AgentClient`; the signers
+///   callback connects and disconnects per invocation.
+/// - Readers/writers are rebound on each I/O call so return-by-value is safe
+///   (buffers live inside this struct).
 pub const AgentClient = struct {
     allocator: Allocator,
     io: Io,
@@ -196,6 +203,7 @@ pub const AgentClient = struct {
         return connect(allocator, singleThreadedIo(), sock_path);
     }
 
+    /// Close the agent socket. Idempotent.
     pub fn disconnect(self: *AgentClient) void {
         if (self.stream) |s| {
             s.close(self.io);
