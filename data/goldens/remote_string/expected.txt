@@ -1,0 +1,3 @@
+# go-git Remote.String with single URL (fetch and push are the same).
+origin	file://example.git (fetch)
+origin	file://example.git (push)

@@ -1,23 +1,21 @@
-//! Config-only Remote handle (go-git `Remote` without transport).
+//! Remote handle for the repository package.
 //!
-//! Fetch/List/Push live in phase 11. Fields are public; use `.config` / `.name()`.
+//! Re-exports the full `//src/remote` surface (Fetch / List / Push).
+//! Config-only CRUD lives in `crud.zig`.
 
-const memory = @import("memory");
+const remote_pkg = @import("remote");
 
-/// go-git `Remote` shell: storer + borrowed config pointer.
-pub const Remote = struct {
-    /// Borrowed storage (not owned).
-    storer: *memory.Storage,
-    /// Borrowed remote config (in repository Config map, or AnonymousRemote heap).
-    config: *const memory.RemoteConfig,
+pub const Remote = remote_pkg.Remote;
+pub const newRemote = remote_pkg.newRemote;
+pub const newRemoteEmbedded = remote_pkg.newRemoteEmbedded;
+pub const freeReferences = remote_pkg.freeReferences;
 
-    /// Remote name (`config.name`).
-    pub fn name(self: *const Remote) []const u8 {
-        return self.config.name;
-    }
-};
-
-/// go-git `NewRemote`.
-pub fn newRemote(s: *memory.Storage, c: *const memory.RemoteConfig) Remote {
-    return .{ .storer = s, .config = c };
-}
+pub const Error = remote_pkg.Error;
+pub const default_remote_name = remote_pkg.default_remote_name;
+pub const TagMode = remote_pkg.TagMode;
+pub const PeelingOption = remote_pkg.PeelingOption;
+pub const ForceWithLease = remote_pkg.ForceWithLease;
+pub const PushOption = remote_pkg.PushOption;
+pub const FetchOptions = remote_pkg.FetchOptions;
+pub const PushOptions = remote_pkg.PushOptions;
+pub const ListOptions = remote_pkg.ListOptions;

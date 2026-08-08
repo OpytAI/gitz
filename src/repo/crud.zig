@@ -52,7 +52,7 @@ pub const CreateTagOptions = struct {
 };
 
 // ---------------------------------------------------------------------------
-// Remotes (config-only; no fetch/push)
+// Remotes (config CRUD; transport via //src/remote on the returned Remote)
 // ---------------------------------------------------------------------------
 
 /// go-git `Repository.Remote`.

@@ -56,6 +56,8 @@ zig_library(
         # Phase 10
         "//src/config",
         "//src/repo",
+        # Phase 11
+        "//src/remote",
     ],
 )
 
@@ -113,6 +115,8 @@ zig_test(
         # Phase 10
         "//src/config",
         "//src/repo",
+        # Phase 11
+        "//src/remote",
     ],
 )
 
@@ -177,6 +181,8 @@ filegroup(
         # Phase 10
         "//src/config:package_srcs",
         "//src/repo:package_srcs",
+        # Phase 11
+        "//src/remote:package_srcs",
     ],
     visibility = ["//visibility:public"],
 )

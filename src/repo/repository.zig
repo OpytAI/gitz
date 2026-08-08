@@ -12,7 +12,7 @@
 //!
 //! Filesystem path lifecycle: `plain.zig` (`plainInit` / `plainOpen` over
 //! `//src/storage/filesystem` + `fs.Mem`). Full Worktree is phase 12.
-//! Remote Fetch / List / Push are phase 11.
+//! Remote Fetch / List / Push: phase 11 (`//src/remote`, methods below).
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -38,6 +38,9 @@ pub const LogOrder = log_mod.LogOrder;
 pub const LogResult = log_mod.LogResult;
 pub const CreateTagOptions = crud.CreateTagOptions;
 pub const Remote = remote_mod.Remote;
+pub const FetchOptions = remote_mod.FetchOptions;
+pub const PushOptions = remote_mod.PushOptions;
+pub const ListOptions = remote_mod.ListOptions;
 pub const AnonymousRemote = crud.AnonymousRemote;
 
 pub const Error = error_mod.Error;
@@ -143,7 +146,7 @@ pub const Repository = struct {
     }
 
     // -----------------------------------------------------------------------
-    // Remotes / config branches / tags (no network)
+    // Remotes / config branches / tags
     // -----------------------------------------------------------------------
 
     pub fn remote(self: *Repository, name: []const u8) !Remote {
@@ -159,10 +162,10 @@ pub const Repository = struct {
         self: *Repository,
         name: []const u8,
         urls: []const []const u8,
-        fetch: []const []const u8,
+        fetch_specs: []const []const u8,
         mirror: bool,
     ) !Remote {
-        return crud.createRemoteFull(self.storer, name, urls, fetch, mirror);
+        return crud.createRemoteFull(self.storer, name, urls, fetch_specs, mirror);
     }
     pub fn createRemoteAnonymous(
         self: *Repository,
@@ -173,6 +176,20 @@ pub const Repository = struct {
     }
     pub fn deleteRemote(self: *Repository, name: []const u8) !void {
         return crud.deleteRemote(self.storer, name);
+    }
+
+    /// go-git `Repository.Fetch` — resolve remote by `o.remote_name`, then fetch.
+    pub fn fetch(self: *Repository, o: *FetchOptions) !void {
+        try o.validate();
+        var rem = try self.remote(o.remote_name);
+        return rem.fetch(o);
+    }
+
+    /// go-git `Repository.Push` — resolve remote by `o.remote_name`, then push.
+    pub fn push(self: *Repository, o: *PushOptions) !void {
+        try o.validate();
+        var rem = try self.remote(o.remote_name);
+        return rem.push(o);
     }
     pub fn branch(self: *Repository, name: []const u8) !*const memory.BranchConfig {
         return crud.branch(self.storer, name);

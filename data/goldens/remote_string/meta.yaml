@@ -1,0 +1,5 @@
+name: remote_string
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "Remote.string — origin with one URL prints fetch and push lines."

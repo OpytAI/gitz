@@ -68,6 +68,9 @@ pub const merkletrie_filesystem = @import("merkletrie_filesystem");
 pub const gitconfig = @import("gitconfig");
 pub const repo = @import("repo");
 
+// Phase 11 remote engine (Fetch / List / Push).
+pub const remote = @import("remote");
+
 test "identity" {
     try std.testing.expectEqualStrings("gitz", name);
     try std.testing.expectEqualStrings("v5.19.2", go_git_pin);
@@ -184,4 +187,32 @@ test "phase10 config and repository facade surface" {
     _ = repo.Repository.createTag;
     _ = repo.Repository.configScoped;
     _ = repo.Repository.worktreeFs;
+}
+
+test "phase11 remote surface" {
+    _ = remote.Remote;
+    _ = remote.newRemote;
+    _ = remote.newRemoteEmbedded;
+    _ = remote.freeReferences;
+    _ = remote.FetchOptions;
+    _ = remote.PushOptions;
+    _ = remote.ListOptions;
+    _ = remote.TagMode;
+    _ = remote.PeelingOption;
+    _ = remote.ForceWithLease;
+    _ = remote.PushOption;
+    _ = remote.SessionOpts;
+    _ = remote.openUploadPack;
+    _ = remote.openReceivePack;
+    try std.testing.expectEqualStrings("origin", remote.default_remote_name);
+    const e: remote.Error = error.AlreadyUpToDate;
+    try std.testing.expect(e == error.AlreadyUpToDate);
+    _ = remote.Remote.list;
+    _ = remote.Remote.fetch;
+    _ = remote.Remote.push;
+    _ = remote.Remote.string;
+    _ = repo.Repository.fetch;
+    _ = repo.Repository.push;
+    _ = repo.FetchOptions;
+    _ = repo.PushOptions;
 }

@@ -198,6 +198,17 @@ pub const Reference = struct {
         return .{ .type = .symbolic, .name = n, .target = target };
     }
 
+    /// True when type, name, and hash/target match.
+    pub fn eql(self: Reference, other: Reference) bool {
+        if (self.type != other.type) return false;
+        if (!self.name.eql(other.name)) return false;
+        return switch (self.type) {
+            .hash => self.hash.eql(other.hash),
+            .symbolic => self.target.eql(other.target),
+            .invalid => true,
+        };
+    }
+
     /// Create from name and target string (hash hex or `ref: …`).
     pub fn fromStrings(name: []const u8, target: []const u8) Reference {
         const n = ReferenceName.init(name);

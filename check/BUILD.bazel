@@ -319,9 +319,23 @@ test_suite(
     ],
 )
 
+# Phase 11: Remote Fetch / List / Push over transport sessions.
+test_suite(
+    name = "phase_11_packages",
+    tests = [
+        "//src/remote:remote_test",
+        "//src/repo:repo_test",
+        # Executable Class A goldens for remote + prior suites.
+        "//tools/golden:recompute_test",
+    ],
+)
+
 test_suite(
     name = "phase_11",
-    tests = [":phase_10"],
+    tests = [
+        ":phase_10",
+        ":phase_11_packages",
+    ],
 )
 
 test_suite(

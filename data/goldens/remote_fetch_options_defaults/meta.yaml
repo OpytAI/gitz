@@ -1,0 +1,5 @@
+name: remote_fetch_options_defaults
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "FetchOptions.validate fills DefaultRemoteName and TagFollowing."

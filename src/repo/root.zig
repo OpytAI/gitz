@@ -2,9 +2,10 @@
 //!
 //! Init/Open over `*memory.Storage` plus object/ref facades, Log, CreateTag,
 //! and configScoped. PlainInit/PlainOpen over filesystem storage + `fs.Mem`
-//! live in `plain.zig`. Full Worktree engine is phase 12; Remote Fetch/Push
-//! is phase 11. Storer config is `memory.Config`; high-level remotes/branches
-//! use `gitconfig` (also via `configScoped`).
+//! live in `plain.zig`. Full Worktree engine is phase 12.
+//! Phase 11: Remote Fetch / List / Push via `//src/remote` (re-exported here).
+//! Storer config is `memory.Config`; high-level remotes/branches use `gitconfig`
+//! (also via `configScoped`).
 
 const repository = @import("repository.zig");
 const facade = @import("facade.zig");
@@ -37,6 +38,19 @@ pub const ObjectsIter = facade.ObjectsIter;
 pub const FilteredRefIter = facade.FilteredRefIter;
 
 pub const Remote = remote_mod.Remote;
+pub const newRemote = remote_mod.newRemote;
+pub const newRemoteEmbedded = remote_mod.newRemoteEmbedded;
+pub const freeReferences = remote_mod.freeReferences;
+pub const FetchOptions = remote_mod.FetchOptions;
+pub const PushOptions = remote_mod.PushOptions;
+pub const ListOptions = remote_mod.ListOptions;
+pub const TagMode = remote_mod.TagMode;
+pub const PeelingOption = remote_mod.PeelingOption;
+pub const ForceWithLease = remote_mod.ForceWithLease;
+pub const PushOption = remote_mod.PushOption;
+pub const default_remote_name = remote_mod.default_remote_name;
+pub const RemoteError = remote_mod.Error;
+
 pub const CreateTagOptions = crud.CreateTagOptions;
 pub const AnonymousRemote = crud.AnonymousRemote;
 

@@ -4,8 +4,8 @@
 # Present: Init/Open (memory), PlainInit/PlainOpen (fs.Mem), configScoped,
 # Log (+ PathFilter fields), CreateTagOptions (tagger/message/pgp_signature),
 # CRUD remotes/branches/tags, object facades, ResolveRevision.
-# Deferred: PlainClone; full Worktree engine (phase 12); Remote Fetch/List/Push
-# (phase 11); EnableDotGitCommonDir (stub flag).
+# Deferred: PlainClone; full Worktree engine (phase 12); EnableDotGitCommonDir
+# (stub flag). Phase 11: Repository.fetch / push via //src/remote.
 package: git/repository
 phase: 10
 require:
@@ -21,6 +21,9 @@ require:
     - PlainInitOptions
     - PlainOpenOptions
     - PlainRepository
+    - FetchOptions
+    - PushOptions
+    - ListOptions
   functions:
     - newRepository
     - init
@@ -52,6 +55,8 @@ require:
     - Repository.createRemote
     - Repository.createRemoteAnonymous
     - Repository.deleteRemote
+    - Repository.fetch
+    - Repository.push
     - Repository.branch
     - Repository.createBranch
     - Repository.deleteBranch
@@ -78,6 +83,9 @@ require:
     - initWithOptions
     - open
     - git_dir_name
+    - FetchOptions
+    - PushOptions
+    - ListOptions
     - Remote
     - CreateTagOptions
     - CreateTagOptions.tagger

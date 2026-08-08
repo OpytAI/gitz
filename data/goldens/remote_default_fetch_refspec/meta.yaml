@@ -1,0 +1,5 @@
+name: remote_default_fetch_refspec
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "default_fetch_ref_spec formatted with remote name origin."

@@ -1,6 +1,6 @@
 # gitz phase plan
 
-**Status:** active — Phase 10 (`config-repo`) on feature branch; develop through Phase 9.  
+**Status:** active — Phase 11 (`remote`) on feature branch; develop through Phase 10.  
 **Pin:** go-git **v5.19.2** (`GO_GIT_PIN.md`)  
 **Strategy:** `PORT_STRATEGY.md` (how). **This file:** what lands when.  
 **Process:** `AGENTS.md` (worktrees, merge, sequential phases).  

@@ -54,6 +54,10 @@ _GOLDEN_SUITES = [
     "repo_init_nonbare",
     "repo_open_head",
     "repo_object_getters",
+    # Phase 11
+    "remote_string",
+    "remote_fetch_options_defaults",
+    "remote_default_fetch_refspec",
 ]
 
 # Bake expected.txt bodies into a Zig module so recompute_test is hermetic.
@@ -104,5 +108,7 @@ zig_test(
         "//src/repo",
         "//src/storage/memory",
         "//src/fs",
+        # Phase 11
+        "//src/remote",
     ],
 )

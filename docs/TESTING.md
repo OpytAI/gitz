@@ -234,7 +234,7 @@ High-level config is `@import("gitconfig")`.
 | Config | `config`, `setConfig`, `configScoped` | Storer `memory.Config`; scoped merge via `gitconfig.loadConfig` |
 | Refs | `head`, `reference`, `references`, `branches`, `tags`, `notes` | Filtered ref iters |
 | Worktree probe | `isBare`, `setIsBare`, `worktreeFs` | Optional `?*fs.Mem` only (no Worktree engine) |
-| Remotes (config) | `remote`, `remotes`, `createRemote`, `createRemoteFull`, `createRemoteAnonymous`, `deleteRemote` | No Fetch/List/Push |
+| Remotes (config) | `remote`, `remotes`, `createRemote`, `createRemoteFull`, `createRemoteAnonymous`, `deleteRemote` | Fetch/Push added in phase 11 |
 | Branches (config) | `branch`, `createBranch`, `deleteBranch` | Tracking config, not ref creation |
 | Tags | `tag`, `createTag`, `deleteTag` | Lightweight or annotated |
 | CreateTagOptions | `tagger`, `message`, `sign_key`, `pgp_signature`, `validate` | Empty tagger loads author then user from storer config (`loadConfigTagger`); `sign_key` = Entity ArmoredDetachSign |
@@ -269,4 +269,61 @@ bazel --output_user_root=/mnt/workspace/gitz/bazel-cache test //check:phase_10_p
 ```
 
 Merge-complete on `develop` also requires `current_phase: 10` in
+`inventories/packages.yaml` (set on this phase branch).
+
+---
+
+## Phase 11 — Remote engine
+
+**Gate:** `//check:phase_11`  
+**Purpose:** go-git root `remote.go` + remote-related `options.go` types —
+`Remote` List / Fetch / Push over transport sessions. Integration uses an
+in-process `server` + `MapLoader` (no real internet). `Repository.fetch` /
+`Repository.push` resolve the named remote and delegate.
+
+### Packages (go-git → gitz)
+
+| go-git | gitz | Role |
+|--------|------|------|
+| root `remote.go` (+ remote options) | `src/remote` (`import_name = remote`) | List / Fetch / Push, options, ref match, session open |
+
+### Remote surface (`src/remote`)
+
+| Area | API | Notes |
+|------|-----|--------|
+| Handle | `Remote`, `newRemote`, `newRemoteEmbedded` | Public fields; `embedded` binds in-process `server.Server` |
+| Display | `Remote.string`, `Remote.name` | go-git `String`; config via public `.config` |
+| List | `Remote.list` + `ListOptions` / `PeelingOption` | Owned `[]Reference`; free with `freeReferences` |
+| Fetch | `Remote.fetch` + `FetchOptions` / `TagMode` | Pack ingest, tracking refs, `updateShallow`, prune |
+| Push | `Remote.push` + `PushOptions` / `ForceWithLease` / `PushOption` | Commands + pack; follow-tags via `isAncestor` |
+| Session | `openUploadPack`, `openReceivePack`, `SessionOpts` | TLS/proxy applied to `Endpoint`; embedded or registry |
+| Refs | `calculateRefs`, `getWants`, `getHaves`, `isFastForward` | Refspec expand + commit-walk FF |
+| Repo glue | `Repository.fetch`, `Repository.push` | Validate options → lookup remote → delegate |
+
+### Class A goldens (phase 11)
+
+Static `file_equals` plus **executable** recompute in `//tools/golden:recompute_test`.
+
+| Suite | Locks |
+|-------|--------|
+| `remote_string` | `Remote.string` for single URL (fetch + push lines) |
+| `remote_fetch_options_defaults` | `FetchOptions.validate` → `origin` + `following` |
+| `remote_default_fetch_refspec` | `default_fetch_ref_spec` formatted for `origin` |
+
+Integration unit tests (not Class A dumps) cover List/Fetch/Push and
+ForceWithLease reject over MapLoader in `//src/remote:remote_test`.
+
+### How to run
+
+```bash
+cd /mnt/workspace/gitz/gitz-phase-11   # or develop after merge
+
+bazel --output_user_root=/mnt/workspace/gitz/bazel-cache test //check:phase_11
+
+# Package slice only:
+bazel --output_user_root=/mnt/workspace/gitz/bazel-cache test //check:phase_11_packages
+bazel --output_user_root=/mnt/workspace/gitz/bazel-cache test //src/remote:remote_test
+```
+
+Merge-complete on `develop` also requires `current_phase: 11` in
 `inventories/packages.yaml` (set on this phase branch).

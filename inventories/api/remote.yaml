@@ -1,0 +1,99 @@
+# API inventory: remote (phase 11) — go-git root remote.go + remote options.
+# packages.yaml go key is git/remote (zig: src/remote).
+#
+# Present: Remote, NewRemote, List/Fetch/Push, options, force-with-lease,
+# follow-tags (IsAncestor), updateShallow, SessionOpts (TLS/proxy on Endpoint),
+# in-process MapLoader path via newRemoteEmbedded.
+# Deferred: real HTTP/SSH network transports (phase 13); PlainClone (phase 12).
+package: git/remote
+phase: 11
+require:
+  types:
+    - Remote
+    - FetchOptions
+    - PushOptions
+    - ListOptions
+    - TagMode
+    - PeelingOption
+    - ForceWithLease
+    - PushOption
+    - SessionOpts
+    - SessionUpload
+    - SessionReceive
+    - CalculateRefsResult
+  functions:
+    - newRemote
+    - newRemoteEmbedded
+    - freeReferences
+    - transportFromServer
+    - openUploadPack
+    - openReceivePack
+    - calculateRefs
+    - getWants
+    - getHaves
+    - isFastForward
+  constants:
+    - default_remote_name
+    - default_list_timeout_sec
+  semantic:
+    - Remote
+    - Remote.list
+    - Remote.fetch
+    - Remote.push
+    - Remote.string
+    - Remote.name
+    - newRemote
+    - newRemoteEmbedded
+    - freeReferences
+    - FetchOptions
+    - FetchOptions.validate
+    - PushOptions
+    - PushOptions.validate
+    - ListOptions
+    - ListOptions.effectiveTimeoutSec
+    - TagMode
+    - PeelingOption
+    - ForceWithLease
+    - PushOption
+    - SessionOpts
+    - AlreadyUpToDate
+    - EmptyUrls
+    - ForceWithLeaseRejected
+    - NoMatchingRefSpec
+    - DeleteRefNotSupported
+    - ForceNeeded
+    - ExactSHA1NotSupported
+    - default_remote_name
+    - openReceivePack
+    - isFastForward
+zig_map:
+  Remote: Remote
+  NewRemote: newRemote
+  NewRemoteEmbedded: newRemoteEmbedded
+  FetchOptions: FetchOptions
+  PushOptions: PushOptions
+  ListOptions: ListOptions
+  TagMode: TagMode
+  PeelingOption: PeelingOption
+  ForceWithLease: ForceWithLease
+  PushOption: PushOption
+  SessionOpts: SessionOpts
+  DefaultRemoteName: default_remote_name
+  NoErrAlreadyUpToDate: AlreadyUpToDate
+  ErrEmptyUrls: EmptyUrls
+  ErrForceNeeded: ForceNeeded
+  ErrDeleteRefNotSupported: DeleteRefNotSupported
+  ErrExactSHA1NotSupported: ExactSHA1NotSupported
+  NoMatchingRefSpecError: NoMatchingRefSpec
+  freeReferences: freeReferences
+  transportFromServer: transportFromServer
+  openUploadPack: openUploadPack
+  openReceivePack: openReceivePack
+  newSendPackSession: openReceivePack
+  calculateRefs: calculateRefs
+  getWants: getWants
+  getHaves: getHaves
+  isFastForward: isFastForward
+  SessionUpload: SessionUpload
+  SessionReceive: SessionReceive
+  CalculateRefsResult: CalculateRefsResult

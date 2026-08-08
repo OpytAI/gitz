@@ -22,6 +22,7 @@ _DEPS = [
     "//src/storage/filesystem",
     "//src/storage/filesystem/dotgit",
     "//src/config",
+    "//src/remote",
     "//src/internal/revision",
     "//src/fs",
     "//src/utils/sync",

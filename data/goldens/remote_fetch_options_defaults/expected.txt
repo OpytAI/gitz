@@ -1,0 +1,6 @@
+# go-git FetchOptions.Validate defaults
+remote_name=origin
+tags=following
+depth=0
+force=false
+prune=false

@@ -21,6 +21,7 @@ const gitconfig = @import("gitconfig");
 const repo = @import("repo");
 const memory = @import("memory");
 const fs_pkg = @import("fs");
+const remote = @import("remote");
 
 // ---------------------------------------------------------------------------
 // Expected fixtures (generated vectors.zig from data/goldens/**/expected.txt)
@@ -849,4 +850,74 @@ test "recompute repo_object_getters" {
     try out.appendSlice(gpa, "has_blob=true\n");
 
     try expectPayload(out.items, expectedFor("repo_object_getters"));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 11 — remote
+// ---------------------------------------------------------------------------
+
+test "recompute remote_string" {
+    const gpa = std.testing.allocator;
+    const s = try memory.newStorage(gpa);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+
+    const name = try gpa.dupe(u8, "origin");
+    defer gpa.free(name);
+    const url = try gpa.dupe(u8, "file://example.git");
+    defer gpa.free(url);
+    var urls = [_][]u8{url};
+    const cfg = memory.RemoteConfig{ .name = name, .urls = urls[0..] };
+    const r = remote.newRemote(s, &cfg);
+    const s_str = try r.string(gpa);
+    defer gpa.free(s_str);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try out.appendSlice(gpa, s_str);
+    try out.append(gpa, '\n');
+
+    try expectPayload(out.items, expectedFor("remote_string"));
+}
+
+test "recompute remote_fetch_options_defaults" {
+    const gpa = std.testing.allocator;
+    var o: remote.FetchOptions = .{};
+    try o.validate();
+
+    const tags_s: []const u8 = switch (o.tags) {
+        .invalid => "invalid",
+        .following => "following",
+        .all => "all",
+        .none => "none",
+    };
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try appendFmt(&out, gpa, "remote_name={s}\n", .{o.remote_name});
+    try appendFmt(&out, gpa, "tags={s}\n", .{tags_s});
+    try appendFmt(&out, gpa, "depth={d}\n", .{o.depth});
+    try out.appendSlice(gpa, "force=");
+    try out.appendSlice(gpa, if (o.force) "true" else "false");
+    try out.append(gpa, '\n');
+    try out.appendSlice(gpa, "prune=");
+    try out.appendSlice(gpa, if (o.prune) "true" else "false");
+    try out.append(gpa, '\n');
+
+    try expectPayload(out.items, expectedFor("remote_fetch_options_defaults"));
+}
+
+test "recompute remote_default_fetch_refspec" {
+    const gpa = std.testing.allocator;
+    const raw = try std.fmt.allocPrint(gpa, gitconfig.default_fetch_ref_spec, .{"origin"});
+    defer gpa.free(raw);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try out.appendSlice(gpa, raw);
+    try out.append(gpa, '\n');
+
+    try expectPayload(out.items, expectedFor("remote_default_fetch_refspec"));
 }

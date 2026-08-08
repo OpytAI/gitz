@@ -1,0 +1,58 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git root remote.go — Fetch / Push / List over transport sessions.
+_SRCS = [
+    "error.zig",
+    "options.zig",
+    "session.zig",
+    "refs.zig",
+    "list.zig",
+    "fetch.zig",
+    "push.zig",
+    "remote.zig",
+]
+
+_DEPS = [
+    "//src/plumbing",
+    "//src/plumbing/object",
+    "//src/plumbing/storer",
+    "//src/plumbing/protocol/packp",
+    "//src/plumbing/protocol/packp/capability",
+    "//src/plumbing/revlist",
+    "//src/plumbing/format/packfile",
+    "//src/plumbing/transport",
+    "//src/plumbing/transport/server",
+    "//src/plumbing/transport/client",
+    "//src/storage/memory",
+    "//src/config",
+    "//src/utils/sync",
+]
+
+zig_library(
+    name = "remote",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "remote",
+    visibility = ["//visibility:public"],
+    deps = _DEPS,
+)
+
+zig_test(
+    name = "remote_test",
+    size = "medium",
+    main = "test_root.zig",
+    srcs = _SRCS + [
+        "root.zig",
+        "tests.zig",
+        "test_root.zig",
+    ],
+    deps = _DEPS + [
+        "//src/plumbing/transport/test:fixtures",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)
