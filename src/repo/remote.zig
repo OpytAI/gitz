@@ -1,22 +1,17 @@
-//! Thin Remote handle (go-git `Remote` without fetch/push bodies).
+//! Config-only Remote handle (go-git `Remote` without transport).
 //!
-//! Phase 10: construction + config access only. Fetch/List/Push are phase 11.
+//! Fetch/List/Push live in phase 11. Fields are public; use `.config` / `.name()`.
 
 const memory = @import("memory");
 
-/// go-git `Remote` config-only shell (no transport).
+/// go-git `Remote` shell: storer + borrowed config pointer.
 pub const Remote = struct {
     /// Borrowed storage (not owned).
     storer: *memory.Storage,
-    /// Borrowed remote config living in the repository Config map (not owned).
+    /// Borrowed remote config (in repository Config map, or AnonymousRemote heap).
     config: *const memory.RemoteConfig,
 
-    /// go-git `Remote.Config` — remote configuration.
-    pub fn remoteConfig(self: *const Remote) *const memory.RemoteConfig {
-        return self.config;
-    }
-
-    /// Convenience: remote name.
+    /// Remote name (`config.name`).
     pub fn name(self: *const Remote) []const u8 {
         return self.config.name;
     }

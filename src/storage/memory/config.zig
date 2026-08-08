@@ -187,6 +187,7 @@ pub const Config = struct {
 };
 
 fn freeOwned(allocator: Allocator, s: []const u8) void {
+    // HashMap keys are typed `[]const u8` but we always allocate them as owned.
     if (s.len > 0) allocator.free(@constCast(s));
 }
 

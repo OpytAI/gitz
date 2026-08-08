@@ -16,10 +16,11 @@
 //! | `Commit.allocator` | allocator for parent loads |
 //! | `getCommit(allocator, s, hash)` | `!*Commit` |
 //!
-//! Production walkers load parents via `getCommit` / `CommitLoader`. Loaded
-//! `*Commit` values follow go-git GC semantics: iterators do **not** free parent
-//! loads (tests use long-lived map pointers). Exception:
-//! `newCommitAllIterFromHashes` owns tip commits + a heap loader context.
+//! Production walkers load parents via `getCommit` / `CommitLoader`.
+//! Yielded `*Commit`s are caller-owned. Unyielded parent loads and commits
+//! skipped by filters follow go-git GC (not freed by the walker); use an
+//! arena for long filtered walks. `newCommitAllIterFromHashes` owns tips +
+//! loader context.
 //!
 //! # go-git map
 //!
@@ -899,6 +900,9 @@ pub const LogLimitOptions = struct {
 };
 
 /// Filters a source `CommitIter` by committer time (go-git `commitLimitIter`).
+///
+/// Skipped commits are not freed: preorder/BFS loaders may still hold the tip
+/// as a parent-loader context (go-git GC). Prefer an arena for filtered walks.
 pub const LimitIter = struct {
     source: CommitIter,
     options: LogLimitOptions,
@@ -1041,6 +1045,8 @@ pub const PathIter = struct {
             self.current_commit = parent_commit;
 
             if (found) return prev;
+            // Skipped commits are not freed: loaders / parent links may still
+            // reference them (go-git GC). Prefer an arena for path-filtered walks.
             if (parent_commit == null) return error.EndOfStream;
         }
     }

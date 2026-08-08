@@ -14,8 +14,6 @@ pub const Error = error{
     WorktreeNotProvided,
     /// go-git `ErrIsBareRepository`.
     IsBareRepository,
-    /// Log order unsupported (should not occur when all orders are wired).
-    InvalidLogOrder,
     /// ResolveRevision `^{/pattern}` found no matching commit message.
     NoCommitMessageMatch,
     /// go-git `ErrRemoteNotFound`.
@@ -28,6 +26,8 @@ pub const Error = error{
     BranchNotFound,
     /// go-git `ErrBranchExists`.
     BranchExists,
+    /// Empty branch name on CreateBranch.
+    BranchEmptyName,
     /// go-git `ErrTagNotFound`.
     TagNotFound,
     /// go-git `ErrTagExists`.

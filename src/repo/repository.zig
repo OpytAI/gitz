@@ -110,8 +110,9 @@ pub const Repository = struct {
     }
 
     /// go-git `Repository.Worktree` — attached FS or `error.IsBareRepository`.
+    /// Full Worktree type is phase 12; this only exposes the optional FS handle.
     pub fn worktreeFs(self: *Repository) error{IsBareRepository}!*fs_pkg.Mem {
-        return crud.worktreeFs(self);
+        return self.worktree orelse error.IsBareRepository;
     }
 
     // -----------------------------------------------------------------------
@@ -119,13 +120,13 @@ pub const Repository = struct {
     // -----------------------------------------------------------------------
 
     pub fn remote(self: *Repository, name: []const u8) !Remote {
-        return crud.remote(self, name);
+        return crud.remote(self.storer, name);
     }
     pub fn remotes(self: *Repository, allocator: Allocator) ![]Remote {
-        return crud.remotes(self, allocator);
+        return crud.remotes(self.storer, allocator);
     }
     pub fn createRemote(self: *Repository, name: []const u8, urls: []const []const u8) !Remote {
-        return crud.createRemote(self, name, urls);
+        return crud.createRemote(self.storer, name, urls);
     }
     pub fn createRemoteFull(
         self: *Repository,
@@ -134,20 +135,20 @@ pub const Repository = struct {
         fetch: []const []const u8,
         mirror: bool,
     ) !Remote {
-        return crud.createRemoteFull(self, name, urls, fetch, mirror);
+        return crud.createRemoteFull(self.storer, name, urls, fetch, mirror);
     }
     pub fn createRemoteAnonymous(
         self: *Repository,
         allocator: Allocator,
         urls: []const []const u8,
     ) !AnonymousRemote {
-        return crud.createRemoteAnonymous(self, allocator, urls);
+        return crud.createRemoteAnonymous(self.storer, allocator, urls);
     }
     pub fn deleteRemote(self: *Repository, name: []const u8) !void {
-        return crud.deleteRemote(self, name);
+        return crud.deleteRemote(self.storer, name);
     }
     pub fn branch(self: *Repository, name: []const u8) !*const memory.BranchConfig {
-        return crud.branch(self, name);
+        return crud.branch(self.storer, name);
     }
     pub fn createBranch(
         self: *Repository,
@@ -155,13 +156,13 @@ pub const Repository = struct {
         remote_name: []const u8,
         merge: []const u8,
     ) !void {
-        return crud.createBranch(self, name, remote_name, merge);
+        return crud.createBranch(self.storer, name, remote_name, merge);
     }
     pub fn deleteBranch(self: *Repository, name: []const u8) !void {
-        return crud.deleteBranch(self, name);
+        return crud.deleteBranch(self.storer, name);
     }
     pub fn tag(self: *Repository, name: []const u8) !Reference {
-        return crud.tag(self, name);
+        return crud.tag(self.storer, name);
     }
     pub fn createTag(
         self: *Repository,
@@ -169,10 +170,10 @@ pub const Repository = struct {
         hash: plumbing.Hash,
         opts: ?CreateTagOptions,
     ) !Reference {
-        return crud.createTag(self, name, hash, opts);
+        return crud.createTag(self.storer, name, hash, opts);
     }
     pub fn deleteTag(self: *Repository, name: []const u8) !void {
-        return crud.deleteTag(self, name);
+        return crud.deleteTag(self.storer, name);
     }
 
     // -----------------------------------------------------------------------

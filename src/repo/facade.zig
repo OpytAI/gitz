@@ -152,14 +152,10 @@ pub fn notes(store: *memory.Storage) !FilteredRefIter {
 ///
 /// Ownership:
 /// - Caller owns every `*Commit` from `LogResult.next` (`deinit` + `destroy`).
-/// - `LogResult.deinit` frees walk state. For single-`from` walks it also frees
-///   the tip if `next` never returned it.
-/// - For `all=true`, unyielded commits still on the merged path are freed on
-///   `deinit`. Commits skipped by `since`/`until` or `file_name` follow walker
-///   GC semantics (may leak unless the caller uses an arena).
-///
-/// Note: `all=true` merges tips with preorder history (go-git `NewCommitAllIter`
-/// applies `commitIterFunc` per tip; this port uses `newCommitAllIterFromHashes`).
+/// - `LogResult.deinit` frees walk state and an unyielded single-from tip.
+/// - Filtered walks (`file_name` / `since` / `until` / `all`) may retain
+///   unyielded parent loads (go-git GC); prefer an arena allocator.
+/// - `all=true` uses `newCommitAllIterFromHashes` (preorder merge of tips).
 pub fn log(store: *memory.Storage, opts: LogOptions) !LogResult {
     const gpa = store.allocator;
     var result = LogResult{
@@ -488,50 +484,37 @@ pub const LogResult = struct {
         self.outer.close();
     }
 
-    /// Free walk state. For single-from: frees tip if never yielded.
-    /// For `all`: frees unyielded commits remaining on the merged path.
+    /// Free walk state. Single-from: frees tip if never yielded.
+    /// `all`: frees unyielded commits still held by `AllIter`.
     pub fn deinit(self: *LogResult) void {
-        // Free AllIter unyielded commits before close() nulls `curr`.
         if (self.base == .all) {
             const w = self.base.all;
             w.freeUnyielded();
-            // Steal tip ownership so AllIter.deinit does not free caller-owned
-            // yielded tips or double-free unyielded tips freed above.
             w.disownTips();
         }
 
-        // Close outer chain (limit → path → base).
-        if (self.base != .none) self.outer.close();
-
+        // Tear down outer filters without cascading into base, then free base.
         if (self.limit) |lim| {
             self.allocator.destroy(lim);
             self.limit = null;
         }
         if (self.path) |p| {
-            // close already ran via outer; free exact path + pending tree.
-            if (p.exact_path) |ep| {
-                self.allocator.free(ep);
-                p.exact_path = null;
+            // Free path-owned state. Do not close path.source (the base walker);
+            // base is freed in the switch below.
+            if (p.current_commit) |cc| {
+                if (self.tip == null or cc != self.tip.?) {
+                    cc.deinit();
+                    self.allocator.destroy(cc);
+                }
+                p.current_commit = null;
             }
             if (p.pending_parent_tree) |t| {
                 objpkg.freeTree(self.allocator, t);
                 p.pending_parent_tree = null;
             }
-            // PathIter may hold a not-yet-returned current_commit.
-            if (p.current_commit) |cc| {
-                if (self.tip) |t| {
-                    if (cc != t) {
-                        cc.deinit();
-                        self.allocator.destroy(cc);
-                    }
-                    // tip free handled below via yielded_tip
-                } else {
-                    // all=true: this commit was taken from the source before
-                    // unyielded free (curr already advanced); free here.
-                    cc.deinit();
-                    self.allocator.destroy(cc);
-                }
-                p.current_commit = null;
+            if (p.exact_path) |ep| {
+                self.allocator.free(ep);
+                p.exact_path = null;
             }
             self.allocator.destroy(p);
             self.path = null;
@@ -1165,16 +1148,13 @@ test "log each LogOrder on linear chain" {
 }
 
 test "log all walks multiple branch tips" {
-    // Arena: AllIter merge may leave transient parent loads (GC semantics).
+    // Arena: AllIter may retain transient parent loads for the merge path
+    // (go-git GC; walkers do not free unyielded loads).
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const gpa = arena.allocator();
 
     const s = try memory.newStorage(gpa);
-    defer {
-        s.deinit();
-        gpa.destroy(s);
-    }
 
     try s.setReference(Reference.newSymbolicReference(plumbing.HEAD, plumbing.master));
     const blob_h = try storeBlob(s, "a");
@@ -1191,7 +1171,6 @@ test "log all walks multiple branch tips" {
     var walk = try log(s, .{ .all = true });
     defer walk.deinit();
     const hashes = try collectLogHashes(gpa, &walk);
-    defer gpa.free(hashes);
 
     try std.testing.expect(hashes.len >= 3);
     var seen_master = false;
@@ -1208,7 +1187,7 @@ test "log all walks multiple branch tips" {
 }
 
 test "log file_name filters path changes" {
-    // Arena: path filter skips non-matching commits without free (GC semantics).
+    // Arena keeps storage + commits for multi-tree fixture construction.
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const gpa = arena.allocator();
@@ -1269,7 +1248,6 @@ test "log file_name filters path changes" {
 }
 
 test "log since until by committer time" {
-    // Arena: LimitIter skips non-matching commits without free (GC semantics).
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const gpa = arena.allocator();
