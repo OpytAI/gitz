@@ -144,11 +144,11 @@ pub const RestoreOptions = struct {
 
 /// go-git `GrepOptions`.
 ///
-/// Patterns are **fixed-string** substrings matched unanchored per line.
-/// Zig has no `std.regex`; tests use fixed strings for hermetic parity with
-/// the common go-git cases (literal `regexp.MustCompile("word")`).
+/// `patterns` and `path_specs` are regex source strings compiled with pure-Zig
+/// `regex.zig` (Go `MatchString` / unanchored). Supports `(?i)`, `.`, `*+?`,
+/// classes, `|`, groups — enough for go-git Grep tests without C/RE2.
 pub const GrepOptions = struct {
-    /// Fixed-string patterns (go-git `Patterns` as `[]*regexp.Regexp`).
+    /// Regex patterns (go-git `Patterns` as `[]*regexp.Regexp` sources).
     patterns: []const []const u8 = &.{},
     /// Select non-matching lines (go-git `InvertMatch`).
     invert_match: bool = false,
@@ -156,7 +156,7 @@ pub const GrepOptions = struct {
     commit_hash: Hash = ZeroHash,
     /// Branch/tag name to resolve to a commit (exclusive with `commit_hash`).
     reference_name: ReferenceName = ReferenceName.init(""),
-    /// Path filters: if non-empty, path must contain any as substring.
+    /// Path filters as regexes; if non-empty, path must MatchString any.
     path_specs: []const []const u8 = &.{},
 
     /// Validate exclusivity and default `commit_hash` from HEAD when unset.

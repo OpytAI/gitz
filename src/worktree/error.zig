@@ -44,4 +44,6 @@ pub const Error = error{
     NoRestorePaths,
     /// go-git `ErrHashOrReference` — GrepOptions CommitHash and ReferenceName both set.
     HashOrReference,
+    /// Grep pattern failed to compile (pure-Zig regex; go-git panics on MustCompile).
+    InvalidRegex,
 };

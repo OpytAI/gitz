@@ -15,6 +15,7 @@ _SRCS = [
     "reset.zig",
     "pull.zig",
     "clean.zig",
+    "regex.zig",
     "grep.zig",
     "worktree.zig",
 ]

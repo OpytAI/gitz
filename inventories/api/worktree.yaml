@@ -96,6 +96,7 @@ require:
     - NonFastForwardUpdate
     - NoRestorePaths
     - HashOrReference
+    - InvalidRegex
     - DestinationExists
     - GlobNoMatches
     - RestoreWorktreeOnlyNotSupported
@@ -135,6 +136,7 @@ zig_map:
   ErrNonFastForwardUpdate: NonFastForwardUpdate
   ErrNoRestorePaths: NoRestorePaths
   ErrHashOrReference: HashOrReference
+  InvalidRegex: InvalidRegex
   ErrDestinationExists: DestinationExists
   ErrGlobNoMatches: GlobNoMatches
   ErrRestoreWorktreeOnlyNotSupported: RestoreWorktreeOnlyNotSupported

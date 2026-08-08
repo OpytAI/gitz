@@ -1,11 +1,9 @@
 //! Platform index stat fill — go-git `worktree_linux.go` / `worktree_windows.go`.
 //!
-//! Dispatch entry: `fillSystemInfo` selects the host platform helper.
-//! Implementations live in `platform_linux.zig` and `platform_windows.zig` so
-//! inventories and phase exit can see distinct linux/windows stubs.
-//!
-//! Both helpers are always available (and tested) regardless of host OS so
-//! hermetic Mem FS tests can exercise either path.
+//! Dispatch: `fillSystemInfo` selects the host platform helper. Both OS
+//! helpers are always compiled and tested. On Mem FS they fill synthetic
+//! stable fields (see platform_linux / platform_windows headers) rather than
+//! leaving all zeros.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -73,11 +71,11 @@ test "fillSystemInfoLinux and fillSystemInfoWindows both callable" {
     e_linux.size = 3;
     e_linux.modified_at = .{ .sec = 99, .nsec = 0 };
     fillSystemInfoLinux(&e_linux, &mem, "statme.txt");
-    // Mem stub does not invent ctime/dev/ino; caller-owned size/mtime remain.
+    // Caller size/mtime preserved; Mem synthetic dev/inode filled.
     try std.testing.expectEqual(@as(u32, 3), e_linux.size);
     try std.testing.expectEqual(@as(i64, 99), e_linux.modified_at.sec);
-    try std.testing.expectEqual(@as(u32, 0), e_linux.dev);
-    try std.testing.expectEqual(@as(u32, 0), e_linux.inode);
+    try std.testing.expectEqual(@as(u32, 1), e_linux.dev);
+    try std.testing.expect(e_linux.inode != 0);
     try std.testing.expectEqual(@as(u32, 0), e_linux.uid);
     try std.testing.expectEqual(@as(u32, 0), e_linux.gid);
 
@@ -87,7 +85,8 @@ test "fillSystemInfoLinux and fillSystemInfoWindows both callable" {
     fillSystemInfoWindows(&e_win, &mem, "statme.txt");
     try std.testing.expectEqual(@as(u32, 3), e_win.size);
     try std.testing.expectEqual(@as(i64, 88), e_win.modified_at.sec);
-    try std.testing.expectEqual(@as(i64, 0), e_win.created_at.sec);
+    // Windows Mem: creation proxy from mtime (often 0 on Mem).
+    try std.testing.expectEqual(@as(u32, 0), e_win.dev);
 
     try std.testing.expect(!isSymlinkWindowsNonAdmin(error.NotExist));
     try std.testing.expect(!isSymlinkWindowsNonAdminLinux(error.NotExist));

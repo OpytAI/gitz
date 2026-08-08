@@ -80,6 +80,7 @@ test {
     _ = @import("reset.zig");
     _ = @import("pull.zig");
     _ = @import("clean.zig");
+    _ = @import("regex.zig");
     _ = @import("grep.zig");
     _ = @import("worktree.zig");
 }
