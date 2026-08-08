@@ -66,6 +66,15 @@ pub const Config = struct {
     repository_format_version: []u8 = &.{},
     /// `extensions.objectformat` (owned; empty / "sha1" / "sha256").
     object_format: []u8 = &.{},
+    /// `user.name` / `user.email` (owned; go-git `Config.User` subset).
+    user_name: []u8 = &.{},
+    user_email: []u8 = &.{},
+    /// `author.name` / `author.email` (owned; go-git `Config.Author` subset).
+    author_name: []u8 = &.{},
+    author_email: []u8 = &.{},
+    /// `committer.name` / `committer.email` (owned; go-git `Config.Committer` subset).
+    committer_name: []u8 = &.{},
+    committer_email: []u8 = &.{},
     remotes: std.StringHashMapUnmanaged(RemoteConfig) = .empty,
     branches: std.StringHashMapUnmanaged(BranchConfig) = .empty,
 
@@ -76,6 +85,12 @@ pub const Config = struct {
     pub fn deinit(self: *Config) void {
         freeOwned(self.allocator, self.repository_format_version);
         freeOwned(self.allocator, self.object_format);
+        freeOwned(self.allocator, self.user_name);
+        freeOwned(self.allocator, self.user_email);
+        freeOwned(self.allocator, self.author_name);
+        freeOwned(self.allocator, self.author_email);
+        freeOwned(self.allocator, self.committer_name);
+        freeOwned(self.allocator, self.committer_email);
 
         var rit = self.remotes.iterator();
         while (rit.next()) |e| {
@@ -106,6 +121,42 @@ pub const Config = struct {
     pub fn setObjectFormat(self: *Config, format: []const u8) Allocator.Error!void {
         freeOwned(self.allocator, self.object_format);
         self.object_format = try dupeOrEmpty(self.allocator, format);
+    }
+
+    /// Set `user.name` and `user.email` (copies both).
+    pub fn setUser(self: *Config, name: []const u8, email: []const u8) Allocator.Error!void {
+        freeOwned(self.allocator, self.user_name);
+        self.user_name = try dupeOrEmpty(self.allocator, name);
+        errdefer {
+            freeOwned(self.allocator, self.user_name);
+            self.user_name = &.{};
+        }
+        freeOwned(self.allocator, self.user_email);
+        self.user_email = try dupeOrEmpty(self.allocator, email);
+    }
+
+    /// Set `author.name` and `author.email` (copies both).
+    pub fn setAuthor(self: *Config, name: []const u8, email: []const u8) Allocator.Error!void {
+        freeOwned(self.allocator, self.author_name);
+        self.author_name = try dupeOrEmpty(self.allocator, name);
+        errdefer {
+            freeOwned(self.allocator, self.author_name);
+            self.author_name = &.{};
+        }
+        freeOwned(self.allocator, self.author_email);
+        self.author_email = try dupeOrEmpty(self.allocator, email);
+    }
+
+    /// Set `committer.name` and `committer.email` (copies both).
+    pub fn setCommitter(self: *Config, name: []const u8, email: []const u8) Allocator.Error!void {
+        freeOwned(self.allocator, self.committer_name);
+        self.committer_name = try dupeOrEmpty(self.allocator, name);
+        errdefer {
+            freeOwned(self.allocator, self.committer_name);
+            self.committer_name = &.{};
+        }
+        freeOwned(self.allocator, self.committer_email);
+        self.committer_email = try dupeOrEmpty(self.allocator, email);
     }
 
     /// go-git `Config.Validate` subset: remotes/branches key/name match, then remote Validate.
@@ -413,4 +464,25 @@ test "ConfigStorage setConfig and config round-trip" {
     const branch = got.branches.get("main") orelse return error.TestExpectedEqual;
     try std.testing.expectEqualStrings("origin", branch.remote);
     try std.testing.expectEqualStrings("refs/heads/main", branch.merge);
+}
+
+test "Config setUser setAuthor setCommitter free on deinit" {
+    const allocator = std.testing.allocator;
+    var cfg = Config.init(allocator);
+    defer cfg.deinit();
+
+    try cfg.setUser("User Name", "user@example.com");
+    try cfg.setAuthor("Author Name", "author@example.com");
+    try cfg.setCommitter("Committer Name", "committer@example.com");
+    try std.testing.expectEqualStrings("User Name", cfg.user_name);
+    try std.testing.expectEqualStrings("user@example.com", cfg.user_email);
+    try std.testing.expectEqualStrings("Author Name", cfg.author_name);
+    try std.testing.expectEqualStrings("author@example.com", cfg.author_email);
+    try std.testing.expectEqualStrings("Committer Name", cfg.committer_name);
+    try std.testing.expectEqualStrings("committer@example.com", cfg.committer_email);
+
+    // Replace frees previous owned strings (no leak under gpa).
+    try cfg.setUser("U2", "u2@e.com");
+    try std.testing.expectEqualStrings("U2", cfg.user_name);
+    try std.testing.expectEqualStrings("u2@e.com", cfg.user_email);
 }

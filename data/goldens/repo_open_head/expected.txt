@@ -1,0 +1,3 @@
+# go-git Init bare then Open; unresolved symbolic HEAD
+exists=true
+head_target=refs/heads/master

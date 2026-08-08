@@ -33,6 +33,23 @@ pub const objectFormat = hash_algo.objectFormat;
 pub const supportsObjectFormat = hash_algo.supportsObjectFormat;
 pub const Algorithm = hash_algo.Algorithm;
 
+/// RAII: temporarily set process object format; restores previous on `deinit`.
+/// Use when switching repos on a thread before wire codecs (pack/index/tree).
+pub const FormatScope = struct {
+    previous: Algorithm,
+
+    pub fn enter(algo: Algorithm) FormatScope {
+        const prev = hash_algo.objectFormat();
+        hash_algo.setObjectFormat(algo);
+        return .{ .previous = prev };
+    }
+
+    pub fn deinit(self: *FormatScope) void {
+        hash_algo.setObjectFormat(self.previous);
+        self.* = undefined;
+    }
+};
+
 /// Object id (go-git `plumbing.Hash`). Zero-padded to `MaxSize`.
 pub const Hash = struct {
     bytes: [MaxSize]u8 = .{0} ** MaxSize,
@@ -238,4 +255,17 @@ test "parseHashAny accepts 40 and 64 hex" {
     const h2 = try parseHashAny("473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813");
     try std.testing.expectEqual(@as(u8, 0x47), h2.bytes[0]);
     try std.testing.expectEqual(@as(u8, 0x13), h2.bytes[31]);
+}
+
+test "FormatScope restores previous object format" {
+    defer setObjectFormat(.sha1);
+    setObjectFormat(.sha1);
+    {
+        var scope = FormatScope.enter(.sha256);
+        defer scope.deinit();
+        try std.testing.expect(objectFormat() == .sha256);
+        try std.testing.expectEqual(@as(usize, 32), digestSize());
+    }
+    try std.testing.expect(objectFormat() == .sha1);
+    try std.testing.expectEqual(@as(usize, 20), digestSize());
 }

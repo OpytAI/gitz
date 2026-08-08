@@ -79,7 +79,13 @@ pub const PlainRepository = struct {
         return self.worktree == null;
     }
 
+    /// Activate this repository's object format for process-wide wire codecs.
+    pub fn activateFormat(self: *const PlainRepository) void {
+        self.storer.activateFormat();
+    }
+
     pub fn config(self: *PlainRepository) !*Config {
+        self.activateFormat();
         return self.storer.config();
     }
 
@@ -95,6 +101,7 @@ pub const PlainRepository = struct {
 
     /// Unresolved reference lookup. FS refs are owned — free with `freeReference`.
     pub fn reference(self: *PlainRepository, name: ReferenceName, resolved: bool) !Reference {
+        self.activateFormat();
         if (resolved) return storer.resolveReference(self.storer, name);
         return self.storer.reference(name);
     }
@@ -105,6 +112,7 @@ pub const PlainRepository = struct {
     }
 
     pub fn head(self: *PlainRepository) !Reference {
+        self.activateFormat();
         return storer.resolveReference(self.storer, plumbing.HEAD);
     }
 };
@@ -236,10 +244,11 @@ pub fn plainOpenWithOptions(allocator: Allocator, path_fs: *Mem, o: PlainOpenOpt
 
 /// Map config/option object format string to algorithm.
 /// Empty / "sha1" → SHA-1; "sha256" → SHA-256; anything else → error.
-fn resolveObjectFormat(s: []const u8) error{InvalidObjectFormat}!hash_algo.Algorithm {
+fn resolveObjectFormat(s: []const u8) error{ InvalidObjectFormat, SHA256NotSupported }!hash_algo.Algorithm {
     if (s.len == 0 or std.mem.eql(u8, s, format_config.SHA1)) return .sha1;
     if (std.mem.eql(u8, s, format_config.SHA256)) {
-        if (!hash_algo.supportsObjectFormat(.sha256)) return error.InvalidObjectFormat;
+        // Honest go-git ErrSHA256NotSupported when dual support is compiled out.
+        if (!hash_algo.supportsObjectFormat(.sha256)) return error.SHA256NotSupported;
         return .sha256;
     }
     return error.InvalidObjectFormat;

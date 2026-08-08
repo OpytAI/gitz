@@ -24,9 +24,9 @@ const Remote = remote_mod.Remote;
 /// pre-formed `pgp_signature`. Use `pgp_signature` alone to attach an already
 /// armored block without an Entity.
 pub const CreateTagOptions = struct {
-    /// Who creates the tag (go-git `Tagger`). Require non-empty name or email;
-    /// go-git may load Author/User via ConfigScoped when Tagger is nil — not done
-    /// here (`memory.Config` has no identity fields).
+    /// Who creates the tag (go-git `Tagger`). Empty name **and** email means
+    /// "nil tagger": load Author then User from `store.config()` (go-git
+    /// `loadConfigTagger`), with `when` set to now.
     tagger: objpkg.Signature = .{},
     /// Annotation body (go-git `Message`). Required; canonicalized on create
     /// (`TrimSpace` + trailing `\n`, same as go-git `Validate`).
@@ -40,12 +40,13 @@ pub const CreateTagOptions = struct {
 
     /// go-git `CreateTagOptions.Validate`.
     ///
-    /// Requires non-empty tagger name or email, and a non-empty message.
-    /// `store` and `hash` are accepted for API parity (go-git uses `r` for config load).
+    /// Requires a non-empty message. Empty tagger is filled from config in
+    /// `createAnnotatedTagObject` (go-git `loadConfigTagger`); MissingTagger
+    /// is returned there when neither Author nor User is set.
+    /// `store` and `hash` are accepted for API parity.
     pub fn validate(self: *const CreateTagOptions, store: *memory.Storage, hash: Hash) !void {
         _ = store;
         _ = hash;
-        if (self.tagger.name.len == 0 and self.tagger.email.len == 0) return error.MissingTagger;
         if (self.message.len == 0) return error.MissingMessage;
     }
 };
@@ -233,15 +234,28 @@ fn createAnnotatedTagObject(
     const gpa = store.allocator;
     const enc = try store.encodedObject(.any, hash);
 
+    // Resolve tagger: explicit non-empty name/email, else loadConfigTagger.
+    var tagger = opts.tagger;
+    var owned_name: ?[]u8 = null;
+    var owned_email: ?[]u8 = null;
+    defer {
+        if (owned_name) |n| gpa.free(n);
+        if (owned_email) |e| gpa.free(e);
+    }
+    if (tagger.name.len == 0 and tagger.email.len == 0) {
+        try loadTaggerFromConfig(store, &tagger, &owned_name, &owned_email);
+    }
+    if (tagger.name.len == 0 and tagger.email.len == 0) return error.MissingTagger;
+
     var tag_obj = objpkg.Tag.init(gpa);
     defer tag_obj.deinit();
     tag_obj.name = try gpa.dupe(u8, name);
     tag_obj.message = try canonicalizeTagMessage(gpa, opts.message);
     tag_obj.tagger = .{
-        .name = try gpa.dupe(u8, opts.tagger.name),
-        .email = try gpa.dupe(u8, opts.tagger.email),
-        .when = opts.tagger.when,
-        .tz_offset_minutes = opts.tagger.tz_offset_minutes,
+        .name = try gpa.dupe(u8, tagger.name),
+        .email = try gpa.dupe(u8, tagger.email),
+        .when = tagger.when,
+        .tz_offset_minutes = tagger.tz_offset_minutes,
     };
     tag_obj.target_type = enc.object_type;
     tag_obj.target = hash;
@@ -261,6 +275,44 @@ fn createAnnotatedTagObject(
     const out = try store.newEncodedObject();
     try tag_obj.encode(out);
     return try store.setEncodedObject(out);
+}
+
+/// go-git `CreateTagOptions.loadConfigTagger` subset using storer `memory.Config`.
+/// Prefer Author (both name+email non-empty), else User. Sets `when` to now.
+fn loadTaggerFromConfig(
+    store: *memory.Storage,
+    tagger: *objpkg.Signature,
+    owned_name: *?[]u8,
+    owned_email: *?[]u8,
+) !void {
+    const cfg = try store.config();
+    const name: []const u8 = blk: {
+        if (cfg.author_name.len > 0 and cfg.author_email.len > 0) break :blk cfg.author_name;
+        if (cfg.user_name.len > 0 and cfg.user_email.len > 0) break :blk cfg.user_name;
+        return;
+    };
+    const email: []const u8 = if (cfg.author_name.len > 0 and cfg.author_email.len > 0)
+        cfg.author_email
+    else
+        cfg.user_email;
+
+    const n = try store.allocator.dupe(u8, name);
+    errdefer store.allocator.free(n);
+    const e = try store.allocator.dupe(u8, email);
+    errdefer store.allocator.free(e);
+    owned_name.* = n;
+    owned_email.* = e;
+    tagger.name = n;
+    tagger.email = e;
+    tagger.when = nowUnixSeconds();
+    tagger.tz_offset_minutes = 0;
+}
+
+/// Wall-clock unix seconds (go-git `time.Now()` for tagger When).
+fn nowUnixSeconds() i64 {
+    var ts: std.posix.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.posix.system.clock_gettime(.REALTIME, &ts);
+    return @intCast(ts.sec);
 }
 
 /// go-git `CreateTagOptions.Validate` message canonicalize: `TrimSpace(msg) + "\n"`.
@@ -394,6 +446,106 @@ test "createTag annotated message and tagger" {
     try std.testing.expect(tag_obj.target.eql(h));
     try std.testing.expect(tag_obj.target_type == .blob);
     try std.testing.expectEqualStrings("", tag_obj.pgp_signature);
+}
+
+test "createTag empty tagger loads user from config" {
+    const gpa = std.testing.allocator;
+    const store = try bareStore(gpa);
+    defer {
+        store.deinit();
+        gpa.destroy(store);
+    }
+
+    const cfg = try store.config();
+    try cfg.setUser("Config User", "user@config.example");
+    try store.setConfig(cfg);
+
+    const blob = try store.newEncodedObject();
+    blob.setType(.blob);
+    _ = try blob.write("cfg-user");
+    const h = try store.setEncodedObject(blob);
+
+    const ref = try createTag(store, "from-user", h, .{
+        .message = "loaded from user",
+    });
+    var tag_obj = try objpkg.getTag(gpa, store, ref.hash);
+    defer tag_obj.deinit();
+    try std.testing.expectEqualStrings("Config User", tag_obj.tagger.name);
+    try std.testing.expectEqualStrings("user@config.example", tag_obj.tagger.email);
+    try std.testing.expect(tag_obj.tagger.when > 0);
+}
+
+test "createTag empty tagger and no config is MissingTagger" {
+    const gpa = std.testing.allocator;
+    const store = try bareStore(gpa);
+    defer {
+        store.deinit();
+        gpa.destroy(store);
+    }
+
+    const blob = try store.newEncodedObject();
+    blob.setType(.blob);
+    _ = try blob.write("no-cfg");
+    const h = try store.setEncodedObject(blob);
+
+    try std.testing.expectError(error.MissingTagger, createTag(store, "no-id", h, .{
+        .message = "no identity",
+    }));
+}
+
+test "createTag empty tagger prefers author over user" {
+    const gpa = std.testing.allocator;
+    const store = try bareStore(gpa);
+    defer {
+        store.deinit();
+        gpa.destroy(store);
+    }
+
+    const cfg = try store.config();
+    try cfg.setUser("User Name", "user@example.com");
+    try cfg.setAuthor("Author Name", "author@example.com");
+    try store.setConfig(cfg);
+
+    const blob = try store.newEncodedObject();
+    blob.setType(.blob);
+    _ = try blob.write("prefer-author");
+    const h = try store.setEncodedObject(blob);
+
+    const ref = try createTag(store, "from-author", h, .{
+        .message = "author wins",
+    });
+    var tag_obj = try objpkg.getTag(gpa, store, ref.hash);
+    defer tag_obj.deinit();
+    try std.testing.expectEqualStrings("Author Name", tag_obj.tagger.name);
+    try std.testing.expectEqualStrings("author@example.com", tag_obj.tagger.email);
+}
+
+test "createTag incomplete author falls back to user" {
+    const gpa = std.testing.allocator;
+    const store = try bareStore(gpa);
+    defer {
+        store.deinit();
+        gpa.destroy(store);
+    }
+
+    const cfg = try store.config();
+    // Author name only — not both non-empty; User is complete.
+    try cfg.setAuthor("Author Only", "");
+    try cfg.setUser("Fallback User", "fallback@example.com");
+    try store.setConfig(cfg);
+
+    const blob = try store.newEncodedObject();
+    blob.setType(.blob);
+    _ = try blob.write("fallback");
+    const h = try store.setEncodedObject(blob);
+
+    const ref = try createTag(store, "fallback-user", h, .{
+        .message = "user fallback",
+    });
+    var tag_obj = try objpkg.getTag(gpa, store, ref.hash);
+    defer tag_obj.deinit();
+    try std.testing.expectEqualStrings("Fallback User", tag_obj.tagger.name);
+    try std.testing.expectEqualStrings("fallback@example.com", tag_obj.tagger.email);
 }
 
 test "createTag annotated pgp_signature round-trip via tagObject" {

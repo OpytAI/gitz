@@ -35,6 +35,7 @@ pub const supportsObjectFormat = hash_mod.supportsObjectFormat;
 pub const Algorithm = hash_mod.Algorithm;
 pub const parseHashAny = hash_mod.parseHashAny;
 pub const isHashAny = hash_mod.isHashAny;
+pub const FormatScope = hash_mod.FormatScope;
 
 // --- ObjectType ---
 pub const ObjectType = object_mod.ObjectType;

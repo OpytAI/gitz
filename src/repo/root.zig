@@ -48,6 +48,8 @@ pub const plainInitWithOptions = plain.plainInitWithOptions;
 pub const plainOpen = plain.plainOpen;
 pub const plainOpenWithOptions = plain.plainOpenWithOptions;
 
+// activateFormat is a method on Repository / PlainRepository.
+
 test {
     _ = repository;
     _ = facade;

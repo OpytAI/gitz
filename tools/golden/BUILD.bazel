@@ -51,6 +51,9 @@ _GOLDEN_SUITES = [
     "gitconfig_new_defaults",
     "gitconfig_marshal_core",
     "repo_init_bare",
+    "repo_init_nonbare",
+    "repo_open_head",
+    "repo_object_getters",
 ]
 
 # Bake expected.txt bodies into a Zig module so recompute_test is hermetic.
@@ -100,5 +103,6 @@ zig_test(
         "//src/config",
         "//src/repo",
         "//src/storage/memory",
+        "//src/fs",
     ],
 )

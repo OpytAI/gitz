@@ -1,0 +1,5 @@
+name: repo_object_getters
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "bare init, store empty blob, blobObject returns fixed SHA-1 OID."

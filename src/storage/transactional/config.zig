@@ -59,6 +59,21 @@ fn cloneConfig(allocator: Allocator, src: *const Config) Allocator.Error!*Config
         allocator.destroy(dst);
     }
     dst.is_bare = src.is_bare;
+    if (src.repository_format_version.len > 0) {
+        try dst.setRepositoryFormatVersion(src.repository_format_version);
+    }
+    if (src.object_format.len > 0) {
+        try dst.setObjectFormat(src.object_format);
+    }
+    if (src.user_name.len > 0 or src.user_email.len > 0) {
+        try dst.setUser(src.user_name, src.user_email);
+    }
+    if (src.author_name.len > 0 or src.author_email.len > 0) {
+        try dst.setAuthor(src.author_name, src.author_email);
+    }
+    if (src.committer_name.len > 0 or src.committer_email.len > 0) {
+        try dst.setCommitter(src.committer_name, src.committer_email);
+    }
     var rit = src.remotes.iterator();
     while (rit.next()) |e| {
         var urls_buf: std.ArrayList([]const u8) = .empty;

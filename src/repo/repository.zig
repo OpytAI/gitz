@@ -64,6 +64,11 @@ pub const Repository = struct {
     // Config
     // -----------------------------------------------------------------------
 
+    /// Activate this repository's object format for process-wide wire codecs.
+    pub fn activateFormat(self: *const Repository) void {
+        self.storer.activateFormat();
+    }
+
     /// go-git `Repository.Config` — return repository config from the storer.
     pub fn config(self: *Repository) Allocator.Error!*Config {
         return self.storer.config();

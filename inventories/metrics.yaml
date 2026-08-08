@@ -39,8 +39,9 @@ goldens:
   # diff_do_equal + merkletrie_empty + pathutil_tree_reject +
   # unified_diff_one_line + merkletrie_insert + merkletrie_modify_delete +
   # gitattributes_simple (47).
-  # Phase 10: gitconfig_new_defaults + gitconfig_marshal_core + repo_init_bare (50).
-  min_count: 50
+  # Phase 10: gitconfig_new_defaults + gitconfig_marshal_core + repo_init_bare
+  # + repo_init_nonbare + repo_open_head + repo_object_getters (53).
+  min_count: 53
 
 
 allowlists:

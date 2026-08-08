@@ -20,6 +20,7 @@ const filemode = @import("filemode");
 const gitconfig = @import("gitconfig");
 const repo = @import("repo");
 const memory = @import("memory");
+const fs_pkg = @import("fs");
 
 // ---------------------------------------------------------------------------
 // Expected fixtures (generated vectors.zig from data/goldens/**/expected.txt)
@@ -770,4 +771,82 @@ test "recompute repo_init_bare" {
     try out.append(gpa, '\n');
 
     try expectPayload(out.items, expectedFor("repo_init_bare"));
+}
+
+test "recompute repo_init_nonbare" {
+    const gpa = std.testing.allocator;
+    const s = try memory.newStorage(gpa);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+
+    var wt = try fs_pkg.Mem.init(gpa);
+    defer wt.deinit();
+
+    var r = try repo.init(s, &wt);
+    const head_sym = try r.reference(plumbing.HEAD, false);
+    const cfg = try r.config();
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try out.appendSlice(gpa, "is_bare=");
+    try out.appendSlice(gpa, if (r.isBare()) "true" else "false");
+    try out.append(gpa, '\n');
+    try out.appendSlice(gpa, "head_type=");
+    try out.appendSlice(gpa, if (head_sym.type == .symbolic) "symbolic" else "other");
+    try out.append(gpa, '\n');
+    try appendFmt(&out, gpa, "head_target={s}\n", .{head_sym.target.raw});
+    try out.appendSlice(gpa, "config_is_bare=");
+    try out.appendSlice(gpa, if (cfg.is_bare) "true" else "false");
+    try out.append(gpa, '\n');
+
+    try expectPayload(out.items, expectedFor("repo_init_nonbare"));
+}
+
+test "recompute repo_open_head" {
+    const gpa = std.testing.allocator;
+    const s = try memory.newStorage(gpa);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+
+    _ = try repo.init(s, null);
+    var r = try repo.open(s, null);
+    const head_sym = try r.reference(plumbing.HEAD, false);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try out.appendSlice(gpa, "exists=true\n");
+    try appendFmt(&out, gpa, "head_target={s}\n", .{head_sym.target.raw});
+
+    try expectPayload(out.items, expectedFor("repo_open_head"));
+}
+
+test "recompute repo_object_getters" {
+    const gpa = std.testing.allocator;
+    const s = try memory.newStorage(gpa);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+
+    var r = try repo.init(s, null);
+
+    const blob_obj = try s.newEncodedObject();
+    blob_obj.setType(.blob);
+    _ = try blob_obj.write("");
+    const blob_h = try s.setEncodedObject(blob_obj);
+
+    const blob = try r.blobObject(blob_h);
+    var hex_buf: [plumbing.MaxHexSize]u8 = undefined;
+    const hex = blob.hash.string(&hex_buf);
+
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(gpa);
+    try appendFmt(&out, gpa, "blob={s}\n", .{hex});
+    try out.appendSlice(gpa, "has_blob=true\n");
+
+    try expectPayload(out.items, expectedFor("repo_object_getters"));
 }

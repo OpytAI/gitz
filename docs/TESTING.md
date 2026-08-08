@@ -209,7 +209,11 @@ Tests that flip process format must `defer setObjectFormat(.sha1)`.
 
 **PlainInit:** validates `object_format` ∈ {`""`, `sha1`, `sha256`}; sha256 sets
 version 1 + extensions and activates SHA-256. Unknown values → `InvalidObjectFormat`.
-**PlainOpen** re-applies format from config.
+If dual support is compiled out → `SHA256NotSupported` (go-git parity).
+**PlainOpen** re-applies format from config onto storage.
+
+**FormatScope:** `plumbing.FormatScope.enter(algo)` RAII restores the previous
+process format on `deinit` (tests / temporary codec work).
 
 ### Packages (go-git → gitz)
 
@@ -233,7 +237,7 @@ High-level config is `@import("gitconfig")`.
 | Remotes (config) | `remote`, `remotes`, `createRemote`, `createRemoteFull`, `createRemoteAnonymous`, `deleteRemote` | No Fetch/List/Push |
 | Branches (config) | `branch`, `createBranch`, `deleteBranch` | Tracking config, not ref creation |
 | Tags | `tag`, `createTag`, `deleteTag` | Lightweight or annotated |
-| CreateTagOptions | `tagger`, `message`, `sign_key`, `pgp_signature`, `validate` | `sign_key` = decrypted `*Entity` → `ArmoredDetachSign` (RSA + Ed25519, subkey-aware); else pre-formed armored block |
+| CreateTagOptions | `tagger`, `message`, `sign_key`, `pgp_signature`, `validate` | Empty tagger loads author then user from storer config (`loadConfigTagger`); `sign_key` = Entity ArmoredDetachSign |
 | OpenPGP | `Entity` + subkeys, `readArmoredKeyRing`, `decrypt`, `armoredDetachSign`, `encodeArmor` | S2K simple/salted/iterated; AES-128/192/256; SHA-1/256/512; signing prefers flagged subkeys |
 | Objects | `commitObject`, `blobObject`, `treeObject`, `tagObject`, `object` | Plus store iters (`commitObjects`, …) |
 | Log | `log` + `LogOptions` / `LogOrder` / `LogResult` | All orders; `all`; `file_name`; `path_filter` / `path_filter_ctx_fn`; `since`/`until` |
@@ -249,6 +253,9 @@ Static `file_equals` plus **executable** recompute in `//tools/golden:recompute_
 | `gitconfig_new_defaults` | `Config.create` pack window + empty maps + not bare |
 | `gitconfig_marshal_core` | Empty `Marshal` → `[core]` + tab-indented `bare = false` |
 | `repo_init_bare` | bare `init`: `is_bare`, symbolic HEAD → `refs/heads/master` |
+| `repo_init_nonbare` | non-bare `init` with worktree: not bare, symbolic HEAD → `refs/heads/master` |
+| `repo_open_head` | bare `init` then `open`: exists, symbolic HEAD → `refs/heads/master` |
+| `repo_object_getters` | bare `init`, empty blob store + `blobObject` → fixed SHA-1 OID |
 
 ### How to run
 

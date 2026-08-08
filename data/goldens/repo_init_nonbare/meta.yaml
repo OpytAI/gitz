@@ -1,0 +1,5 @@
+name: repo_init_nonbare
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "repo.init(storage, worktree) non-bare: not bare, symbolic HEAD → master."

@@ -1,0 +1,5 @@
+name: repo_open_head
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "repo.init bare then open: repository exists, symbolic HEAD → master."

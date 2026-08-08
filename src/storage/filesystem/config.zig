@@ -2,8 +2,8 @@
 //!
 //! On-disk form is real git-config text via `plumbing/format/config` encode/decode.
 //! In-memory surface is the shared storage `memory.Config` (`is_bare` + remotes
-//! name/urls/fetch/mirror + branches remote/merge) used by BaseStorageSuite and
-//! the memory backend.
+//! name/urls/fetch/mirror + branches remote/merge + user/author/committer
+//! identity) used by BaseStorageSuite and the memory backend.
 //!
 //! `config()` re-reads the file every call (go-git `Config()`). `setConfig`
 //! validates, marshals, writes, and takes ownership of the heap `*Config`
@@ -123,7 +123,7 @@ fn sortedMapKeys(allocator: Allocator, map: anytype) Allocator.Error![][]const u
     return try names.toOwnedSlice(allocator);
 }
 
-/// Encode `memory.Config` as git-config bytes (bare + format + remotes + branches).
+/// Encode `memory.Config` as git-config bytes (bare + format + identity + remotes + branches).
 fn encodeMemoryConfig(allocator: Allocator, cfg: *const Config) Error![]u8 {
     var raw = format_config.Config.init(allocator);
     defer raw.deinit();
@@ -145,6 +145,32 @@ fn encodeMemoryConfig(allocator: Allocator, cfg: *const Config) Error![]u8 {
             "objectformat",
             cfg.object_format,
         );
+    }
+
+    // [user] / [author] / [committer] — same keys as high-level gitconfig.
+    if (cfg.user_name.len > 0 or cfg.user_email.len > 0) {
+        if (cfg.user_name.len > 0) {
+            _ = try raw.setOption("user", format_config.NoSubsection, "name", cfg.user_name);
+        }
+        if (cfg.user_email.len > 0) {
+            _ = try raw.setOption("user", format_config.NoSubsection, "email", cfg.user_email);
+        }
+    }
+    if (cfg.author_name.len > 0 or cfg.author_email.len > 0) {
+        if (cfg.author_name.len > 0) {
+            _ = try raw.setOption("author", format_config.NoSubsection, "name", cfg.author_name);
+        }
+        if (cfg.author_email.len > 0) {
+            _ = try raw.setOption("author", format_config.NoSubsection, "email", cfg.author_email);
+        }
+    }
+    if (cfg.committer_name.len > 0 or cfg.committer_email.len > 0) {
+        if (cfg.committer_name.len > 0) {
+            _ = try raw.setOption("committer", format_config.NoSubsection, "name", cfg.committer_name);
+        }
+        if (cfg.committer_email.len > 0) {
+            _ = try raw.setOption("committer", format_config.NoSubsection, "email", cfg.committer_email);
+        }
     }
 
     // Stable remote order for deterministic on-disk output (sorted by name).
@@ -188,7 +214,7 @@ fn encodeMemoryConfig(allocator: Allocator, cfg: *const Config) Error![]u8 {
     return try aw.toOwnedSlice();
 }
 
-/// Decode git-config bytes into a heap `memory.Config` (bare + remotes + branches).
+/// Decode git-config bytes into a heap `memory.Config` (bare + identity + remotes + branches).
 fn decodeMemoryConfig(allocator: Allocator, data: []const u8) Error!*Config {
     var raw = format_config.Config.init(allocator);
     defer raw.deinit();
@@ -216,6 +242,25 @@ fn decodeMemoryConfig(allocator: Allocator, data: []const u8) Error!*Config {
         const ext = try raw.section("extensions");
         const ofmt = ext.option("objectformat");
         if (ofmt.len > 0) try c.setObjectFormat(ofmt);
+    }
+
+    if (raw.hasSection("user")) {
+        const user = try raw.section("user");
+        const name = user.option("name");
+        const email = user.option("email");
+        if (name.len > 0 or email.len > 0) try c.setUser(name, email);
+    }
+    if (raw.hasSection("author")) {
+        const author = try raw.section("author");
+        const name = author.option("name");
+        const email = author.option("email");
+        if (name.len > 0 or email.len > 0) try c.setAuthor(name, email);
+    }
+    if (raw.hasSection("committer")) {
+        const committer = try raw.section("committer");
+        const name = committer.option("name");
+        const email = committer.option("email");
+        if (name.len > 0 or email.len > 0) try c.setCommitter(name, email);
     }
 
     if (raw.hasSection("remote")) {
@@ -419,4 +464,72 @@ test "ConfigStorage setConfig writes git-config and reloads from disk" {
     defer gpa.free(data);
     try std.testing.expect(std.mem.indexOf(u8, data, "[remote \"origin\"]") != null);
     try std.testing.expect(std.mem.indexOf(u8, data, "bare = true") != null);
+}
+
+test "encode/decode user and author identity" {
+    const gpa = std.testing.allocator;
+
+    const cfg = try gpa.create(Config);
+    defer {
+        cfg.deinit();
+        gpa.destroy(cfg);
+    }
+    cfg.* = Config.init(gpa);
+    cfg.is_bare = false;
+    try cfg.setUser("User Name", "user@example.com");
+    try cfg.setAuthor("Author Name", "author@example.com");
+    try cfg.setCommitter("Committer Name", "committer@example.com");
+
+    const bytes = try encodeMemoryConfig(gpa, cfg);
+    defer gpa.free(bytes);
+
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "[user]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "name = User Name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "email = user@example.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "[author]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "name = Author Name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "email = author@example.com") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "[committer]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "name = Committer Name") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "email = committer@example.com") != null);
+
+    const got = try decodeMemoryConfig(gpa, bytes);
+    defer {
+        got.deinit();
+        gpa.destroy(got);
+    }
+    try std.testing.expectEqualStrings("User Name", got.user_name);
+    try std.testing.expectEqualStrings("user@example.com", got.user_email);
+    try std.testing.expectEqualStrings("Author Name", got.author_name);
+    try std.testing.expectEqualStrings("author@example.com", got.author_email);
+    try std.testing.expectEqualStrings("Committer Name", got.committer_name);
+    try std.testing.expectEqualStrings("committer@example.com", got.committer_email);
+}
+
+test "encode/decode user only without author" {
+    const gpa = std.testing.allocator;
+
+    const cfg = try gpa.create(Config);
+    defer {
+        cfg.deinit();
+        gpa.destroy(cfg);
+    }
+    cfg.* = Config.init(gpa);
+    try cfg.setUser("Only User", "only@example.com");
+
+    const bytes = try encodeMemoryConfig(gpa, cfg);
+    defer gpa.free(bytes);
+
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "[user]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, bytes, "[author]") == null);
+
+    const got = try decodeMemoryConfig(gpa, bytes);
+    defer {
+        got.deinit();
+        gpa.destroy(got);
+    }
+    try std.testing.expectEqualStrings("Only User", got.user_name);
+    try std.testing.expectEqualStrings("only@example.com", got.user_email);
+    try std.testing.expectEqual(@as(usize, 0), got.author_name.len);
+    try std.testing.expectEqual(@as(usize, 0), got.author_email.len);
 }
