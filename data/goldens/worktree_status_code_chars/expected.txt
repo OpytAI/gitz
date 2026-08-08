@@ -1,0 +1,9 @@
+# go-git StatusCode rune values (worktree.status_types.StatusCode)
+unmodified=' '
+untracked='?'
+modified='M'
+added='A'
+deleted='D'
+renamed='R'
+copied='C'
+updated_but_unmerged='U'

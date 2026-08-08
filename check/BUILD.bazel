@@ -338,9 +338,24 @@ test_suite(
     ],
 )
 
+# Phase 12: Worktree status/add/commit/checkout/reset/clean/pull + porcelain clone.
+test_suite(
+    name = "phase_12_packages",
+    tests = [
+        "//src/worktree:worktree_test",
+        "//src/porcelain:porcelain_test",
+        "//src/repo:repo_test",
+        # Executable Class A goldens for worktree/porcelain + prior suites.
+        "//tools/golden:recompute_test",
+    ],
+)
+
 test_suite(
     name = "phase_12",
-    tests = [":phase_11"],
+    tests = [
+        ":phase_11",
+        ":phase_12_packages",
+    ],
 )
 
 test_suite(

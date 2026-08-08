@@ -1,0 +1,5 @@
+name: worktree_status_strategy_default
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "default_status_strategy is empty (go-git StatusOptions Empty strategy)."

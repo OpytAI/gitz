@@ -1,0 +1,97 @@
+# API inventory: worktree (phase 12) — go-git root Worktree + status/options.
+# packages.yaml go key is git/worktree (zig: src/worktree).
+#
+# Present: Worktree status/add/commit/checkout/reset/pull/clean, Status map,
+# StatusCode/FileStatus, Checkout/Reset/Add/Commit/Pull/Clone/Clean options,
+# platform fillSystemInfo. Network transports remain phase 13.
+package: git/worktree
+phase: 12
+require:
+  types:
+    - Worktree
+    - Status
+    - StatusCode
+    - FileStatus
+    - StatusStrategy
+    - StatusOptions
+    - CheckoutOptions
+    - ResetMode
+    - ResetOptions
+    - AddOptions
+    - CommitOptions
+    - PullOptions
+    - CloneOptions
+    - CleanOptions
+  functions:
+    - newWorktree
+    - newWorktreeEmbedded
+    - fillSystemInfo
+  constants:
+    - default_status_strategy
+  semantic:
+    - Worktree
+    - Worktree.status
+    - Worktree.statusWithOptions
+    - Worktree.add
+    - Worktree.addWithOptions
+    - Worktree.remove
+    - Worktree.commit
+    - Worktree.checkout
+    - Worktree.reset
+    - Worktree.pull
+    - Worktree.clean
+    - newWorktree
+    - newWorktreeEmbedded
+    - Status
+    - Status.file
+    - Status.isClean
+    - Status.isUntracked
+    - Status.string
+    - StatusCode
+    - FileStatus
+    - StatusStrategy
+    - StatusOptions
+    - CheckoutOptions
+    - CheckoutOptions.validate
+    - ResetMode
+    - ResetOptions
+    - AddOptions
+    - AddOptions.validate
+    - CommitOptions
+    - CommitOptions.validate
+    - PullOptions
+    - PullOptions.validate
+    - CloneOptions
+    - CloneOptions.validate
+    - CleanOptions
+    - fillSystemInfo
+    - default_status_strategy
+    - WorktreeNotClean
+    - EmptyCommit
+    - MissingAuthor
+    - MissingURL
+    - NonFastForwardUpdate
+zig_map:
+  Worktree: Worktree
+  NewWorktree: newWorktree
+  NewWorktreeEmbedded: newWorktreeEmbedded
+  Status: Status
+  StatusCode: StatusCode
+  FileStatus: FileStatus
+  StatusStrategy: StatusStrategy
+  StatusOptions: StatusOptions
+  CheckoutOptions: CheckoutOptions
+  ResetMode: ResetMode
+  ResetOptions: ResetOptions
+  AddOptions: AddOptions
+  CommitOptions: CommitOptions
+  PullOptions: PullOptions
+  CloneOptions: CloneOptions
+  CleanOptions: CleanOptions
+  fillSystemInfo: fillSystemInfo
+  default_status_strategy: default_status_strategy
+  ErrWorktreeNotClean: WorktreeNotClean
+  ErrEmptyCommit: EmptyCommit
+  ErrMissingAuthor: MissingAuthor
+  ErrMissingURL: MissingURL
+  ErrNonFastForwardUpdate: NonFastForwardUpdate

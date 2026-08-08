@@ -1,0 +1,8 @@
+# go-git PlainClone bare path (porcelain.clone.plainCloneInner)
+# When bare is forced, worktree_fs is null → no checkoutDefault hard reset.
+# bare is true when is_bare argument, opts.bare, or opts.mirror.
+bare_forces_worktree_null=true
+checkout_skipped=true
+repo_is_bare=true
+# Mirror forces bare even if is_bare was false.
+mirror_forces_bare=true

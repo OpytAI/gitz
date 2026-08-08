@@ -2,7 +2,7 @@
 //!
 //! Memory-backed lifecycle for phase 10:
 //! - `init` / `initWithOptions` / `open` over `*memory.Storage`
-//! - optional worktree: `?*fs.Mem` (null = bare)
+//! - optional worktree FS field `wt`: `?*fs.Mem` (null = bare; go-git `r.wt`)
 //! - head / config / setConfig / configScoped / reference helpers
 //!
 //! Storer config remains `memory.Config` (storage backends write that shape).
@@ -11,7 +11,7 @@
 //! storer config (caller owns the returned pointer).
 //!
 //! Filesystem path lifecycle: `plain.zig` (`plainInit` / `plainOpen` over
-//! `//src/storage/filesystem` + `fs.Mem`). Full Worktree is phase 12.
+//! `//src/storage/filesystem` + `fs.Mem`). Full Worktree: `Repository.worktree`.
 //! Remote Fetch / List / Push: phase 11 (`//src/remote`, methods below).
 
 const std = @import("std");
@@ -27,6 +27,8 @@ const log_mod = @import("log.zig");
 const crud = @import("crud.zig");
 const remote_mod = @import("remote.zig");
 const objpkg = @import("object");
+const worktree_pkg = @import("worktree");
+const server_pkg = @import("server");
 
 const Allocator = std.mem.Allocator;
 const Reference = plumbing.Reference;
@@ -56,12 +58,13 @@ pub const InitOptions = struct {
 
 /// Git repository (go-git `Repository` subset: storer + optional worktree).
 ///
-/// Does **not** own `storer` or `worktree`. Caller allocates and frees them.
+/// Does **not** own `storer` or `wt`. Caller allocates and frees them.
 pub const Repository = struct {
     /// Repository object storage and refs (go-git `Storer`).
     storer: *memory.Storage,
-    /// Optional worktree filesystem; null means bare.
-    worktree: ?*fs_pkg.Mem = null,
+    /// Optional worktree filesystem; null means bare (go-git `Repository.wt`).
+    /// Named `wt` so the method `worktree` can match go-git `Repository.Worktree`.
+    wt: ?*fs_pkg.Mem = null,
 
     // -----------------------------------------------------------------------
     // Config
@@ -124,12 +127,12 @@ pub const Repository = struct {
     }
 
     // -----------------------------------------------------------------------
-    // Worktree probe (full Worktree type is phase 12)
+    // Worktree (go-git Repository.Worktree + bare probe)
     // -----------------------------------------------------------------------
 
     /// Whether this repository has a worktree filesystem attached.
     pub fn isBare(self: *const Repository) bool {
-        return self.worktree == null;
+        return self.wt == null;
     }
 
     /// go-git `setIsBare` — set `core.bare` in config.
@@ -139,10 +142,24 @@ pub const Repository = struct {
         try self.setConfig(cfg);
     }
 
-    /// go-git `Repository.Worktree` — attached FS or `error.IsBareRepository`.
-    /// Full Worktree type is phase 12; this only exposes the optional FS handle.
+    /// Attached worktree filesystem only, or `error.IsBareRepository`.
+    /// Prefer `worktree` when you need the full `worktree.Worktree` handle.
     pub fn worktreeFs(self: *Repository) error{IsBareRepository}!*fs_pkg.Mem {
-        return self.worktree orelse error.IsBareRepository;
+        return self.wt orelse error.IsBareRepository;
+    }
+
+    /// go-git `Repository.Worktree` — Worktree handle over the attached FS.
+    ///
+    /// Returns `error.IsBareRepository` when no worktree filesystem is attached.
+    pub fn worktree(self: *Repository) Error!worktree_pkg.Worktree {
+        const fs: *fs_pkg.Mem = self.wt orelse return error.IsBareRepository;
+        return worktree_pkg.newWorktree(self.storer.allocator, self.storer, fs);
+    }
+
+    /// Like `worktree` but binds an in-process server for Pull tests.
+    pub fn worktreeEmbedded(self: *Repository, srv: *server_pkg.Server) Error!worktree_pkg.Worktree {
+        const fs: *fs_pkg.Mem = self.wt orelse return error.IsBareRepository;
+        return worktree_pkg.newWorktreeEmbedded(self.storer.allocator, self.storer, fs, srv);
     }
 
     // -----------------------------------------------------------------------
@@ -279,7 +296,7 @@ pub const Repository = struct {
 pub fn newRepository(s: *memory.Storage, worktree: ?*fs_pkg.Mem) Repository {
     return .{
         .storer = s,
-        .worktree = worktree,
+        .wt = worktree,
     };
 }
 
@@ -496,7 +513,7 @@ test "Init with worktree Mem is not bare" {
 
     var r = try init(s, &wt);
     try std.testing.expect(!r.isBare());
-    try std.testing.expect(r.worktree != null);
+    try std.testing.expect(r.wt != null);
 
     const cfg = try r.config();
     try std.testing.expect(!cfg.is_bare);
@@ -568,7 +585,7 @@ test "Open after Init" {
 
     const r = try open(s, &wt2);
     try std.testing.expect(r.storer == s);
-    try std.testing.expect(r.worktree == &wt2);
+    try std.testing.expect(r.wt == &wt2);
 }
 
 test "Open bare" {

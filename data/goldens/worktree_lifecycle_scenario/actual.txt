@@ -1,0 +1,16 @@
+# go-git Worktree status/add/commit lifecycle (Class C scenario, documented)
+# Setup: empty non-bare memory repo + Mem FS worktree; symbolic HEAD → master.
+step1_after_init:
+  status_is_clean=true
+step2_after_write_untracked_file:
+  path=hello.txt
+  staging=untracked
+  worktree=untracked
+  status_is_clean=false
+step3_after_add:
+  path=hello.txt
+  staging=added
+  worktree=unmodified
+  status_is_clean=false
+step4_after_commit:
+  status_is_clean=true

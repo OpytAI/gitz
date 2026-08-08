@@ -20,7 +20,8 @@ api:
   # format/diff, utils/diff, pathutil, path_util, revision, url, internal/reference.
   # Phase 10 adds: config (gitconfig), repo.
   # Phase 11 adds: remote.
-  min_files: 52
+  # Phase 12 adds: worktree, porcelain (+2 → 54).
+  min_files: 54
   # For due API files (phase ≤ current): zig_map coverage of require names.
   # Phase 1: due API packages should map zig_map names into sources.
   min_mapped_ratio: 0.5
@@ -45,7 +46,9 @@ goldens:
   # Phase 11: remote_string + remote_fetch_options_defaults +
   # remote_default_fetch_refspec + remote_default_push_refspec +
   # remote_list_ref_names (58).
-  min_count: 58
+  # Phase 12: worktree status/add/commit/checkout + pull FF + porcelain
+  # PlainClone/clone options (+8 → 66).
+  min_count: 66
 
 
 allowlists:

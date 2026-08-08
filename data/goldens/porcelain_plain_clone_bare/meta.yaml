@@ -1,0 +1,5 @@
+name: porcelain_plain_clone_bare
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "PlainClone bare (is_bare or opts.bare or mirror) forces no worktree checkout."

@@ -1,0 +1,4 @@
+# go-git CleanOptions (worktree.options.CleanOptions)
+# dir=false: remove only untracked files at current depth; nested dirs stay.
+# dir=true: recurse into untracked dirs, remove nested untracked files, then empty dirs.
+dir=false

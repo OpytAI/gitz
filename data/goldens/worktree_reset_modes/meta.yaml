@@ -1,0 +1,5 @@
+name: worktree_reset_modes
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "worktree ResetMode names and default ResetOptions.mode (go-git options.go)."

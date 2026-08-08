@@ -1,0 +1,5 @@
+name: worktree_soft_reset_staging
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "Soft reset to parent keeps index; extra file from tip shows staging=added."

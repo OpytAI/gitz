@@ -1,0 +1,68 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+_SRCS = [
+    "error.zig",
+    "status_types.zig",
+    "options.zig",
+    "platform.zig",
+    "platform_linux.zig",
+    "platform_windows.zig",
+    "status.zig",
+    "add.zig",
+    "commit.zig",
+    "checkout.zig",
+    "reset.zig",
+    "pull.zig",
+    "clean.zig",
+    "worktree.zig",
+]
+
+_DEPS = [
+    "//src/plumbing",
+    "//src/plumbing/hash",
+    "//src/plumbing/filemode",
+    "//src/plumbing/object",
+    "//src/plumbing/storer",
+    "//src/plumbing/format/index",
+    "//src/plumbing/format/gitignore",
+    "//src/storage/memory",
+    "//src/fs",
+    "//src/utils/merkletrie",
+    "//src/utils/merkletrie/noder",
+    "//src/utils/merkletrie/index",
+    "//src/utils/merkletrie/filesystem",
+    "//src/utils/sync",
+    "//src/remote",
+    "//src/config",
+    "//src/plumbing/transport/server",
+]
+
+zig_library(
+    name = "worktree",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "worktree",
+    visibility = ["//visibility:public"],
+    deps = _DEPS,
+)
+
+zig_test(
+    name = "worktree_test",
+    size = "medium",
+    main = "test_root.zig",
+    srcs = _SRCS + [
+        "root.zig",
+        "tests.zig",
+        "test_root.zig",
+    ],
+    deps = _DEPS + [
+        "//src/plumbing/transport/test:fixtures",
+        "//src/plumbing/transport/client",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

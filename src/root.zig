@@ -71,6 +71,10 @@ pub const repo = @import("repo");
 // Phase 11 remote engine (Fetch / List / Push).
 pub const remote = @import("remote");
 
+// Phase 12 worktree + porcelain clone/plain helpers.
+pub const worktree = @import("worktree");
+pub const porcelain = @import("porcelain");
+
 test "identity" {
     try std.testing.expectEqualStrings("gitz", name);
     try std.testing.expectEqualStrings("v5.19.2", go_git_pin);
@@ -216,4 +220,24 @@ test "phase11 remote surface" {
     _ = repo.Repository.push;
     _ = repo.FetchOptions;
     _ = repo.PushOptions;
+}
+
+test "phase12 worktree porcelain surface" {
+    _ = worktree.Worktree;
+    _ = worktree.newWorktree;
+    _ = worktree.CloneOptions;
+    _ = worktree.CheckoutOptions;
+    _ = worktree.ResetOptions;
+    _ = porcelain.clone;
+    _ = porcelain.cloneEmbedded;
+    _ = porcelain.plainClone;
+    _ = porcelain.plainCloneEmbedded;
+    _ = porcelain.cloneInto;
+    _ = porcelain.OwnedRepository;
+    _ = porcelain.CloneOptions;
+    _ = repo.Repository.worktreeFs;
+    _ = repo.Repository.worktree;
+    _ = repo.Repository.worktreeEmbedded;
+    _ = repo.worktreeOf;
+    _ = repo.worktreeEmbedded;
 }

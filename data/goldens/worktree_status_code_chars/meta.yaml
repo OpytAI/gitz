@@ -1,0 +1,5 @@
+name: worktree_status_code_chars
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "worktree StatusCode enum char values (go-git status.go StatusCode)."

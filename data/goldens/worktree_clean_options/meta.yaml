@@ -1,0 +1,5 @@
+name: worktree_clean_options
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "CleanOptions.dir default false (go-git CleanOptions; dir removes empty dirs)."

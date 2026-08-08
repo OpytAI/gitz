@@ -1,0 +1,10 @@
+# go-git Worktree.Reset SoftReset vs parent (worktree.reset + status)
+# Setup: commit a.txt (first), then add+commit b.txt (second); soft reset to first.
+# Soft moves HEAD only; index and worktree remain at second commit tree.
+# Relative to HEAD=first, b.txt is present in index → staging=added.
+reset_mode=soft
+head_after=first
+index_keeps=second_tree
+path=b.txt
+staging=added
+worktree_file_exists=true

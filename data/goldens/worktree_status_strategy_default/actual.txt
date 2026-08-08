@@ -1,0 +1,5 @@
+# go-git StatusStrategy default (worktree.status_types)
+# Empty: missing paths mean untracked.
+# Preload: preload all index paths as unmodified.
+default_status_strategy=empty
+status_options.strategy_default=empty

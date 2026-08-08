@@ -3,7 +3,8 @@
 //! Hermetic path uses `fs.Mem` + `//src/storage/filesystem` (no host `Os` required
 //! for tests). Host `Os` can follow the same flow via `filesystem.newStorageOs`.
 //!
-//! Out of scope: PlainClone, EnableDotGitCommonDir (stub flag ignored).
+//! Out of scope here: PlainClone (see `//src/porcelain`), EnableDotGitCommonDir
+//! (stub flag ignored).
 
 const std = @import("std");
 const plumbing = @import("plumbing");

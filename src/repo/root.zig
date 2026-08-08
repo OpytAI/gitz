@@ -2,7 +2,7 @@
 //!
 //! Init/Open over `*memory.Storage` plus object/ref facades, Log, CreateTag,
 //! and configScoped. PlainInit/PlainOpen over filesystem storage + `fs.Mem`
-//! live in `plain.zig`. Full Worktree engine is phase 12.
+//! live in `plain.zig`. Full Worktree engine is phase 12 (`worktree` / `worktree_api`).
 //! Phase 11: Remote Fetch / List / Push via `//src/remote` (re-exported here).
 //! Storer config is `memory.Config`; high-level remotes/branches use `gitconfig`
 //! (also via `configScoped`).
@@ -14,6 +14,7 @@ const error_mod = @import("error.zig");
 const remote_mod = @import("remote.zig");
 const crud = @import("crud.zig");
 const plain = @import("plain.zig");
+const worktree_api = @import("worktree_api.zig");
 
 pub const Error = error_mod.Error;
 
@@ -62,6 +63,10 @@ pub const plainInitWithOptions = plain.plainInitWithOptions;
 pub const plainOpen = plain.plainOpen;
 pub const plainOpenWithOptions = plain.plainOpenWithOptions;
 
+/// go-git `Repository.Worktree` free-function form of `Repository.worktree`.
+pub const worktreeOf = worktree_api.worktreeOf;
+pub const worktreeEmbedded = worktree_api.worktreeEmbedded;
+
 // activateFormat is a method on Repository / PlainRepository.
 
 // Network MapLoader e2e lives in network_tests.zig pulled by //src/repo:repo_test
@@ -74,4 +79,5 @@ test {
     _ = remote_mod;
     _ = crud;
     _ = plain;
+    _ = worktree_api;
 }

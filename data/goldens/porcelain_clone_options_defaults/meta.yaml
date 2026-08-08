@@ -1,0 +1,5 @@
+name: porcelain_clone_options_defaults
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "CloneOptions zero-value defaults; validate fills remote_name=origin and HEAD (empty URL fails)."

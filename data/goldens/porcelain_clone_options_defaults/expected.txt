@@ -1,0 +1,18 @@
+# go-git CloneOptions zero value + Validate (worktree.options / porcelain.clone)
+# Zero-value fields before validate:
+url=
+remote_name=
+reference_name=HEAD
+single_branch=false
+no_checkout=false
+depth=0
+tags=all
+mirror=false
+bare=false
+force=false
+# After validate with non-empty URL:
+# remote_name → origin (default_remote_name)
+# reference_name stays HEAD when empty/HEAD
+# empty URL → ErrMissingURL
+validate_empty_url=MissingURL
+validate_remote_name_default=origin

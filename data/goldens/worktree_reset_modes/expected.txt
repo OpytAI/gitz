@@ -1,0 +1,9 @@
+# go-git ResetMode (worktree.options.ResetMode)
+# Soft: HEAD only. Mixed (default): HEAD + index. Hard: HEAD + index + worktree.
+# Merge: abort on unstaged changes; else like mixed + update worktree for index diffs.
+modes:
+  - mixed
+  - hard
+  - merge
+  - soft
+default_mode=mixed

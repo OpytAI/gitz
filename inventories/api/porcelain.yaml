@@ -1,0 +1,44 @@
+# API inventory: porcelain (phase 12) — go-git Clone / PlainClone helpers.
+# packages.yaml go key is git/porcelain (zig: src/porcelain).
+#
+# Present: clone / cloneEmbedded, plainClone / plainCloneEmbedded, cloneInto,
+# OwnedRepository, CloneOptions re-export from worktree. MapLoader path via
+# embedded server. Network HTTP/SSH: phase 13.
+package: git/porcelain
+phase: 12
+require:
+  types:
+    - OwnedRepository
+    - CloneOptions
+  functions:
+    - clone
+    - cloneEmbedded
+    - plainClone
+    - plainCloneEmbedded
+    - cloneInto
+  constants: []
+  semantic:
+    - OwnedRepository
+    - OwnedRepository.deinit
+    - CloneOptions
+    - clone
+    - cloneEmbedded
+    - plainClone
+    - plainCloneEmbedded
+    - cloneInto
+    - MissingURL
+    - Fetching
+    - UnableToResolveCommit
+    - IsBareRepository
+zig_map:
+  OwnedRepository: OwnedRepository
+  CloneOptions: CloneOptions
+  Clone: clone
+  CloneEmbedded: cloneEmbedded
+  PlainClone: plainClone
+  PlainCloneEmbedded: plainCloneEmbedded
+  cloneInto: cloneInto
+  ErrMissingURL: MissingURL
+  ErrFetching: Fetching
+  ErrUnableToResolveCommit: UnableToResolveCommit
+  IsBareRepository: IsBareRepository

@@ -141,6 +141,11 @@ When implementing phase N:
 
 `//check:phase_N` currently chains to prior phases and `phase_g`. Expand `check/BUILD.bazel` as suites grow.
 
+**Phase 12:** `//check:phase_12` includes `:phase_11` plus `:phase_12_packages`
+(`//src/worktree:worktree_test`, `//src/porcelain:porcelain_test`,
+`//src/repo:repo_test`, `//tools/golden:recompute_test`). API seeds:
+`worktree.yaml`, `porcelain.yaml`.
+
 ---
 
 ## What not to do

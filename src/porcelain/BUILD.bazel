@@ -1,57 +1,45 @@
 load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
 
-# go-git root repository: Init/Open + object/ref facades + PlainInit/Open.
 _SRCS = [
     "error.zig",
-    "repository.zig",
-    "facade.zig",
-    "log.zig",
-    "remote.zig",
-    "crud.zig",
-    "plain.zig",
-    "worktree_api.zig",
+    "clone.zig",
 ]
 
 _DEPS = [
     "//src/plumbing",
-    "//src/plumbing/hash",
     "//src/plumbing/object",
     "//src/plumbing/storer",
-    "//src/plumbing/revlist",
-    "//src/plumbing/format/config",
     "//src/storage/memory",
-    "//src/storage/filesystem",
-    "//src/storage/filesystem/dotgit",
+    "//src/fs",
     "//src/config",
     "//src/remote",
+    "//src/repo",
     "//src/worktree",
     "//src/plumbing/transport/server",
-    "//src/internal/revision",
-    "//src/fs",
     "//src/utils/sync",
 ]
 
 zig_library(
-    name = "repo",
+    name = "porcelain",
     main = "root.zig",
     srcs = _SRCS,
-    import_name = "repo",
+    import_name = "porcelain",
     visibility = ["//visibility:public"],
     deps = _DEPS,
 )
 
 zig_test(
-    name = "repo_test",
+    name = "porcelain_test",
     size = "medium",
     main = "test_root.zig",
     srcs = _SRCS + [
         "root.zig",
-        "network_tests.zig",
+        "tests.zig",
         "test_root.zig",
     ],
     deps = _DEPS + [
-        "//src/plumbing/transport/client",
         "//src/plumbing/transport/test:fixtures",
+        "//src/plumbing/transport/client",
     ],
 )
 

@@ -4,8 +4,12 @@
 # Present: Init/Open (memory), PlainInit/PlainOpen (fs.Mem), configScoped,
 # Log (+ PathFilter fields), CreateTagOptions (tagger/message/pgp_signature),
 # CRUD remotes/branches/tags, object facades, ResolveRevision.
-# Deferred: PlainClone; full Worktree engine (phase 12); EnableDotGitCommonDir
-# (stub flag). Phase 11: Repository.fetch / push via //src/remote.
+# Phase 11: Repository.fetch / push via //src/remote.
+# Phase 12 Worktree glue: Repository.worktree / worktreeEmbedded (+ free
+# functions worktreeOf / worktreeEmbedded) over //src/worktree; worktreeFs is
+# the FS-only probe. Field is `wt` (go-git `r.wt`).
+# Full Worktree engine lives in git/worktree. PlainClone / Clone: git/porcelain.
+# Deferred: EnableDotGitCommonDir (stub flag).
 package: git/repository
 phase: 10
 require:
@@ -37,6 +41,8 @@ require:
     - plainInitWithOptions
     - plainOpen
     - plainOpenWithOptions
+    - worktreeOf
+    - worktreeEmbedded
   constants:
     - git_dir_name
   semantic:
@@ -50,6 +56,8 @@ require:
     - Repository.isBare
     - Repository.setIsBare
     - Repository.worktreeFs
+    - Repository.worktree
+    - Repository.worktreeEmbedded
     - Repository.remote
     - Repository.remotes
     - Repository.createRemote
@@ -112,6 +120,11 @@ require:
     - plainInitWithOptions
     - plainOpen
     - plainOpenWithOptions
+    # Phase 12 Worktree glue (go-git Repository.Worktree)
+    - worktreeOf
+    - worktreeEmbedded
+    - WorktreeNotProvided
+    - IsBareRepository
 zig_map:
   Repository: Repository
   InitOptions: InitOptions
@@ -139,3 +152,11 @@ zig_map:
   PlainOpenWithOptions: plainOpenWithOptions
   PlainInitOptions: PlainInitOptions
   PlainOpenOptions: PlainOpenOptions
+  Worktree: worktree
+  worktreeOf: worktreeOf
+  worktreeEmbedded: worktreeEmbedded
+  Repository.Worktree: worktree
+  Repository.worktree: worktree
+  Repository.worktreeEmbedded: worktreeEmbedded
+  ErrWorktreeNotProvided: WorktreeNotProvided
+  ErrIsBareRepository: IsBareRepository
