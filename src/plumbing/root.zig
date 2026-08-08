@@ -27,8 +27,13 @@ pub const newHash = hash_mod.newHash;
 pub const isHash = hash_mod.isHash;
 pub const computeHash = hash_mod.computeHash;
 pub const digestSize = hash_mod.digestSize;
+pub const hexSize = hash_mod.hexSize;
 pub const setObjectFormat = hash_mod.setObjectFormat;
 pub const objectFormat = hash_mod.objectFormat;
+pub const supportsObjectFormat = hash_mod.supportsObjectFormat;
+pub const Algorithm = hash_mod.Algorithm;
+pub const parseHashAny = hash_mod.parseHashAny;
+pub const isHashAny = hash_mod.isHashAny;
 
 // --- ObjectType ---
 pub const ObjectType = object_mod.ObjectType;

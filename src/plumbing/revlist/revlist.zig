@@ -404,15 +404,15 @@ fn parseTreeEntries(arena: Allocator, data: []const u8) ![]TreeEntry {
         const name = data[i..nul];
         i = nul + 1;
 
-        if (i + plumbing.Size > data.len) return error.MalformedObject;
-        var raw: [plumbing.Size]u8 = undefined;
-        @memcpy(&raw, data[i .. i + plumbing.Size]);
-        i += plumbing.Size;
+        const oid_len = plumbing.digestSize();
+        if (i + oid_len > data.len) return error.MalformedObject;
+        const oid = data[i .. i + oid_len];
+        i += oid_len;
 
         try entries.append(arena, .{
             .mode = canonicalTreeMode(mode),
             .name = name,
-            .hash = Hash.fromBytes(raw),
+            .hash = Hash.fromBytes(oid),
         });
     }
     return entries.items;

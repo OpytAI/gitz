@@ -394,7 +394,7 @@ pub fn DotGit(comptime Fs: type) type {
         /// Empty prefix → all objects. Prefix longer than hash size → empty.
         pub fn objectsWithPrefix(self: *Self, prefix: []const u8) (Allocator.Error || fs_mod.Error)![]Hash {
             if (prefix.len < 1) return try self.objects();
-            if (prefix.len > plumbing.Size) return &.{};
+            if (prefix.len > plumbing.digestSize()) return &.{};
 
             if (self.options.exclusive_access) {
                 try self.genObjectList();

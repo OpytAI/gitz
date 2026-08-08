@@ -125,11 +125,12 @@ pub const Packfile = struct {
         }
     }
 
-    /// go-git `ID` — pack checksum (last `Size` bytes of the pack image).
+    /// go-git `ID` — pack checksum (last `digestSize()` bytes of the pack image).
     pub fn id(self: *const Packfile) Error!Hash {
-        if (self.pack_data.len < Size) return error.MalformedPackFile;
-        const start = self.pack_data.len - Size;
-        return Hash.fromBytes(self.pack_data[start .. start + Size]);
+        const n = plumbing.digestSize();
+        if (self.pack_data.len < n) return error.MalformedPackFile;
+        const start = self.pack_data.len - n;
+        return Hash.fromBytes(self.pack_data[start .. start + n]);
     }
 
     fn objectAtOffset(self: *Packfile, offset: i64, hash: Hash) GetError!*MemoryObject {

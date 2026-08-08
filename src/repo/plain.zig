@@ -120,18 +120,9 @@ pub fn plainInit(allocator: Allocator, path_fs: *Mem, is_bare: bool) !PlainRepos
 
 /// go-git `PlainInitWithOptions` over `fs.Mem`.
 pub fn plainInitWithOptions(allocator: Allocator, path_fs: *Mem, opts: PlainInitOptions) !PlainRepository {
-    // go-git: SHA-256 requires hash.CryptoType == SHA256; gitz always supports both.
-    if (opts.object_format.len > 0 and std.mem.eql(u8, opts.object_format, format_config.SHA256)) {
-        if (!hash_algo.supportsObjectFormat(.sha256)) return error.SHA256NotSupported;
-        hash_algo.setObjectFormat(.sha256);
-    } else {
-        // Explicit sha1 / empty: keep process default (callers with sha256 must
-        // reset via setObjectFormat; we do not force-reset here so concurrent
-        // tests can own the format — but init of non-sha256 uses sha1 digests).
-        if (opts.object_format.len == 0 or std.mem.eql(u8, opts.object_format, format_config.SHA1)) {
-            hash_algo.setObjectFormat(.sha1);
-        }
-    }
+    // Validate object format up front (go-git only special-cases SHA-256 support).
+    const fmt = try resolveObjectFormat(opts.object_format);
+    hash_algo.setObjectFormat(fmt);
 
     var owned_dot: ?*Mem = null;
     errdefer if (owned_dot) |d| {
@@ -177,10 +168,10 @@ pub fn plainInitWithOptions(allocator: Allocator, path_fs: *Mem, opts: PlainInit
     // Config: bare flag + object format (go-git always SetConfig after init).
     const cfg = try s.config();
     if (worktree == null) cfg.is_bare = true;
-    if (opts.object_format.len > 0) {
-        // go-git: RepositoryFormatVersion = Version_1 + Extensions.ObjectFormat
+    if (fmt == .sha256 or (opts.object_format.len > 0 and std.mem.eql(u8, opts.object_format, format_config.SHA1))) {
+        // go-git: non-default format → Version_1 + Extensions.ObjectFormat
         try cfg.setRepositoryFormatVersion(format_config.Version1);
-        try cfg.setObjectFormat(opts.object_format);
+        try cfg.setObjectFormat(if (fmt == .sha256) format_config.SHA256 else format_config.SHA1);
     }
     try s.setConfig(cfg);
 
@@ -242,19 +233,21 @@ pub fn plainOpenWithOptions(allocator: Allocator, path_fs: *Mem, o: PlainOpenOpt
 }
 
 /// Activate process-wide object format from stored config (open path).
+/// Unknown values fall back to SHA-1 (same as empty).
 fn applyObjectFormatFromConfig(cfg: *const Config) void {
-    if (cfg.object_format.len == 0) {
-        hash_algo.setObjectFormat(.sha1);
-        return;
+    const fmt = resolveObjectFormat(cfg.object_format) catch .sha1;
+    hash_algo.setObjectFormat(fmt);
+}
+
+/// Map config/option object format string to algorithm.
+/// Empty / "sha1" → SHA-1; "sha256" → SHA-256; anything else → error.
+fn resolveObjectFormat(s: []const u8) error{InvalidObjectFormat}!hash_algo.Algorithm {
+    if (s.len == 0 or std.mem.eql(u8, s, format_config.SHA1)) return .sha1;
+    if (std.mem.eql(u8, s, format_config.SHA256)) {
+        if (!hash_algo.supportsObjectFormat(.sha256)) return error.InvalidObjectFormat;
+        return .sha256;
     }
-    if (std.mem.eql(u8, cfg.object_format, format_config.SHA256)) {
-        if (hash_algo.supportsObjectFormat(.sha256)) {
-            hash_algo.setObjectFormat(.sha256);
-        }
-        return;
-    }
-    // sha1 or unknown → default SHA-1 digests
-    hash_algo.setObjectFormat(.sha1);
+    return error.InvalidObjectFormat;
 }
 
 const ResolvedDot = struct {
@@ -491,6 +484,22 @@ test "PlainInitWithOptions custom default branch" {
     const head_ref = try r.reference(plumbing.HEAD, false);
     defer r.freeReference(head_ref);
     try std.testing.expectEqualStrings("refs/heads/main", head_ref.target.raw);
+}
+
+test "PlainInitWithOptions rejects invalid object_format" {
+    const gpa = std.testing.allocator;
+    defer hash_algo.setObjectFormat(.sha1);
+
+    var root = try Mem.init(gpa);
+    defer root.deinit();
+
+    try std.testing.expectError(
+        error.InvalidObjectFormat,
+        plainInitWithOptions(gpa, &root, .{
+            .bare = true,
+            .object_format = "md5",
+        }),
+    );
 }
 
 test "PlainInitWithOptions SHA256 succeeds" {

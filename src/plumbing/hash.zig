@@ -1,46 +1,54 @@
 //! Object IDs and git object content hashing (go-git `plumbing/hash.go`).
 //!
-//! Storage is always `MaxSize` (32) bytes with zero padding. Active digest
-//! length follows `plumbing/hash` process-wide object format (SHA-1 default).
+//! # Design
+//! - Storage is always `MaxSize` (32) bytes with **zero padding** (invariant).
+//! - `eql` / AutoHashMap keys compare the full 32-byte buffer so map identity
+//!   does not depend on process-global format.
+//! - `slice` / `formatHex` use process `digestSize()` for *display / wire width*
+//!   of the active repo format. Prefer one active format per process (or carefully
+//!   ordered tests) until storages own format end-to-end.
+//! - `parseHash` / `isHash` require the **active** hex width; use `parseHashAny` /
+//!   `isHashAny` for fixtures that mix widths.
 
 const std = @import("std");
 const err = @import("error.zig");
 const object = @import("object.zig");
 const hash_algo = @import("hash");
 
-/// SHA-1 digest size in bytes (go-git `hash.Size` without sha256 tag).
+/// SHA-1 digest size (go-git `hash.Size` without sha256 tag). Documentation constant.
 pub const Size: usize = hash_algo.Size;
 
-/// Hex-encoded OID length for default SHA-1 (go-git `hash.HexSize`).
+/// Hex length for default SHA-1 (go-git `hash.HexSize`). Documentation constant.
 pub const HexSize: usize = hash_algo.HexSize;
 
-/// Maximum OID / hex sizes (SHA-256).
+/// Maximum OID / hex sizes (SHA-256 capacity).
 pub const MaxSize: usize = hash_algo.MaxSize;
 pub const MaxHexSize: usize = hash_algo.MaxHexSize;
 
-/// Active digest / hex length and format (runtime dual SHA-1 / SHA-256).
+/// Process-wide format helpers (see `//src/plumbing/hash`).
 pub const digestSize = hash_algo.digestSize;
 pub const hexSize = hash_algo.hexSize;
 pub const setObjectFormat = hash_algo.setObjectFormat;
 pub const objectFormat = hash_algo.objectFormat;
 pub const supportsObjectFormat = hash_algo.supportsObjectFormat;
+pub const Algorithm = hash_algo.Algorithm;
 
-/// Object id (go-git `plumbing.Hash`). Always `MaxSize` bytes, zero-padded.
+/// Object id (go-git `plumbing.Hash`). Zero-padded to `MaxSize`.
 pub const Hash = struct {
     bytes: [MaxSize]u8 = .{0} ** MaxSize,
 
+    /// True if every storage byte is zero.
     pub fn isZero(self: Hash) bool {
-        const n = hash_algo.digestSize();
-        return std.mem.allEqual(u8, self.bytes[0..n], 0);
+        return std.mem.allEqual(u8, &self.bytes, 0);
     }
 
+    /// Full-buffer equality (pad must be zero — constructor invariant).
+    /// Independent of process-global object format → safe as map keys.
     pub fn eql(self: Hash, other: Hash) bool {
-        const n = hash_algo.digestSize();
-        return std.mem.eql(u8, self.bytes[0..n], other.bytes[0..n]);
+        return std.mem.eql(u8, &self.bytes, &other.bytes);
     }
 
-    /// Write lowercase hex of the active digest into `buf`.
-    /// `buf` must be at least `hash_algo.hexSize()` bytes (use `MaxHexSize` for dual).
+    /// Write lowercase hex of the **active** digest width into `buf`.
     pub fn formatHex(self: Hash, buf: []u8) []const u8 {
         const n = hash_algo.digestSize();
         const hex_len = n * 2;
@@ -53,22 +61,20 @@ pub const Hash = struct {
         return buf[0..hex_len];
     }
 
-    /// go-git `Hash.String` — hex into caller buffer.
+    /// go-git `Hash.String`.
     pub fn string(self: Hash, buf: []u8) []const u8 {
         return self.formatHex(buf);
     }
 
-    /// Build a Hash from raw digest bytes (up to `MaxSize`; remainder stays zero).
-    /// Accepts `[]const u8` / `[]u8` or fixed arrays (`[N]u8`).
-    pub fn fromBytes(raw: anytype) Hash {
-        const s: []const u8 = raw[0..];
+    /// Build from raw digest bytes. Pads with zeros to `MaxSize`.
+    pub fn fromBytes(raw: []const u8) Hash {
         var h = ZeroHash;
-        const n = @min(s.len, MaxSize);
-        if (n > 0) @memcpy(h.bytes[0..n], s[0..n]);
+        const n = @min(raw.len, MaxSize);
+        if (n > 0) @memcpy(h.bytes[0..n], raw[0..n]);
         return h;
     }
 
-    /// Active OID slice (`digestSize()` bytes).
+    /// Active-format OID slice (`digestSize()` bytes).
     pub fn slice(self: *const Hash) []const u8 {
         return self.bytes[0..hash_algo.digestSize()];
     }
@@ -77,8 +83,18 @@ pub const Hash = struct {
 /// Zero OID (go-git `ZeroHash`).
 pub const ZeroHash: Hash = .{};
 
-/// Parse a full hex OID (40-char SHA-1 or 64-char SHA-256).
+/// Parse a full hex OID matching the **active** object format width.
 pub fn parseHash(s: []const u8) err.Error!Hash {
+    const want = hash_algo.hexSize();
+    if (s.len != want) return error.InvalidHash;
+    var out: [MaxSize]u8 = .{0} ** MaxSize;
+    const n = s.len / 2;
+    _ = std.fmt.hexToBytes(out[0..n], s) catch return error.InvalidHash;
+    return Hash.fromBytes(out[0..n]);
+}
+
+/// Parse hex of either width (40 or 64). Prefer `parseHash` for repo-scoped work.
+pub fn parseHashAny(s: []const u8) err.Error!Hash {
     if (s.len != HexSize and s.len != MaxHexSize) return error.InvalidHash;
     var out: [MaxSize]u8 = .{0} ** MaxSize;
     const n = s.len / 2;
@@ -88,18 +104,28 @@ pub fn parseHash(s: []const u8) err.Error!Hash {
 
 /// go-git `NewHash`: best-effort hex decode; invalid input yields zero.
 pub fn newHash(s: []const u8) Hash {
-    var h = ZeroHash;
-    if (s.len == 0 or s.len > MaxHexSize or (s.len % 2) != 0) return h;
+    if (s.len == 0 or s.len > MaxHexSize or (s.len % 2) != 0) return ZeroHash;
+    if (s.len != HexSize and s.len != MaxHexSize) return ZeroHash;
     var tmp: [MaxSize]u8 = undefined;
     const n = s.len / 2;
     if (std.fmt.hexToBytes(tmp[0..n], s)) |decoded| {
-        @memcpy(h.bytes[0..decoded.len], decoded);
-    } else |_| {}
-    return h;
+        return Hash.fromBytes(decoded);
+    } else |_| {
+        return ZeroHash;
+    }
 }
 
-/// go-git `IsHash` — accepts 40- or 64-char lowercase/uppercase hex.
+/// go-git `IsHash` — true for full hex of the **active** format width.
 pub fn isHash(s: []const u8) bool {
+    if (s.len != hash_algo.hexSize()) return false;
+    var tmp: [MaxSize]u8 = undefined;
+    const n = s.len / 2;
+    _ = std.fmt.hexToBytes(tmp[0..n], s) catch return false;
+    return true;
+}
+
+/// True for 40- or 64-char hex (cross-format checks / fixtures).
+pub fn isHashAny(s: []const u8) bool {
     if (s.len != HexSize and s.len != MaxHexSize) return false;
     var tmp: [MaxSize]u8 = undefined;
     const n = s.len / 2;
@@ -108,12 +134,24 @@ pub fn isHash(s: []const u8) bool {
 }
 
 /// Incremental git object hasher: header `type SP size NUL` then content.
-/// Uses the active process-wide object format from `plumbing/hash`.
+/// Uses the active process-wide object format.
 pub const Hasher = struct {
     inner: hash_algo.Hasher,
 
     pub fn init(t: object.ObjectType, size: i64) Hasher {
         var h = Hasher{ .inner = hash_algo.new(hash_algo.objectFormat()) };
+        h.inner.update(t.bytes());
+        h.inner.update(" ");
+        var size_buf: [32]u8 = undefined;
+        const size_str = std.fmt.bufPrint(&size_buf, "{d}", .{size}) catch unreachable;
+        h.inner.update(size_str);
+        h.inner.update(&[_]u8{0});
+        return h;
+    }
+
+    /// Explicit algorithm (for codecs that own a format).
+    pub fn initAlgo(algo: Algorithm, t: object.ObjectType, size: i64) Hasher {
+        var h = Hasher{ .inner = hash_algo.new(algo) };
         h.inner.update(t.bytes());
         h.inner.update(" ");
         var size_buf: [32]u8 = undefined;
@@ -160,13 +198,39 @@ test "Hash SHA-256 empty blob via setObjectFormat" {
     );
 }
 
-test "parseHash accepts 40 and 64 hex" {
-    const h1 = try parseHash("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+test "Hash eql is independent of process format" {
+    defer hash_algo.setObjectFormat(.sha1);
+    const raw = [_]u8{1} ** 20;
+    const a = Hash.fromBytes(raw[0..]);
+    hash_algo.setObjectFormat(.sha256);
+    const b = Hash.fromBytes(raw[0..]);
+    try std.testing.expect(a.eql(b));
+    // Format flip must not change equality of already-built OIDs (full buffer).
+    try std.testing.expect(a.eql(b));
+}
+
+test "parseHash requires active hex width" {
+    defer hash_algo.setObjectFormat(.sha1);
+    _ = try parseHash("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
+    try std.testing.expectError(
+        error.InvalidHash,
+        parseHash("473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813"),
+    );
+    hash_algo.setObjectFormat(.sha256);
+    _ = try parseHash("473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813");
+    try std.testing.expectError(
+        error.InvalidHash,
+        parseHash("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"),
+    );
+}
+
+test "parseHashAny accepts 40 and 64 hex" {
+    const h1 = try parseHashAny("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
     try std.testing.expect(!h1.isZero());
-    try std.testing.expect(isHash("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"));
-    try std.testing.expect(isHash("473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813"));
-    try std.testing.expect(!isHash("deadbeef"));
-    const h2 = try parseHash("473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813");
+    try std.testing.expect(isHashAny("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"));
+    try std.testing.expect(isHashAny("473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813"));
+    try std.testing.expect(!isHashAny("deadbeef"));
+    const h2 = try parseHashAny("473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813");
     try std.testing.expectEqual(@as(u8, 0x47), h2.bytes[0]);
     try std.testing.expectEqual(@as(u8, 0x13), h2.bytes[31]);
 }

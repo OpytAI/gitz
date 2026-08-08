@@ -18,7 +18,7 @@ const ulreq = @import("ulreq.zig");
 const UploadRequest = ulreq.UploadRequest;
 const Hash = ulreq.Hash;
 
-const hash_size = common.hash_size;
+
 
 /// go-git `(*UploadRequest).Decode` / `ulReqDecoder.Decode`.
 pub fn decode(req: *UploadRequest, r: *Reader) !void {
@@ -88,12 +88,13 @@ const Decoder = struct {
     }
 
     fn readHash(self: *Decoder) !Hash {
-        if (self.line_len < hash_size) return error.MalformedHash;
-        const hex = self.line_buf[0..hash_size];
+        const hs = common.hashSize();
+        if (self.line_len < hs) return error.MalformedHash;
+        const hex = self.line_buf[0..hs];
         // Validate hex; invalid → error.InvalidHash (go-git invalid hash text).
         if (!plumbing.isHash(hex)) return error.InvalidHash;
         const hash = plumbing.newHash(hex);
-        self.advance(hash_size);
+        self.advance(hs);
         return hash;
     }
 

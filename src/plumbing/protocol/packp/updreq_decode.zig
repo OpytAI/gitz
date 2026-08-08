@@ -21,9 +21,15 @@ const HexSize = plumbing.HexSize;
 const Command = updreq.Command;
 const ReferenceUpdateRequest = updreq.ReferenceUpdateRequest;
 
-const shallow_line_length: usize = common.shallow.len + common.hash_size;
-const min_command_length: usize = common.hash_size * 2 + 2 + 1;
-const min_command_and_caps_length: usize = min_command_length + 1;
+fn shallowLineLength() usize {
+    return common.shallow.len + common.hashSize();
+}
+fn minCommandLength() usize {
+    return common.hashSize() * 2 + 2 + 1;
+}
+fn minCommandAndCapsLength() usize {
+    return minCommandLength() + 1;
+}
 
 /// go-git `(*ReferenceUpdateRequest).Decode`.
 pub fn decode(req: *ReferenceUpdateRequest, r: *Reader) updreq.DecodeError!void {
@@ -61,7 +67,7 @@ const UpdReqDecoder = struct {
             return;
         }
 
-        if (b.len != shallow_line_length) {
+        if (b.len != shallowLineLength()) {
             return error.InvalidShallowLineLength;
         }
 
@@ -82,7 +88,7 @@ const UpdReqDecoder = struct {
         const b = self.s.bytes();
         const i = std.mem.indexOfScalar(u8, b, 0) orelse return error.MissingCapabilitiesDelimiter;
 
-        if (b.len < min_command_and_caps_length) {
+        if (b.len < minCommandAndCapsLength()) {
             return error.InvalidCommandCapabilitiesLineLength;
         }
 
@@ -120,7 +126,7 @@ const UpdReqDecoder = struct {
 };
 
 fn parseCommand(b: []const u8) updreq.Error!Command {
-    if (b.len < min_command_length) return error.InvalidCommandLineLength;
+    if (b.len < minCommandLength()) return error.InvalidCommandLineLength;
 
     // go-git: fmt.Sscanf("%s %s %s") — three whitespace-separated tokens.
     var it = std.mem.tokenizeAny(u8, b, " \t");
@@ -156,9 +162,8 @@ fn parseCommand(b: []const u8) updreq.Error!Command {
 
 /// Strict hash parse (go-git `parseHash` in updreq_decode.go).
 fn parseHash(s: []const u8) updreq.Error!Hash {
-    if (s.len != common.hash_size) return error.InvalidHashSize;
-    var tmp: [plumbing.Size]u8 = undefined;
-    _ = std.fmt.hexToBytes(&tmp, s) catch return error.InvalidHash;
+    if (s.len != common.hashSize()) return error.InvalidHashSize;
+    if (!plumbing.isHash(s)) return error.InvalidHash;
     return plumbing.newHash(s);
 }
 

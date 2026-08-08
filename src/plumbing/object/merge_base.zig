@@ -335,7 +335,7 @@ const TestGraph = struct {
 fn testHash(b: u8) Hash {
     var bytes: [plumbing.Size]u8 = .{0} ** plumbing.Size;
     bytes[0] = b;
-    return Hash.fromBytes(bytes);
+    return Hash.fromBytes(bytes[0..]);
 }
 
 fn makeCommit(allocator: Allocator, hash: Hash, parents: []const Hash, when: i64) !Commit {

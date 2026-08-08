@@ -191,18 +191,22 @@ compile tags). Process-wide format lives in `//src/plumbing/hash`:
 | `Size` / `HexSize` | Default-tag docs constants (20 / 40) |
 | `MaxSize` / `MaxHexSize` | Storage capacity (32 / 64) |
 
-`plumbing.Hash` stores `[MaxSize]u8` (zero-padded). Active OID length is
-`digestSize()`. `Hasher` / `computeHash` use the active format.
+`plumbing.Hash` stores `[MaxSize]u8` **zero-padded**. Equality / map keys use the
+full 32-byte buffer (format-independent). `slice` / hex formatting use process
+`digestSize()`. `Hasher` / `computeHash` / wire codecs use the active format.
 
-**Wire formats that follow active OID width:** trees, loose objects, pack trailers /
-idx OID names, dircache index entry hashes + trailer, commit-graph OID chunks +
-hash version (1=SHA-1, 2=SHA-256) + trailer checksum, merkletrie composites.
+**Process-wide format caveat:** dual-format is one active algorithm per process
+(go-git uses compile tags). Multi-repo concurrent use of mixed formats is not
+supported until format is owned by `Storage`/`Repository`. Tests that flip format
+must `defer setObjectFormat(.sha1)`.
 
-**PlainInit:** `object_format = "sha256"` sets `core.repositoryformatversion = 1`
-and `extensions.objectformat = sha256`, activates SHA-256, and does **not** return
-`SHA256NotSupported` (gitz dual). **PlainOpen** re-applies the format from config.
+**Wire formats that follow active OID width:** trees, loose objects, pack trailers
++ pack scanner hasher, idx OID names, dircache index, commit-graph (hash version
+1/2 + trailer), packp framing (`hashSize()`), merkletrie composites.
 
-**Tests that call `setObjectFormat(.sha256)` must `defer setObjectFormat(.sha1)`.**
+**PlainInit:** validates `object_format` ∈ {`""`, `sha1`, `sha256`}; sha256 sets
+version 1 + extensions and activates SHA-256. Unknown values → `InvalidObjectFormat`.
+**PlainOpen** re-applies format from config.
 
 ### Packages (go-git → gitz)
 

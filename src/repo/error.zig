@@ -36,8 +36,10 @@ pub const Error = error{
     MissingTagger,
     /// Annotated tag requires a message (go-git `ErrMissingMessage`).
     MissingMessage,
-    /// go-git `ErrSHA256NotSupported` — object format sha256 without SHA-256 build.
+    /// go-git `ErrSHA256NotSupported` — reserved when a build lacks SHA-256 (gitz dual always supports it).
     SHA256NotSupported,
+    /// `object_format` is not empty/sha1/sha256.
+    InvalidObjectFormat,
     /// `.git` file is not a valid `gitdir: ` pointer.
     InvalidGitDirFile,
 };

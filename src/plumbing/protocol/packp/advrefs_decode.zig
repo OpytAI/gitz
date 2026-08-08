@@ -157,18 +157,20 @@ fn decodeFirstHash(p: *AdvRefsDecoder) ?*const anyopaque {
         return null;
     }
 
-    if (p.line.len < common.hash_size) {
+    const hs = common.hashSize();
+    if (p.line.len < hs) {
         p.setError("cannot read hash, pkt-line too short", .{});
         return null;
     }
 
-    var hash_bytes: [plumbing.Size]u8 = undefined;
-    _ = std.fmt.hexToBytes(&hash_bytes, p.line[0..common.hash_size]) catch {
+    var hash_bytes: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
+    const n = hs / 2;
+    _ = std.fmt.hexToBytes(hash_bytes[0..n], p.line[0..hs]) catch {
         p.setError("invalid hash text", .{});
         return null;
     };
-    p.hash = Hash.fromBytes(hash_bytes);
-    p.line = p.line[common.hash_size..];
+    p.hash = Hash.fromBytes(hash_bytes[0..n]);
+    p.line = p.line[hs..];
 
     if (p.hash.isZero()) {
         return @ptrCast(&decodeSkipNoRefs);
@@ -287,17 +289,19 @@ fn decodeShallow(p: *AdvRefsDecoder) ?*const anyopaque {
     }
     const rest = p.line[common.shallow.len..];
 
-    if (rest.len != common.hash_size) {
+    const hs = common.hashSize();
+    if (rest.len != hs) {
         p.setError("malformed shallow hash: wrong length", .{});
         return null;
     }
 
-    var hash_bytes: [plumbing.Size]u8 = undefined;
-    _ = std.fmt.hexToBytes(&hash_bytes, rest[0..common.hash_size]) catch {
+    var hash_bytes: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
+    const n = hs / 2;
+    _ = std.fmt.hexToBytes(hash_bytes[0..n], rest[0..hs]) catch {
         p.setError("invalid hash text", .{});
         return null;
     };
-    p.data.appendShallow(Hash.fromBytes(hash_bytes)) catch {
+    p.data.appendShallow(Hash.fromBytes(hash_bytes[0..n])) catch {
         p.err = error.OutOfMemory;
         return null;
     };

@@ -79,20 +79,22 @@ pub const RegisterError = error{
 /// Constructs a streaming hasher.
 pub const Factory = *const fn () Hasher;
 
-/// Streaming hasher from `new`.
+/// Streaming hasher from `new`. State is a tagged union (Zig-safe).
 pub const Hasher = struct {
-    algo: Algorithm,
     state: State,
 
-    const State = union {
+    const State = union(Algorithm) {
         sha1: sha1cd.Sha1cd,
         sha256: std.crypto.hash.sha2.Sha256,
     };
 
+    pub fn algo(self: *const Hasher) Algorithm {
+        return self.state;
+    }
+
     pub fn update(self: *Hasher, data: []const u8) void {
-        switch (self.algo) {
-            .sha1 => self.state.sha1.update(data),
-            .sha256 => self.state.sha256.update(data),
+        switch (self.state) {
+            inline else => |*h| h.update(data),
         }
     }
 
@@ -100,38 +102,38 @@ pub const Hasher = struct {
     pub fn final(self: *Hasher, out: []u8) void {
         const n = self.digestSize();
         std.debug.assert(out.len >= n);
-        switch (self.algo) {
-            .sha1 => self.state.sha1.final(out[0..sha1cd.digest_length]),
-            .sha256 => self.state.sha256.final(out[0..std.crypto.hash.sha2.Sha256.digest_length]),
+        switch (self.state) {
+            .sha1 => |*h| h.final(out[0..sha1cd.digest_length]),
+            .sha256 => |*h| h.final(out[0..std.crypto.hash.sha2.Sha256.digest_length]),
         }
     }
 
     /// True if the last SHA-1 compression path mitigated a near-collision.
     pub fn collisionDetected(self: *const Hasher) bool {
-        return switch (self.algo) {
-            .sha1 => self.state.sha1.collisionDetected(),
+        return switch (self.state) {
+            .sha1 => |h| h.collisionDetected(),
             .sha256 => false,
         };
     }
 
     pub fn reset(self: *Hasher) void {
-        switch (self.algo) {
-            .sha1 => self.state.sha1 = sha1cd.Sha1cd.init(.{}),
-            .sha256 => self.state.sha256 = std.crypto.hash.sha2.Sha256.init(.{}),
-        }
+        self.state = switch (self.state) {
+            .sha1 => .{ .sha1 = sha1cd.Sha1cd.init(.{}) },
+            .sha256 => .{ .sha256 = std.crypto.hash.sha2.Sha256.init(.{}) },
+        };
     }
 
     pub fn digestSize(self: *const Hasher) usize {
-        return self.algo.digestSize();
+        return @as(Algorithm, self.state).digestSize();
     }
 };
 
 fn defaultSha1() Hasher {
-    return .{ .algo = .sha1, .state = .{ .sha1 = sha1cd.Sha1cd.init(.{}) } };
+    return .{ .state = .{ .sha1 = sha1cd.Sha1cd.init(.{}) } };
 }
 
 fn defaultSha256() Hasher {
-    return .{ .algo = .sha256, .state = .{ .sha256 = std.crypto.hash.sha2.Sha256.init(.{}) } };
+    return .{ .state = .{ .sha256 = std.crypto.hash.sha2.Sha256.init(.{}) } };
 }
 
 var algos: [2]Factory = .{ defaultSha1, defaultSha256 };

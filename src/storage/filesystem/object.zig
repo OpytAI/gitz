@@ -856,7 +856,7 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
         /// go-git `HashesWithPrefix` — loose + pack index entries.
         /// Caller frees with `dotgit.freeHashes` (or `allocator.free` when non-empty).
         pub fn hashesWithPrefix(self: *Self, prefix: []const u8) Error![]Hash {
-            if (prefix.len > plumbing.Size) return &.{};
+            if (prefix.len > plumbing.digestSize()) return &.{};
 
             var hashes: std.ArrayList(Hash) = .empty;
             errdefer hashes.deinit(self.allocator);

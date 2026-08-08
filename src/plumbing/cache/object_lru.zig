@@ -320,7 +320,7 @@ test "ObjectSuite.TestConcurrentAccess" {
         key_bytes[0] = 0xff;
         const n: u64 = @intCast(i);
         std.mem.writeInt(u64, key_bytes[1..9], n, .little);
-        obj.cached_hash = Hash.fromBytes(key_bytes);
+        obj.cached_hash = Hash.fromBytes(key_bytes[0..]);
         // Cap declared size so default_lru does not grow without bound in this stress loop.
         obj.size = @intCast(@min(i, 64));
         objs[i] = obj;

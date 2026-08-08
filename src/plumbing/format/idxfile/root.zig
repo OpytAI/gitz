@@ -653,7 +653,7 @@ test "offset64 out of range on lookup" {
     var d = Decoder.init(&r);
     try d.decode(&idx);
 
-    const obj = plumbing.Hash.fromBytes(name);
+    const obj = plumbing.Hash.fromBytes(name[0..]);
     try std.testing.expectError(Error.MalformedIdxFile, idx.findOffset(obj));
     try std.testing.expectError(Error.MalformedIdxFile, idx.findHash(0));
 

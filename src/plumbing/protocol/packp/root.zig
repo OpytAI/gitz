@@ -22,7 +22,7 @@ const uppackresp_mod = @import("uppackresp.zig");
 const updreq_mod = @import("updreq.zig");
 
 // --- common ---
-pub const hash_size = common.hash_size;
+pub const hashSize = common.hashSize;
 pub const head = common.head;
 pub const no_head = common.no_head;
 pub const sp = common.sp;

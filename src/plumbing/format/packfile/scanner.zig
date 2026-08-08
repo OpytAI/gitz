@@ -1,7 +1,8 @@
 //! Packfile Scanner — port of go-git v5.19.2 `plumbing/format/packfile/scanner.go`.
 //!
 //! Walks a packfile stream: header, per-object headers, zlib inflate of object
-//! bodies, per-object CRC-32 (IEEE), and pack trailer SHA-1 verification.
+//! bodies, per-object CRC-32 (IEEE), and pack trailer checksum verification.
+//! Trailer algorithm follows the active object format (SHA-1 or SHA-256).
 //!
 //! I/O uses Zig 0.16 `std.Io.Reader` / `std.Io.Writer`. Zlib inflate uses
 //! `std.compress.flate.Decompress` with container `.zlib` (no C).
@@ -11,9 +12,9 @@ const flate = std.compress.flate;
 const IoReader = std.Io.Reader;
 const IoWriter = std.Io.Writer;
 const Limit = std.Io.Limit;
-const Sha1 = std.crypto.hash.Sha1;
 
 const plumbing = @import("plumbing");
+const hash_pkg = @import("hash");
 const binary = @import("binary");
 
 const common = @import("common.zig");
@@ -84,11 +85,12 @@ pub const Scanner = struct {
 
     /// Bytes delivered through the streaming tee (includes unread buffer).
     stream_offset: i64 = 0,
-    /// Bytes already fed to pack SHA-1 / object CRC (mem mode).
+    /// Bytes already fed to pack hasher / object CRC (mem mode).
     hashed_upto: usize = 0,
 
     crc: std.hash.Crc32 = .init(),
-    pack_hasher: Sha1 = Sha1.init(.{}),
+    /// Pack trailer hasher (active object format: SHA-1 or SHA-256).
+    pack_hasher: hash_pkg.Hasher = undefined,
 
     pending_object: ?ObjectHeader = null,
     version: u32 = 0,
@@ -105,7 +107,7 @@ pub const Scanner = struct {
                 .seek = 0,
                 .end = 0,
             },
-            .pack_hasher = Sha1.init(.{}),
+            .pack_hasher = hash_pkg.new(hash_pkg.objectFormat()),
         };
         s.bind();
         return s;
@@ -118,7 +120,7 @@ pub const Scanner = struct {
             .is_seekable = true,
             .mem = data,
             .reader = .fixed(data),
-            .pack_hasher = Sha1.init(.{}),
+            .pack_hasher = hash_pkg.new(hash_pkg.objectFormat()),
             .stream_offset = 0,
             .hashed_upto = 0,
         };
@@ -415,22 +417,24 @@ pub const Scanner = struct {
     // Checksum / seek / reset
     // -------------------------------------------------------------------------
 
-    /// Pack trailer SHA-1, verified against the running pack hasher.
+    /// Pack trailer checksum (active object format), verified against the running hasher.
     /// go-git `Checksum`.
     pub fn checksum(self: *Scanner) (Error || IoReader.Error || IoWriter.Error || binary.Error)!Hash {
         try self.discardObjectIfNeeded();
         self.flush();
         if (self.mem != null) self.catchUpHashes();
 
-        var actual: [Sha1.digest_length]u8 = undefined;
+        var actual: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
         var ph = self.pack_hasher;
-        ph.final(&actual);
+        const n = ph.digestSize();
+        ph.final(actual[0..n]);
+        const actual_hash = Hash.fromBytes(actual[0..n]);
 
         // Read trailer without folding it into the already-finalised digest.
         // (Streaming tee still updates pack_hasher after this — harmless.)
         const pack_checksum = try self.readHash();
 
-        if (!std.mem.eql(u8, &actual, pack_checksum.slice())) {
+        if (!actual_hash.eql(pack_checksum)) {
             return error.MalformedPackFile;
         }
         return pack_checksum;
@@ -468,7 +472,7 @@ pub const Scanner = struct {
         self.stream_offset = 0;
         self.hashed_upto = 0;
         self.crc = .init();
-        self.pack_hasher = Sha1.init(.{});
+        self.pack_hasher = hash_pkg.new(hash_pkg.objectFormat());
         self.pending_object = null;
         self.version = 0;
         self.objects = 0;
@@ -1024,10 +1028,10 @@ fn buildMinimalPack(
     var buf: std.ArrayList(u8) = .empty;
     errdefer buf.deinit(allocator);
 
-    var hasher = Sha1.init(.{});
+    var hasher = hash_pkg.new(hash_pkg.objectFormat());
 
     const writeBoth = struct {
-        fn go(b: *std.ArrayList(u8), h: *Sha1, a: std.mem.Allocator, bytes: []const u8) !void {
+        fn go(b: *std.ArrayList(u8), h: *hash_pkg.Hasher, a: std.mem.Allocator, bytes: []const u8) !void {
             try b.appendSlice(a, bytes);
             h.update(bytes);
         }
@@ -1057,9 +1061,10 @@ fn buildMinimalPack(
 
     try writeBoth(&buf, &hasher, allocator, compressed_body);
 
-    var trailer: [Sha1.digest_length]u8 = undefined;
-    hasher.final(&trailer);
-    try buf.appendSlice(allocator, &trailer);
+    var trailer: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
+    const n = hasher.digestSize();
+    hasher.final(trailer[0..n]);
+    try buf.appendSlice(allocator, trailer[0..n]);
 
     return try buf.toOwnedSlice(allocator);
 }

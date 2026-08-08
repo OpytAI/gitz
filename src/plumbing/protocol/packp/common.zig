@@ -8,8 +8,13 @@ const testing = std.testing;
 // Constants (go-git package-level)
 // ---------------------------------------------------------------------------
 
+const plumbing = @import("plumbing");
+
 /// Hex OID length used in packp line framing (go-git `hashSize`).
-pub const hash_size: usize = 40;
+/// Follows the active object format (40 for SHA-1, 64 for SHA-256).
+pub fn hashSize() usize {
+    return plumbing.hexSize();
+}
 
 /// Advertised HEAD ref name (go-git `head`).
 pub const head: []const u8 = "HEAD";
