@@ -96,17 +96,8 @@ pub fn push(
         o.ref_specs = arr;
     }
 
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
-    const sopts = session.sessionOptsFrom(
-        o.auth,
-        o.insecure_skip_tls,
-        o.client_cert,
-        o.client_key,
-        o.ca_bundle,
-        o.proxy,
-    );
-    var sess = try session.openReceivePack(allocator, io, o.remote_url, sopts, embedded);
+    const sopts = session.SessionOpts.fromClient(o.transport);
+    var sess = try session.openReceivePackUrl(allocator, o.remote_url, sopts, embedded);
     defer sess.close();
 
     const ar = try sess.advertisedReferences();

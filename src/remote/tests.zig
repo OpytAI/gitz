@@ -808,41 +808,35 @@ test "Remote.List InvalidTimeout for negative timeout_sec" {
 // SessionOpts / insecure (construct + ListOptions field surface)
 // ---------------------------------------------------------------------------
 
-test "SessionOpts client_cert fields and ListOptions insecure" {
-    const opts = SessionOpts{
+test "SessionOpts from TransportClientOpts and ListOptions transport" {
+    const opts = SessionOpts.fromClient(.{
         .insecure_skip_tls = true,
         .client_cert = "cert-pem",
         .client_key = "key-pem",
         .ca_bundle = "ca-pem",
-    };
+    });
     try std.testing.expect(opts.insecure_skip_tls);
     try std.testing.expectEqualStrings("cert-pem", opts.client_cert);
     try std.testing.expectEqualStrings("key-pem", opts.client_key);
     try std.testing.expectEqualStrings("ca-pem", opts.ca_bundle);
     try std.testing.expect(opts.auth == null);
 
-    const from = session_mod.sessionOptsFrom(
-        null,
-        true,
-        "cert-pem",
-        "key-pem",
-        "ca-pem",
-        .{},
-    );
-    try std.testing.expect(from.insecure_skip_tls);
-    try std.testing.expectEqualStrings("cert-pem", from.client_cert);
-
     const list_opts = ListOptions{
-        .insecure_skip_tls = true,
-        .client_cert = "list-cert",
-        .client_key = "list-key",
-        .ca_bundle = "list-ca",
+        .transport = .{
+            .insecure_skip_tls = true,
+            .client_cert = "list-cert",
+            .client_key = "list-key",
+            .ca_bundle = "list-ca",
+        },
         .timeout_sec = 30,
         .peeling = .ignore_peeled,
     };
-    try std.testing.expect(list_opts.insecure_skip_tls);
-    try std.testing.expectEqualStrings("list-cert", list_opts.client_cert);
+    try std.testing.expect(list_opts.transport.insecure_skip_tls);
+    try std.testing.expectEqualStrings("list-cert", list_opts.transport.client_cert);
     try std.testing.expectEqual(@as(i32, 30), list_opts.effectiveTimeoutSec());
+
+    const sopts = SessionOpts.fromClient(list_opts.transport);
+    try std.testing.expectEqualStrings("list-cert", sopts.client_cert);
 }
 
 // ---------------------------------------------------------------------------

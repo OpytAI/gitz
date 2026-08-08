@@ -23,6 +23,7 @@ pub const Error = error_mod.Error;
 // --- options.zig ---
 pub const default_remote_name = options_mod.default_remote_name;
 pub const default_list_timeout_sec = options_mod.default_list_timeout_sec;
+pub const TransportClientOpts = options_mod.TransportClientOpts;
 pub const TagMode = options_mod.TagMode;
 pub const PeelingOption = options_mod.PeelingOption;
 pub const ForceWithLease = options_mod.ForceWithLease;
@@ -44,7 +45,9 @@ pub const SessionReceive = session_mod.SessionReceive;
 pub const sessionOptsFrom = session_mod.sessionOptsFrom;
 pub const transportFromServer = session_mod.transportFromServer;
 pub const openUploadPack = session_mod.openUploadPack;
+pub const openUploadPackUrl = session_mod.openUploadPackUrl;
 pub const openReceivePack = session_mod.openReceivePack;
+pub const openReceivePackUrl = session_mod.openReceivePackUrl;
 
 // --- refs.zig ---
 pub const calculateRefs = refs_mod.calculateRefs;

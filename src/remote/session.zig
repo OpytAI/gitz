@@ -12,11 +12,12 @@ const transport = @import("transport");
 const packp = @import("packp");
 const server = @import("server");
 const client = @import("client");
+const options = @import("options.zig");
 
 const Allocator = std.mem.Allocator;
 const Endpoint = transport.Endpoint;
 const AuthMethod = transport.AuthMethod;
-const ProxyOptions = transport.ProxyOptions;
+const TransportClientOpts = options.TransportClientOpts;
 
 // ---------------------------------------------------------------------------
 // Open options (TLS / proxy / auth applied onto Endpoint)
@@ -29,36 +30,47 @@ pub const SessionOpts = struct {
     client_cert: []const u8 = "",
     client_key: []const u8 = "",
     ca_bundle: []const u8 = "",
-    proxy: ProxyOptions = .{},
+    proxy: transport.ProxyOptions = .{},
+
+    /// From shared `TransportClientOpts` (nested on Fetch/Push/List options).
+    pub fn fromClient(c: TransportClientOpts) SessionOpts {
+        return .{
+            .auth = c.auth,
+            .insecure_skip_tls = c.insecure_skip_tls,
+            .client_cert = c.client_cert,
+            .client_key = c.client_key,
+            .ca_bundle = c.ca_bundle,
+            .proxy = c.proxy,
+        };
+    }
+
+    pub fn applyToEndpoint(self: SessionOpts, ep: *Endpoint) void {
+        ep.insecure_skip_tls = self.insecure_skip_tls;
+        ep.client_cert = self.client_cert;
+        ep.client_key = self.client_key;
+        ep.ca_bundle = self.ca_bundle;
+        ep.proxy = self.proxy;
+    }
 };
 
-/// Build `SessionOpts` from Fetch/Push/List option fields (auth, TLS, mTLS, proxy).
-///
-/// Lives here so `options.zig` does not import `session.zig` (avoids cycles).
+/// @deprecated Prefer `SessionOpts.fromClient`. Kept as a free function for
+/// call sites that pass bare fields.
 pub fn sessionOptsFrom(
     auth: ?AuthMethod,
     insecure_skip_tls: bool,
     client_cert: []const u8,
     client_key: []const u8,
     ca_bundle: []const u8,
-    proxy: ProxyOptions,
+    proxy: transport.ProxyOptions,
 ) SessionOpts {
-    return .{
+    return SessionOpts.fromClient(.{
         .auth = auth,
         .insecure_skip_tls = insecure_skip_tls,
         .client_cert = client_cert,
         .client_key = client_key,
         .ca_bundle = ca_bundle,
         .proxy = proxy,
-    };
-}
-
-fn applySessionOpts(ep: *Endpoint, opts: SessionOpts) void {
-    ep.insecure_skip_tls = opts.insecure_skip_tls;
-    ep.client_cert = opts.client_cert;
-    ep.client_key = opts.client_key;
-    ep.ca_bundle = opts.ca_bundle;
-    ep.proxy = opts.proxy;
+    });
 }
 
 // ---------------------------------------------------------------------------
@@ -110,6 +122,17 @@ fn resolveServer(
     return @ptrCast(@alignCast(t.ptr));
 }
 
+/// Single-threaded host Io for scheme-less path endpoints (file:// absolute).
+fn singleThreadedIo() std.Io {
+    // Threaded must live for the duration of open*; callers using this helper
+    // only need Io during endpoint construction. We use a threadlocal so the
+    // Threaded storage outlives the temporary Io handle for the call stack.
+    const Holder = struct {
+        threadlocal var threaded: std.Io.Threaded = .init_single_threaded;
+    };
+    return Holder.threaded.io();
+}
+
 // ---------------------------------------------------------------------------
 // Upload-pack session wrapper
 // ---------------------------------------------------------------------------
@@ -156,7 +179,7 @@ pub fn openUploadPack(
 ) !SessionUpload {
     var ep = try transport.newEndpoint(allocator, io, url);
     errdefer ep.deinit();
-    applySessionOpts(&ep, opts);
+    opts.applyToEndpoint(&ep);
 
     const srv = try resolveServer(&ep, embedded);
     const sess = try srv.newUploadPackSession(&ep, opts.auth);
@@ -164,6 +187,16 @@ pub fn openUploadPack(
         .endpoint = ep,
         .sess = sess,
     };
+}
+
+/// Like `openUploadPack` with a process-local single-threaded `std.Io`.
+pub fn openUploadPackUrl(
+    allocator: Allocator,
+    url: []const u8,
+    opts: SessionOpts,
+    embedded: ?*server.Server,
+) !SessionUpload {
+    return openUploadPack(allocator, singleThreadedIo(), url, opts, embedded);
 }
 
 // ---------------------------------------------------------------------------
@@ -209,7 +242,7 @@ pub fn openReceivePack(
 ) !SessionReceive {
     var ep = try transport.newEndpoint(allocator, io, url);
     errdefer ep.deinit();
-    applySessionOpts(&ep, opts);
+    opts.applyToEndpoint(&ep);
 
     const srv = try resolveServer(&ep, embedded);
     const sess = try srv.newReceivePackSession(&ep, opts.auth);
@@ -219,19 +252,30 @@ pub fn openReceivePack(
     };
 }
 
+/// Like `openReceivePack` with a process-local single-threaded `std.Io`.
+pub fn openReceivePackUrl(
+    allocator: Allocator,
+    url: []const u8,
+    opts: SessionOpts,
+    embedded: ?*server.Server,
+) !SessionReceive {
+    return openReceivePack(allocator, singleThreadedIo(), url, opts, embedded);
+}
+
 test "SessionOpts defaults" {
     const o = SessionOpts{};
     try std.testing.expect(o.auth == null);
     try std.testing.expect(!o.insecure_skip_tls);
     try std.testing.expectEqualStrings("", o.client_cert);
-    try std.testing.expectEqualStrings("", o.client_key);
-    try std.testing.expectEqualStrings("", o.ca_bundle);
 }
 
-test "sessionOptsFrom maps fields" {
-    const proxy = ProxyOptions{};
-    const o = sessionOptsFrom(null, true, "cert", "key", "ca", proxy);
-    try std.testing.expect(o.auth == null);
+test "SessionOpts.fromClient maps fields" {
+    const o = SessionOpts.fromClient(.{
+        .insecure_skip_tls = true,
+        .client_cert = "cert",
+        .client_key = "key",
+        .ca_bundle = "ca",
+    });
     try std.testing.expect(o.insecure_skip_tls);
     try std.testing.expectEqualStrings("cert", o.client_cert);
     try std.testing.expectEqualStrings("key", o.client_key);

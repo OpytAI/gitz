@@ -296,7 +296,7 @@ in-process `server` + `MapLoader` (no real internet). `Repository.fetch` /
 | List | `Remote.list` + `ListOptions` / `PeelingOption` | Peel modes; mTLS fields; free with `freeReferences` |
 | Fetch | `Remote.fetch` + `FetchOptions` / `TagMode` / `Progress` | Prune, AllTags/NoTags, depth+shallow, mTLS |
 | Push | `Remote.push` + `ForceWithLease` / `PushOption` / `Progress` | Force, delete, require-remote-refs, follow-tags |
-| Session | `openUploadPack`, `openReceivePack`, `sessionOptsFrom` | TLS/proxy/cert applied to `Endpoint` |
+| Session | `openUploadPackUrl` / `openReceivePackUrl`, `SessionOpts.fromClient` | `TransportClientOpts` nested on options → Endpoint |
 | Server | upload-pack **depth/shallow** (beyond go-git) | Boundary shallows on response; client `updateShallow` |
 | Refs | `calculateRefs`, `getWants`, `getHaves`, `isFastForward` | Refspec expand + commit-walk FF |
 | Repo glue | `Repository.fetch`, `Repository.push` | Registry or embedded; MapLoader e2e in `repo_test` |

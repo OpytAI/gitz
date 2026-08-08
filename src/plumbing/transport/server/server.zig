@@ -283,9 +283,11 @@ pub const UploadPackSession = struct {
         }
 
         // BFS: (commit hash, depth from want; want itself is depth 1).
+        // Head-index queue (not orderedRemove(0)) keeps this O(n).
         const QueueItem = struct { hash: Hash, depth: i32 };
         var queue: std.ArrayList(QueueItem) = .empty;
         defer queue.deinit(allocator);
+        var qhead: usize = 0;
 
         var visited: std.AutoHashMapUnmanaged(Hash, void) = .empty;
         defer visited.deinit(allocator);
@@ -300,8 +302,9 @@ pub const UploadPackSession = struct {
             try queue.append(allocator, .{ .hash = want, .depth = 1 });
         }
 
-        while (queue.items.len > 0) {
-            const item = queue.orderedRemove(0);
+        while (qhead < queue.items.len) {
+            const item = queue.items[qhead];
+            qhead += 1;
             if (visited.contains(item.hash)) continue;
             try visited.put(allocator, item.hash, {});
 
@@ -421,7 +424,9 @@ fn peelWantToTip(s: RepoStorer, start: Hash) !Hash {
 }
 
 /// Parse `parent <hex>` lines from a commit body into `buf` (cap 16 parents).
+/// Uses active wire `hexSize()` (SHA-1 / SHA-256 dual format).
 fn parseCommitParents(body: []const u8, buf: *[16]Hash) ![]const Hash {
+    const width = plumbing.hexSize();
     var n: usize = 0;
     var rest = body;
     while (rest.len > 0) {
@@ -430,18 +435,17 @@ fn parseCommitParents(body: []const u8, buf: *[16]Hash) ![]const Hash {
         const line = rest[0..nl];
         rest = rest[nl + 1 ..];
         if (!std.mem.startsWith(u8, line, "parent ")) continue;
-        if (line.len < 7 + plumbing.HexSize) return plumbing.Error.InvalidType;
+        if (line.len < 7 + width) return plumbing.Error.InvalidType;
         if (n >= buf.len) break;
-        buf[n] = plumbing.parseHash(line[7 .. 7 + plumbing.HexSize]) catch {
-            return plumbing.Error.InvalidType;
-        };
+        buf[n] = plumbing.newHash(line[7 .. 7 + width]);
         n += 1;
     }
     return buf[0..n];
 }
 
-/// Parse the `tree <hex>` header from a commit body.
+/// Parse the `tree <hex>` header from a commit body (active wire `hexSize()`).
 fn parseCommitTree(body: []const u8) !Hash {
+    const width = plumbing.hexSize();
     var rest = body;
     while (rest.len > 0) {
         if (rest[0] == '\n') break;
@@ -449,10 +453,8 @@ fn parseCommitTree(body: []const u8) !Hash {
         const line = rest[0..nl];
         rest = rest[nl + 1 ..];
         if (!std.mem.startsWith(u8, line, "tree ")) continue;
-        if (line.len < 5 + plumbing.HexSize) return plumbing.Error.InvalidType;
-        return plumbing.parseHash(line[5 .. 5 + plumbing.HexSize]) catch {
-            return plumbing.Error.InvalidType;
-        };
+        if (line.len < 5 + width) return plumbing.Error.InvalidType;
+        return plumbing.newHash(line[5 .. 5 + width]);
     }
     return plumbing.Error.InvalidType;
 }

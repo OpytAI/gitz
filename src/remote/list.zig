@@ -21,11 +21,15 @@ const RemoteError = error_mod.Error;
 
 /// Free a slice returned by `list` (names/targets owned by the slice).
 pub fn freeReferences(allocator: Allocator, refs: []Reference) void {
+    freeReferenceOwned(allocator, refs);
+    allocator.free(refs);
+}
+
+fn freeReferenceOwned(allocator: Allocator, refs: []const Reference) void {
     for (refs) |r| {
         if (r.name.raw.len > 0) allocator.free(r.name.raw);
         if (r.type == .symbolic and r.target.raw.len > 0) allocator.free(r.target.raw);
     }
-    allocator.free(refs);
 }
 
 /// go-git `(*Remote).List` / `list`.
@@ -38,22 +42,13 @@ pub fn list(
     o: ListOptions,
 ) ![]Reference {
     if (o.timeout_sec < 0) return RemoteError.InvalidTimeout;
-    // effectiveTimeoutSec is reserved for phase-13 network deadlines.
+    // effectiveTimeoutSec is available for phase-13 network deadline wiring.
     _ = o.effectiveTimeoutSec();
 
     if (config.urls.len == 0) return RemoteError.EmptyUrls;
 
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
-    const sopts = session.sessionOptsFrom(
-        o.auth,
-        o.insecure_skip_tls,
-        o.client_cert,
-        o.client_key,
-        o.ca_bundle,
-        o.proxy,
-    );
-    var sess = try session.openUploadPack(allocator, io, config.urls[0], sopts, embedded);
+    const sopts = session.SessionOpts.fromClient(o.transport);
+    var sess = try session.openUploadPackUrl(allocator, config.urls[0], sopts, embedded);
     defer sess.close();
 
     const ar = try sess.advertisedReferences();
@@ -76,10 +71,7 @@ pub fn list(
 }
 
 fn freeReferenceList(allocator: Allocator, refs_list: *std.ArrayList(Reference)) void {
-    for (refs_list.items) |r| {
-        if (r.name.raw.len > 0) allocator.free(r.name.raw);
-        if (r.type == .symbolic and r.target.raw.len > 0) allocator.free(r.target.raw);
-    }
+    freeReferenceOwned(allocator, refs_list.items);
     refs_list.deinit(allocator);
 }
 

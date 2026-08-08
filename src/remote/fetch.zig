@@ -64,17 +64,8 @@ pub fn fetch(
         o.remote_url = config.urls[0];
     }
 
-    var threaded: std.Io.Threaded = .init_single_threaded;
-    const io = threaded.io();
-    const sopts = session.sessionOptsFrom(
-        o.auth,
-        o.insecure_skip_tls,
-        o.client_cert,
-        o.client_key,
-        o.ca_bundle,
-        o.proxy,
-    );
-    var sess = try session.openUploadPack(allocator, io, o.remote_url, sopts, embedded);
+    const sopts = session.SessionOpts.fromClient(o.transport);
+    var sess = try session.openUploadPackUrl(allocator, o.remote_url, sopts, embedded);
     defer sess.close();
 
     const ar = try sess.advertisedReferences();
@@ -82,7 +73,7 @@ pub fn fetch(
 
     var req = try packp.newUploadPackRequestFromCapabilities(allocator, &ar.capabilities);
     defer req.deinit();
-    try configureUploadPackRequest(&req, o, ar);
+    try configureUploadPackRequest(&req, o, ar, sto);
 
     try isSupportedRefSpec(o.ref_specs, ar);
 
@@ -97,11 +88,6 @@ pub fn fetch(
 
     const shallow_before = try allocator.dupe(Hash, sto.shallow());
     defer allocator.free(shallow_before);
-
-    if (o.depth != 0) {
-        req.upload_request.depth = .{ .commits = o.depth };
-        try req.upload_request.shallows.appendSlice(allocator, sto.shallow());
-    }
 
     const wants = try refs.getWants(allocator, sto, &calc.refs, o.depth);
     defer allocator.free(wants);
@@ -178,10 +164,12 @@ fn configureUploadPackRequest(
     req: *packp.UploadPackRequest,
     o: *const FetchOptions,
     ar: *const packp.AdvRefs,
+    sto: *memory.Storage,
 ) !void {
     if (o.depth != 0) {
         req.upload_request.depth = .{ .commits = o.depth };
         try req.upload_request.capabilities.set(capability.Shallow, &.{});
+        try req.upload_request.shallows.appendSlice(sto.allocator, sto.shallow());
     }
 
     // go-git: when Progress is nil and remote supports no-progress, request it.
@@ -246,17 +234,15 @@ fn updateShallow(
     const new_shallows = resp.shallow_update.shallows.items;
     if (new_shallows.len == 0) return;
 
-    const existing = sto.shallow();
+    var set: std.AutoHashMapUnmanaged(Hash, void) = .empty;
+    defer set.deinit(allocator);
+    for (sto.shallow()) |h| try set.put(allocator, h, {});
+    for (new_shallows) |h| try set.put(allocator, h, {});
+
     var merged: std.ArrayList(Hash) = .empty;
     defer merged.deinit(allocator);
-    try merged.appendSlice(allocator, existing);
-
-    outer: for (new_shallows) |s| {
-        for (merged.items) |old| {
-            if (old.eql(s)) continue :outer;
-        }
-        try merged.append(allocator, s);
-    }
+    var it = set.keyIterator();
+    while (it.next()) |k| try merged.append(allocator, k.*);
     try sto.setShallow(merged.items);
 }
 
@@ -264,15 +250,11 @@ fn updateShallow(
 fn depthChanged(before: []const Hash, sto: *const memory.Storage) !bool {
     const after = sto.shallow();
     if (before.len != after.len) return true;
+    var set: std.AutoHashMapUnmanaged(Hash, void) = .empty;
+    defer set.deinit(sto.allocator);
+    for (before) |b| try set.put(sto.allocator, b, {});
     for (after) |a| {
-        var found = false;
-        for (before) |b| {
-            if (a.eql(b)) {
-                found = true;
-                break;
-            }
-        }
-        if (!found) return true;
+        if (!set.contains(a)) return true;
     }
     return false;
 }
@@ -374,7 +356,11 @@ fn updateLocalReferenceStorage(
 
             if (old) |o| {
                 if (!o.name.isTag() and !force and !spec.isForceUpdate()) {
-                    const ff = refs.isFastForward(allocator, sto, o.hash, new_ref.hash, null) catch true;
+                    // Missing objects → not FF (conservative); real errors propagate.
+                    const ff = refs.isFastForward(allocator, sto, o.hash, new_ref.hash, null) catch |err| switch (err) {
+                        error.ObjectNotFound => false,
+                        else => return err,
+                    };
                     if (!ff) {
                         force_needed = true;
                         continue;

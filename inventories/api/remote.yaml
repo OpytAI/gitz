@@ -1,11 +1,10 @@
 # API inventory: remote (phase 11) — go-git root remote.go + remote options.
 # packages.yaml go key is git/remote (zig: src/remote).
 #
-# Present: Remote, NewRemote, List/Fetch/Push, options, force-with-lease,
-# follow-tags (IsAncestor), updateShallow, SessionOpts (TLS/mTLS/proxy on Endpoint),
-# Progress / no-progress on fetch+push, in-process MapLoader path via newRemoteEmbedded.
-# Network HTTP/SSH transports are phase 13; PlainClone is phase 12.
-# In-process MapLoader path is complete including depth/shallow, prune, FWL.
+# Present: Remote, NewRemote, List/Fetch/Push, TransportClientOpts, SessionOpts,
+# force-with-lease, follow-tags (IsAncestor), updateShallow, depth/shallow server,
+# Progress / no-progress, MapLoader path, Repository.fetch/push glue.
+# Network HTTP/SSH: phase 13. PlainClone: phase 12.
 package: git/remote
 phase: 11
 require:
@@ -14,6 +13,7 @@ require:
     - FetchOptions
     - PushOptions
     - ListOptions
+    - TransportClientOpts
     - TagMode
     - PeelingOption
     - ForceWithLease
@@ -27,9 +27,10 @@ require:
     - newRemoteEmbedded
     - freeReferences
     - transportFromServer
-    - sessionOptsFrom
     - openUploadPack
+    - openUploadPackUrl
     - openReceivePack
+    - openReceivePackUrl
     - calculateRefs
     - getWants
     - getHaves
@@ -49,27 +50,17 @@ require:
     - freeReferences
     - FetchOptions
     - FetchOptions.validate
-    - FetchOptions.progress
-    - FetchOptions.client_cert
-    - FetchOptions.client_key
-    - FetchOptions.ca_bundle
     - PushOptions
     - PushOptions.validate
-    - PushOptions.progress
-    - PushOptions.client_cert
-    - PushOptions.client_key
-    - PushOptions.ca_bundle
     - ListOptions
     - ListOptions.effectiveTimeoutSec
-    - ListOptions.client_cert
-    - ListOptions.client_key
-    - ListOptions.ca_bundle
+    - TransportClientOpts
+    - SessionOpts
+    - SessionOpts.fromClient
     - TagMode
     - PeelingOption
     - ForceWithLease
     - PushOption
-    - SessionOpts
-    - sessionOptsFrom
     - AlreadyUpToDate
     - EmptyUrls
     - ForceWithLeaseRejected
@@ -81,7 +72,11 @@ require:
     - RequireRemoteRefsFailed
     - default_remote_name
     - openReceivePack
+    - openReceivePackUrl
+    - openUploadPackUrl
     - isFastForward
+    - client_cert
+    - progress
 zig_map:
   Remote: Remote
   NewRemote: newRemote
@@ -89,12 +84,12 @@ zig_map:
   FetchOptions: FetchOptions
   PushOptions: PushOptions
   ListOptions: ListOptions
+  TransportClientOpts: TransportClientOpts
   TagMode: TagMode
   PeelingOption: PeelingOption
   ForceWithLease: ForceWithLease
   PushOption: PushOption
   SessionOpts: SessionOpts
-  sessionOptsFrom: sessionOptsFrom
   DefaultRemoteName: default_remote_name
   NoErrAlreadyUpToDate: AlreadyUpToDate
   ErrEmptyUrls: EmptyUrls
@@ -107,7 +102,9 @@ zig_map:
   freeReferences: freeReferences
   transportFromServer: transportFromServer
   openUploadPack: openUploadPack
+  openUploadPackUrl: openUploadPackUrl
   openReceivePack: openReceivePack
+  openReceivePackUrl: openReceivePackUrl
   newSendPackSession: openReceivePack
   calculateRefs: calculateRefs
   getWants: getWants
@@ -116,3 +113,4 @@ zig_map:
   SessionUpload: SessionUpload
   SessionReceive: SessionReceive
   CalculateRefsResult: CalculateRefsResult
+  sessionOptsFrom: sessionOptsFrom
