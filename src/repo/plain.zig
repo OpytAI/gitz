@@ -122,7 +122,6 @@ pub fn plainInit(allocator: Allocator, path_fs: *Mem, is_bare: bool) !PlainRepos
 pub fn plainInitWithOptions(allocator: Allocator, path_fs: *Mem, opts: PlainInitOptions) !PlainRepository {
     // Validate object format up front (go-git only special-cases SHA-256 support).
     const fmt = try resolveObjectFormat(opts.object_format);
-    hash_algo.setObjectFormat(fmt);
 
     var owned_dot: ?*Mem = null;
     errdefer if (owned_dot) |d| {
@@ -145,6 +144,8 @@ pub fn plainInitWithOptions(allocator: Allocator, path_fs: *Mem, opts: PlainInit
         s.deinit();
         allocator.destroy(s);
     }
+    // Per-repo format on storage + activate for wire codecs.
+    s.setHashAlgo(fmt);
 
     // go-git initStorer → filesystem Storage.Init
     try s.initLayout();
@@ -218,7 +219,8 @@ pub fn plainOpenWithOptions(allocator: Allocator, path_fs: *Mem, o: PlainOpenOpt
     }
 
     const cfg = try s.config();
-    applyObjectFormatFromConfig(cfg);
+    const fmt = resolveObjectFormat(cfg.object_format) catch .sha1;
+    s.setHashAlgo(fmt);
 
     const r = PlainRepository{
         .allocator = allocator,
@@ -230,13 +232,6 @@ pub fn plainOpenWithOptions(allocator: Allocator, path_fs: *Mem, o: PlainOpenOpt
     resolved.owned_dot = null;
     resolved.owned_worktree = null;
     return r;
-}
-
-/// Activate process-wide object format from stored config (open path).
-/// Unknown values fall back to SHA-1 (same as empty).
-fn applyObjectFormatFromConfig(cfg: *const Config) void {
-    const fmt = resolveObjectFormat(cfg.object_format) catch .sha1;
-    hash_algo.setObjectFormat(fmt);
 }
 
 /// Map config/option object format string to algorithm.

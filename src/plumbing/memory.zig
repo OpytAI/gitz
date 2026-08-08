@@ -11,6 +11,7 @@ const object = @import("object.zig");
 const Hash = hash_mod.Hash;
 const ZeroHash = hash_mod.ZeroHash;
 const ObjectType = object.ObjectType;
+const Algorithm = hash_mod.Algorithm;
 
 /// go-git `plumbing.DeltaObject` fields on an encoded object.
 ///
@@ -38,9 +39,23 @@ pub const MemoryObject = struct {
     size: i64 = 0,
     /// Optional DeltaObject metadata (null for ordinary objects).
     delta: ?DeltaMeta = null,
+    /// Object-format algorithm used when computing `hash()` (per-repo / per-object).
+    /// Set by storage `newEncodedObject`; defaults to process format at init time.
+    hash_algo: Algorithm = .sha1,
 
     pub fn init(allocator: std.mem.Allocator) MemoryObject {
-        return .{ .allocator = allocator };
+        return .{
+            .allocator = allocator,
+            .hash_algo = hash_mod.objectFormat(),
+        };
+    }
+
+    /// Create with an explicit object-format algorithm (storage-owned format).
+    pub fn initAlgo(allocator: std.mem.Allocator, algo: Algorithm) MemoryObject {
+        return .{
+            .allocator = allocator,
+            .hash_algo = algo,
+        };
     }
 
     pub fn deinit(self: *MemoryObject) void {
@@ -53,7 +68,7 @@ pub const MemoryObject = struct {
         if (self.size < 0) return ZeroHash;
         const len: usize = @intCast(self.size);
         if (self.content.items.len != len) return ZeroHash;
-        self.cached_hash = hash_mod.computeHash(self.object_type, self.content.items);
+        self.cached_hash = hash_mod.computeHashAlgo(self.hash_algo, self.object_type, self.content.items);
         return self.cached_hash;
     }
 

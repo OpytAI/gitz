@@ -279,6 +279,9 @@ pub fn initWithOptions(s: *memory.Storage, worktree: ?*fs_pkg.Mem, options: Init
     }
     try opts.default_branch.validate();
 
+    // Activate per-repo format for wire codecs (object hashing uses MemoryObject.hash_algo).
+    s.activateFormat();
+
     var r = newRepository(s, worktree);
 
     if (r.reference(plumbing.HEAD, false)) |_| {
@@ -315,7 +318,17 @@ pub fn open(s: *memory.Storage, worktree: ?*fs_pkg.Mem) !Repository {
 
     // Load config (go-git Open always reads config; verifyExtensions is a no-op
     // until typed gitconfig extensions are ported).
-    _ = try s.config();
+    const cfg = try s.config();
+    // Apply objectformat from config onto this storage (per-repo).
+    if (cfg.object_format.len > 0) {
+        if (std.mem.eql(u8, cfg.object_format, "sha256")) {
+            s.setHashAlgo(.sha256);
+        } else {
+            s.setHashAlgo(.sha1);
+        }
+    } else {
+        s.activateFormat();
+    }
 
     return newRepository(s, worktree);
 }

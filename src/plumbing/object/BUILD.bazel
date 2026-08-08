@@ -19,13 +19,13 @@ _SRCS = [
     "rename.zig",
     "similarity.zig",
     "patch.zig",
-    "openpgp.zig",
 ]
 
 _DEPS = [
     "//src/plumbing",
     "//src/plumbing/filemode",
     "//src/plumbing/format/diff",
+    "//src/plumbing/object/openpgp",
     "//src/plumbing/storer",
     "//src/storage/memory",
     "//src/utils/diff",
@@ -55,7 +55,10 @@ filegroup(
     name = "package_srcs",
     srcs = glob(
         ["**/*"],
-        exclude = ["commitgraph/**"],
+        exclude = [
+            "commitgraph/**",
+            "openpgp/**",
+        ],
     ),
     visibility = ["//visibility:public"],
 )

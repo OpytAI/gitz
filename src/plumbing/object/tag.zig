@@ -24,7 +24,7 @@ const signature_mod = @import("signature.zig");
 const commit_mod = @import("commit.zig");
 const object_err = @import("error.zig");
 const error_mod = @import("error.zig");
-const openpgp_mod = @import("openpgp.zig");
+const openpgp_mod = @import("openpgp");
 
 const Allocator = std.mem.Allocator;
 const Writer = std.Io.Writer;

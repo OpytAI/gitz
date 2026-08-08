@@ -1,7 +1,7 @@
 //! Commit object — port of go-git v5.19.2 `plumbing/object/commit.go` +
 //! `commit_scanner.go` (decoder state machine lives in this file).
 //!
-//! OpenPGP `Verify` uses the pure-Zig verifier in `openpgp.zig`.
+//! OpenPGP `Verify` uses the pure-Zig verifier in `//src/plumbing/object/openpgp`.
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -24,7 +24,7 @@ fn freeOwned(allocator: Allocator, s: []const u8) void {
 
 const signature_mod = @import("signature.zig");
 const error_mod = @import("error.zig");
-const openpgp_mod = @import("openpgp.zig");
+const openpgp_mod = @import("openpgp");
 const tree_mod = @import("tree.zig");
 const file_mod = @import("file.zig");
 const difftree_mod = @import("difftree.zig");

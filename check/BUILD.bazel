@@ -232,6 +232,7 @@ test_suite(
     name = "phase_7_packages",
     tests = [
         "//src/plumbing/object:object_test",
+        "//src/plumbing/object/openpgp:openpgp_test",
         "//src/plumbing/format/commitgraph:commitgraph_test",
         "//src/plumbing/object/commitgraph:object_commitgraph_test",
         "//src/plumbing/revlist:revlist_test",

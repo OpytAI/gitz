@@ -173,9 +173,14 @@ pub const Hasher = struct {
     }
 };
 
-/// go-git `ComputeHash`.
+/// go-git `ComputeHash` using the **process-wide** active format.
 pub fn computeHash(t: object.ObjectType, content: []const u8) Hash {
-    var h = Hasher.init(t, @intCast(content.len));
+    return computeHashAlgo(objectFormat(), t, content);
+}
+
+/// Compute object OID with an explicit algorithm (per-repo / per-object).
+pub fn computeHashAlgo(algo: Algorithm, t: object.ObjectType, content: []const u8) Hash {
+    var h = Hasher.initAlgo(algo, t, @intCast(content.len));
     h.update(content);
     return h.sum();
 }

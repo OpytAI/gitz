@@ -86,6 +86,40 @@ test "newStorage empty object round-trip" {
     try std.testing.expect(got.hash().eql(h));
 }
 
+test "two storages independent hash algorithms" {
+    const allocator = std.testing.allocator;
+    defer plumbing.setObjectFormat(.sha1);
+
+    const sha1_s = try newStorage(allocator);
+    defer {
+        sha1_s.deinit();
+        allocator.destroy(sha1_s);
+    }
+    const sha256_s = try newStorage(allocator);
+    defer {
+        sha256_s.deinit();
+        allocator.destroy(sha256_s);
+    }
+    sha256_s.setHashAlgo(.sha256);
+
+    // Objects hash with their own storage-stamped algo (MemoryObject.hash_algo).
+    const o1 = try sha1_s.newEncodedObject();
+    o1.setType(.blob);
+    _ = try o1.write("x");
+    const h1 = try sha1_s.setEncodedObject(o1);
+
+    const o2 = try sha256_s.newEncodedObject();
+    o2.setType(.blob);
+    _ = try o2.write("x");
+    const h2 = try sha256_s.setEncodedObject(o2);
+
+    const expect_sha1 = plumbing.computeHashAlgo(.sha1, .blob, "x");
+    const expect_sha256 = plumbing.computeHashAlgo(.sha256, .blob, "x");
+    try std.testing.expect(h1.eql(expect_sha1));
+    try std.testing.expect(h2.eql(expect_sha256));
+    try std.testing.expect(!h1.eql(h2));
+}
+
 test "reference check-and-set changed" {
     const allocator = std.testing.allocator;
     const s = try newStorage(allocator);

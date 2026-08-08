@@ -20,19 +20,29 @@ const difftree_mod = @import("difftree.zig");
 const rename_mod = @import("rename.zig");
 const similarity_mod = @import("similarity.zig");
 const patch_mod = @import("patch.zig");
-const openpgp_mod = @import("openpgp.zig");
+const openpgp_mod = @import("openpgp");
 
 pub const Error = error_mod.Error;
 
 /// OpenPGP verify + sign (go-git / go-crypto subset used by Commit/Tag).
 pub const openpgp = openpgp_mod;
 pub const Entity = openpgp_mod.Entity;
+pub const KeyMaterial = openpgp_mod.KeyMaterial;
+pub const Subkey = openpgp_mod.Subkey;
 pub const readArmoredKeyRing = openpgp_mod.readArmoredKeyRing;
 pub const freeEntities = openpgp_mod.freeEntities;
 pub const armoredDetachSign = openpgp_mod.armoredDetachSign;
 pub const encodeArmor = openpgp_mod.encodeArmor;
+pub const decodeArmor = openpgp_mod.decodeArmor;
 pub const checkArmoredDetachedSignature = openpgp_mod.checkArmoredDetachedSignature;
 pub const generateEd25519Entity = openpgp_mod.generateEd25519Entity;
+pub const generateEd25519Subkey = openpgp_mod.generateEd25519Subkey;
+pub const entityAttachSubkey = openpgp_mod.entityAttachSubkey;
+pub const s2kDerive = openpgp_mod.s2kDerive;
+/// Shared go-git armored private key fixture (see openpgp.fixtures).
+pub const go_git_armored_private_key = openpgp_mod.go_git_armored_private_key;
+pub const go_git_key_passphrase = openpgp_mod.go_git_key_passphrase;
+pub const openpgp_fixtures = openpgp_mod.fixtures;
 
 pub const Signature = signature_mod.Signature;
 pub const DateFormat = signature_mod.DateFormat;

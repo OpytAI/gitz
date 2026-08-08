@@ -1,0 +1,36 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# go-git OpenPGP subset used by Commit/Tag verify + CreateTagOptions.SignKey.
+_SRCS = [
+    "error.zig",
+    "armor.zig",
+    "packet.zig",
+    "s2k.zig",
+    "rsa.zig",
+    "entity.zig",
+    "sign.zig",
+    "verify.zig",
+    "fixtures.zig",
+    "tests.zig",
+]
+
+zig_library(
+    name = "openpgp",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "openpgp",
+    visibility = ["//visibility:public"],
+)
+
+zig_test(
+    name = "openpgp_test",
+    size = "small",
+    main = "root.zig",
+    srcs = _SRCS,
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

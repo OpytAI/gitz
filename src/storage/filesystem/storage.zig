@@ -27,6 +27,7 @@ const ObjectType = plumbing.ObjectType;
 const MemoryObject = plumbing.MemoryObject;
 const Reference = plumbing.Reference;
 const ReferenceName = plumbing.ReferenceName;
+const Algorithm = plumbing.Algorithm;
 const ObjectLru = cache_pkg.ObjectLru;
 const Mem = fs_pkg.Mem;
 const Os = fs_pkg.Os;
@@ -71,6 +72,8 @@ pub fn Storage(comptime Fs: type) type {
         shallow_storage: ShallowStorageT,
         config_storage: ConfigStorageT,
         module_storage: Self.ModuleStorage,
+        /// Per-repo object hash algorithm (SHA-1 / SHA-256).
+        hash_algo: Algorithm = .sha1,
 
         pub const implements_transactioner = false;
         pub const implements_packfile_writer = true;
@@ -162,10 +165,26 @@ pub fn Storage(comptime Fs: type) type {
             try self.dir.addAlternate(remote);
         }
 
+        pub fn hashAlgo(self: *const Self) Algorithm {
+            return self.hash_algo;
+        }
+
+        pub fn setHashAlgo(self: *Self, algo: Algorithm) void {
+            self.hash_algo = algo;
+            self.activateFormat();
+        }
+
+        /// Publish this storage's format for process-wide wire codecs.
+        pub fn activateFormat(self: *const Self) void {
+            plumbing.setObjectFormat(self.hash_algo);
+        }
+
         // --- EncodedObjectStorer ---
 
         pub fn newEncodedObject(self: *Self) Allocator.Error!*MemoryObject {
-            return self.object_storage.newEncodedObject();
+            const obj = try self.object_storage.newEncodedObject();
+            obj.hash_algo = self.hash_algo;
+            return obj;
         }
 
         pub fn setEncodedObject(self: *Self, obj: *MemoryObject) object_mod.Error!Hash {
@@ -412,6 +431,7 @@ pub fn newStorageWithOptionsFor(
         .shallow_storage = undefined,
         .config_storage = undefined,
         .module_storage = undefined,
+        .hash_algo = .sha1,
     };
     if (owns_cache) {
         s.cache_storage = ObjectLru.initDefault(allocator);

@@ -20,6 +20,7 @@ const ObjectType = plumbing.ObjectType;
 const MemoryObject = plumbing.MemoryObject;
 const Reference = plumbing.Reference;
 const ReferenceName = plumbing.ReferenceName;
+const Algorithm = plumbing.Algorithm;
 
 pub const ObjectStorage = object_mod.ObjectStorage;
 pub const TxObjectStorage = object_mod.TxObjectStorage;
@@ -118,6 +119,8 @@ pub const Storage = struct {
     index_storage: IndexStorage,
     reference_storage: ReferenceStorage,
     module_storage: ModuleStorage,
+    /// Per-repo object hash algorithm (SHA-1 / SHA-256). Owned by this storage.
+    hash_algo: Algorithm = .sha1,
 
     /// Same capability flags as package-level constants (per-type discovery).
     pub const implements_transactioner = true;
@@ -138,7 +141,25 @@ pub const Storage = struct {
             .index_storage = IndexStorage.init(allocator),
             .reference_storage = ReferenceStorage.init(allocator),
             .module_storage = ModuleStorage.init(allocator),
+            .hash_algo = .sha1,
         };
+    }
+
+    /// Object-format algorithm for this repository storage.
+    pub fn hashAlgo(self: *const Storage) Algorithm {
+        return self.hash_algo;
+    }
+
+    /// Set per-repo object format and activate it for process-wide wire codecs.
+    pub fn setHashAlgo(self: *Storage, algo: Algorithm) void {
+        self.hash_algo = algo;
+        self.activateFormat();
+    }
+
+    /// Publish this storage's format as the process active format (pack/index/tree wire).
+    /// Call when switching repos on a thread; object hashing uses per-object `hash_algo`.
+    pub fn activateFormat(self: *const Storage) void {
+        plumbing.setObjectFormat(self.hash_algo);
     }
 
     pub fn deinit(self: *Storage) void {
@@ -154,7 +175,9 @@ pub const Storage = struct {
     // --- EncodedObjectStorer ---
 
     pub fn newEncodedObject(self: *Storage) Allocator.Error!*MemoryObject {
-        return self.object_storage.newEncodedObject();
+        const obj = try self.object_storage.newEncodedObject();
+        obj.hash_algo = self.hash_algo;
+        return obj;
     }
 
     pub fn setEncodedObject(self: *Storage, obj: *MemoryObject) (Allocator.Error || ObjectError)!Hash {

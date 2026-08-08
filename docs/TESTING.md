@@ -193,12 +193,15 @@ compile tags). Process-wide format lives in `//src/plumbing/hash`:
 
 `plumbing.Hash` stores `[MaxSize]u8` **zero-padded**. Equality / map keys use the
 full 32-byte buffer (format-independent). `slice` / hex formatting use process
-`digestSize()`. `Hasher` / `computeHash` / wire codecs use the active format.
+`digestSize()` (active wire width).
 
-**Process-wide format caveat:** dual-format is one active algorithm per process
-(go-git uses compile tags). Multi-repo concurrent use of mixed formats is not
-supported until format is owned by `Storage`/`Repository`. Tests that flip format
-must `defer setObjectFormat(.sha1)`.
+**Per-repo format:** `memory.Storage` / `filesystem.Storage` own `hash_algo`.
+`newEncodedObject` stamps `MemoryObject.hash_algo`; `hash()` uses
+`computeHashAlgo` so two storages can compute SHA-1 and SHA-256 OIDs without
+clobbering each other. `setHashAlgo` / `activateFormat` also publish the format
+for process-wide wire codecs (pack/index/tree read width). Call
+`storage.activateFormat()` when switching repos on a thread before wire I/O.
+Tests that flip process format must `defer setObjectFormat(.sha1)`.
 
 **Wire formats that follow active OID width:** trees, loose objects, pack trailers
 + pack scanner hasher, idx OID names, dircache index, commit-graph (hash version
