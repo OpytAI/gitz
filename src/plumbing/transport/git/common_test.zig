@@ -79,9 +79,37 @@ test "connectPort keeps DefaultPort when set explicitly" {
     try testing.expectEqual(@as(u16, 9418), common.connectPort(&ep));
 }
 
+test "connectPort rejects out of range endpoint port" {
+    var ep = try makeEp(testing.allocator, "example.com", 99_999, "/repo.git");
+    defer ep.deinit();
+    try testing.expectError(transport.Error.InvalidEndpoint, common.connectPort(&ep));
+}
+
 // ---------------------------------------------------------------------------
 // Auth rejected
 // ---------------------------------------------------------------------------
+
+test "runner rejects injected service and NUL pathname" {
+    var runner = common.Runner.init(testing.allocator, testing.io);
+    defer runner.deinit();
+    var buf = common.BufferConn.init(testing.allocator);
+    defer buf.deinit();
+    runner.setDial(&buf, common.BufferConn.dialFn);
+
+    var ep = try makeEp(testing.allocator, "localhost", common.DefaultPort, "/repo.git");
+    defer ep.deinit();
+    try testing.expectError(
+        transport.Error.InvalidEndpoint,
+        runner.command("git-upload-pack\x00host=evil", &ep, null),
+    );
+
+    testing.allocator.free(ep.path);
+    ep.path = try testing.allocator.dupe(u8, "/repo.git\x00host=evil");
+    try testing.expectError(
+        transport.Error.InvalidEndpoint,
+        runner.command(transport.UploadPackServiceName, &ep, null),
+    );
+}
 
 test "Command rejects auth (ErrInvalidAuthMethod)" {
     var runner = common.Runner.init(testing.allocator, testing.io);
@@ -239,7 +267,7 @@ test "Command Start encode matches known pkt-line bytes" {
     var ep = try makeEp(testing.allocator, "host", common.DefaultPort, "pathname");
     defer ep.deinit();
 
-    const cmd = try runner.command("command", &ep, null);
+    const cmd = try runner.command(transport.UploadPackServiceName, &ep, null);
     try cmd.start();
 
     // Independent encode of the same request for byte-level check.
@@ -247,7 +275,7 @@ test "Command Start encode matches known pkt-line bytes" {
     var ew: std.Io.Writer = .fixed(&expected_storage);
     var expected = packp.GitProtoRequest.init(testing.allocator);
     defer expected.deinit();
-    expected.request_command = "command";
+    expected.request_command = transport.UploadPackServiceName;
     expected.pathname = "pathname";
     expected.host = "host";
     try expected.encode(&ew);

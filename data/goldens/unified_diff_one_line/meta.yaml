@@ -2,4 +2,4 @@ name: unified_diff_one_line
 type: file_equals
 actual: actual.txt
 expected: expected.txt
-note: "UnifiedEncoder classic hello/world→hello/bug from go-git plumbing/format/diff/unified_encoder_test.go (Class A file_equals inventory; behavior locked by unit tests)."
+note: "UnifiedEncoder hello/world to hello/bug case from the pinned go-git unified encoder test; unit tests lock the behavior."

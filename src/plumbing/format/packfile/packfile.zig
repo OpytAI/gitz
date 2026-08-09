@@ -1,9 +1,9 @@
 //! Packfile random-access Get (go-git `plumbing/format/packfile/packfile.go`).
 //!
 //! Always returns heap-owned `MemoryObject` values (go-git when `fs == nil`).
-//! FSObject / billy paths wait for the filesystem phase.
+//! Filesystem-backed objects use the corresponding storage adapter.
 //!
-//! Construction is in-memory only for this phase: pass the full pack image
+//! In-memory construction accepts the full pack image
 //! bytes. The internal scanner is always `Scanner.initSeekable` so CRC and
 //! pack SHA-1 follow the accurate mem hashing path (no streaming-tee drift).
 //!

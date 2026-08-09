@@ -124,7 +124,7 @@ pub fn notes(store: *memory.Storage) !FilteredRefIter {
 ///
 /// Supports: HEAD/branch/tag/ref expansion, full/prefix hash, `~`/`^`
 /// parent walks, and `^{/pattern}` message search (literal / simple
-/// substring; full RE2 is not required for phase-10 parity).
+/// substring; full RE2 is not required for the supported API).
 pub fn resolveRevision(store: *memory.Storage, rev: []const u8) !Hash {
     const gpa = store.allocator;
     if (rev.len == 0) return error.ReferenceNotFound;

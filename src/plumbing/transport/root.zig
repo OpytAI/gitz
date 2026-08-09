@@ -45,7 +45,7 @@
 //! | `format` / `string` | `fmt.Stringer` — human-readable form |
 //!
 //! Concrete auth types (HTTP basic, SSH keys, …) live in protocol packages
-//! (phase 13). Use `AuthMethod` vtable when a session must store heterogeneous auth.
+//! Use the `AuthMethod` vtable when a session must store heterogeneous auth.
 //!
 //! # Errors
 //!

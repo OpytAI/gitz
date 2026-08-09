@@ -1,6 +1,4 @@
-# API inventory: plumbing/transport/server (phase 8)
 package: plumbing/transport/server
-phase: 8
 require:
   types:
     - MapLoader

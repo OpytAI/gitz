@@ -1,8 +1,9 @@
 # gitz
 
-**Git for Zig — and for places Go and C cannot go lightly.**
+**A Git library for Zig.**
 
-A pure-Zig Git library: a deliberate, full-surface port of [go-git](https://github.com/go-git/go-git) **v5.19.2**, built to run as a normal native library and as a first-class **WebAssembly** citizen.
+A pure-Zig port of [go-git](https://github.com/go-git/go-git) **v5.19.2**
+for native and WebAssembly applications.
 
 [![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 [![Zig 0.16](https://img.shields.io/badge/Zig-0.16-f7a41d)](https://ziglang.org/)
@@ -13,23 +14,12 @@ A pure-Zig Git library: a deliberate, full-surface port of [go-git](https://gith
 
 ## Why gitz
 
-We needed **Git inside WebAssembly**.
+gitz provides Git behavior to Zig programs without requiring a C or Go runtime.
+It uses go-git as its behavioral reference so package boundaries and Git
+semantics follow a mature implementation instead of a new, partial model.
 
-The usual answers do not fit that goal well:
-
-| Option | Problem for us |
-|--------|----------------|
-| **[libgit2](https://libgit2.org/)** | Capable, but its license is not permissive enough for every product we care about. |
-| **[go-git](https://github.com/go-git/go-git)** | Feature-rich and approachable, yet a Go binary drags a large runtime. In our measurements the Go path sat around **~20 MiB**, versus roughly **0.635 MiB** for a libgit2 wasm build — a non-starter for lean Wasm embeds. |
-| **[gitoxide](https://github.com/GitoxideLabs/gitoxide)** | Excellent Rust engineering, but heavy and awkward to get into a clean Wasm target for our stack. |
-
-Separately, we rewrote a POSIX-shaped image from Rust to Zig and watched footprint collapse from **~20 MiB to ~2 MiB**. That made the question hard to ignore: **what if Git itself were Zig?**
-
-There are incomplete, often AI-scaffolded Zig Git experiments. We wanted something we could treat as a **standard**: same behaviors as a mature library, not a greenfield partial clone of Git.
-
-**go-git** is that standard for us. Despite Go’s runtime weight, its model is complete enough to port against (plumbing and porcelain, storers, transports, worktree). Go is a small language, so Go→Zig translation stays mechanical: packages map cleanly, tests map cleanly, and we can keep **behavioral fidelity** without inventing a different Git.
-
-**gitz** is that port — pure Zig, Bazel-hermetic Zig **0.16**, Apache-2.0, aimed at **native and Wasm** without a GC runtime tax.
+The project uses a hermetic Zig **0.16** toolchain through Bazel and is licensed
+under Apache-2.0.
 
 ---
 
@@ -46,15 +36,17 @@ Pin and policy: **[`GO_GIT_PIN.md`](GO_GIT_PIN.md)** (go-git **v5.19.2**).
 
 ## Status
 
-gitz is under active development. The `develop` branch tracks a phase-gated port of go-git **v5.19.2**. Automated gates (`//check:…`) enforce package inventories and goldens as surface lands.
+gitz is under active development. The `develop` branch is the integration
+branch. Automated checks enforce the package inventory, behavioral fixtures,
+and compatibility with the pinned go-git reference.
 
-For architecture and phase detail (contributor-oriented):
+Contributor documentation:
 
 | Doc | Role |
 |-----|------|
-| [`PORT_STRATEGY.md`](PORT_STRATEGY.md) | How we port (Zig seams, layers, non-goals) |
-| [`PHASE_PLAN.md`](PHASE_PLAN.md) | Phases, packages, Bazel gates |
-| [`docs/GATES.md`](docs/GATES.md) | Adding packages/goldens and running gates |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Design principles, boundaries, and dependency direction |
+| [`docs/TESTING.md`](docs/TESTING.md) | Test layout and conventions |
+| [`docs/GATES.md`](docs/GATES.md) | Inventories, goldens, and acceptance checks |
 
 ---
 
@@ -78,7 +70,7 @@ Useful targets:
 | `//:gitz` | Alias to `//src:gitz` |
 | `//check:all` | Full inventory / golden / package gate suite |
 
-If your environment uses a custom Bazel output root, see workspace `.bazelrc` and contributor notes in [`AGENTS.md`](AGENTS.md).
+The workspace `.bazelrc` configures the repository's shared Bazel output root.
 
 ---
 
@@ -94,4 +86,3 @@ bazel test //check:all
 bazel test //src/worktree:worktree_test
 bazel test //src/remote:remote_test
 ```
-

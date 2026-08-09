@@ -1,6 +1,4 @@
-# API inventory: plumbing/transport/internal/common (phase 8)
 package: plumbing/transport/internal/common
-phase: 8
 require:
   types:
     - Commander

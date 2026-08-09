@@ -1,6 +1,4 @@
-# API inventory: internal/url (phase 9)
 package: internal/url
-phase: 9
 require:
   functions:
     - matchesScheme

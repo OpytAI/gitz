@@ -1,6 +1,4 @@
-# API inventory: plumbing/format/commitgraph (phase 7, v2 folded)
 package: plumbing/format/commitgraph
-phase: 7
 require:
   types:
     - CommitData

@@ -257,7 +257,7 @@ pub const UploadPackSession = struct {
         return self.advertisedReferencesContext();
     }
 
-    /// go-git `AdvertisedReferencesContext` (no cancel plumbing yet).
+    /// go-git `AdvertisedReferencesContext`.
     /// Caller owns the returned pointer: free with `packp.freeAdvRefs(allocator, ar)`.
     pub fn advertisedReferencesContext(self: *UploadPackSession) !*packp.AdvRefs {
         const ar = try packp.allocAdvRefs(self.base.allocator);

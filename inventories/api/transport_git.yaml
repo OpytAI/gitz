@@ -1,5 +1,4 @@
 package: plumbing/transport/git
-phase: 13
 require:
   types:
     - Runner

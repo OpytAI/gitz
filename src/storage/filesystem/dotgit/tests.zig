@@ -149,6 +149,70 @@ test "setRef rejects unsafe names" {
         "e8d3ffab552895c19b9fcf7aa264d277cde33881",
     );
     try std.testing.expectError(error.ReferenceNameEscape, dg.setRef(bar, null));
+
+    const lock_name = plumbing.Reference.fromStrings(
+        "refs/heads/main.lock",
+        "e8d3ffab552895c19b9fcf7aa264d277cde33881",
+    );
+    try std.testing.expectError(error.ReferenceNameEscape, dg.setRef(lock_name, null));
+
+    const unsafe_target = plumbing.Reference.newSymbolicReference(
+        plumbing.HEAD,
+        plumbing.ReferenceName.init("refs/heads/../../config"),
+    );
+    try std.testing.expectError(error.ReferenceNameEscape, dg.setRef(unsafe_target, null));
+}
+
+test "ref rejects malformed loose object id" {
+    const gpa = std.testing.allocator;
+    var mem = try fs_mod.Mem.init(gpa);
+    defer mem.deinit();
+
+    var dg = DotGit.new(&mem);
+    defer dg.deinit();
+    try dg.initialize();
+
+    var f = try mem.create("refs/heads/bad");
+    _ = try f.write("not-an-object-id\n");
+    try f.close();
+
+    try std.testing.expectError(
+        error.MalformedRefFile,
+        dg.ref(plumbing.ReferenceName.init("refs/heads/bad")),
+    );
+}
+
+test "ref rejects oversized loose metadata before allocation" {
+    const gpa = std.testing.allocator;
+    var mem = try fs_mod.Mem.init(gpa);
+    defer mem.deinit();
+
+    var dg = DotGit.new(&mem);
+    defer dg.deinit();
+    try dg.initialize();
+
+    const body: [4097]u8 = .{'a'} ** 4097;
+    var f = try mem.create("refs/heads/oversized");
+    _ = try f.write(&body);
+    try f.close();
+
+    try std.testing.expectError(
+        error.MalformedRefFile,
+        dg.ref(plumbing.ReferenceName.init("refs/heads/oversized")),
+    );
+}
+
+test "addAlternate rejects line injection" {
+    const gpa = std.testing.allocator;
+    var mem = try fs_mod.Mem.init(gpa);
+    defer mem.deinit();
+
+    var dg = DotGit.new(&mem);
+    defer dg.deinit();
+    try dg.initialize();
+
+    try std.testing.expectError(error.InvalidAlternate, dg.addAlternate("../safe\n/escape"));
+    try std.testing.expectError(error.InvalidAlternate, dg.addAlternate(""));
 }
 
 // check-and-set SetRef
@@ -712,7 +776,7 @@ test "alternates absolute path" {
 // Os + std.Io integration (on-disk .git layout)
 // ---------------------------------------------------------------------------
 
-// Phase 6 exit: DotGit(Os) initialize + setRef + read-back via pure Os I/O.
+// DotGit(Os) initialize + setRef + read-back via pure Os I/O.
 test "Os DotGit initialize setRef and read back" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;
@@ -748,7 +812,7 @@ test "Os DotGit initialize setRef and read back" {
     try std.testing.expect(std.mem.indexOf(u8, body[0..n], hash_hex) != null);
 }
 
-// Phase 6 exit: write loose object via DotGit(Os) / ObjectWriter and read path back.
+// Write a loose object through DotGit(Os) / ObjectWriter and read it back.
 test "Os DotGit newObject write and open loose object" {
     const gpa = std.testing.allocator;
     const io = std.testing.io;

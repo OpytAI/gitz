@@ -17,7 +17,7 @@ filegroup(
 )
 
 # ---------------------------------------------------------------------------
-# Index fixtures (Phase 5) — pure stdlib, hermetic CPython via rules_python.
+# Index fixtures use pure stdlib and hermetic CPython via rules_python.
 # ---------------------------------------------------------------------------
 
 py_library(

@@ -1,6 +1,6 @@
 load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
 
-# Core library root — re-exports foundation + phase 2–7 packages.
+# Core library root.
 zig_library(
     name = "gitz",
     main = "root.zig",
@@ -39,9 +39,7 @@ zig_library(
         "//src/utils/sync",
         "//src/utils/ioutil",
         "//src/utils/trace",
-        # Phase 9
         "//src/internal/pathutil",
-        "//src/internal/path_util",
         "//src/internal/url",
         "//src/internal/reference",
         "//src/internal/revision",
@@ -53,15 +51,11 @@ zig_library(
         "//src/utils/merkletrie/noder",
         "//src/utils/merkletrie/index",
         "//src/utils/merkletrie/filesystem",
-        # Phase 10
         "//src/config",
         "//src/repo",
-        # Phase 11
         "//src/remote",
-        # Phase 12
         "//src/worktree",
         "//src/porcelain",
-        # Phase 13
         "//src/plumbing/transport/file",
         "//src/plumbing/transport/git",
         "//src/plumbing/transport/http",
@@ -110,9 +104,7 @@ zig_test(
         "//src/utils/sync",
         "//src/utils/ioutil",
         "//src/utils/trace",
-        # Phase 9
         "//src/internal/pathutil",
-        "//src/internal/path_util",
         "//src/internal/url",
         "//src/internal/reference",
         "//src/internal/revision",
@@ -124,15 +116,11 @@ zig_test(
         "//src/utils/merkletrie/noder",
         "//src/utils/merkletrie/index",
         "//src/utils/merkletrie/filesystem",
-        # Phase 10
         "//src/config",
         "//src/repo",
-        # Phase 11
         "//src/remote",
-        # Phase 12
         "//src/worktree",
         "//src/porcelain",
-        # Phase 13
         "//src/plumbing/transport/file",
         "//src/plumbing/transport/git",
         "//src/plumbing/transport/http",
@@ -186,9 +174,7 @@ filegroup(
         "//src/utils/sync:package_srcs",
         "//src/utils/ioutil:package_srcs",
         "//src/utils/trace:package_srcs",
-        # Phase 9
         "//src/internal/pathutil:package_srcs",
-        "//src/internal/path_util:package_srcs",
         "//src/internal/url:package_srcs",
         "//src/internal/reference:package_srcs",
         "//src/internal/revision:package_srcs",
@@ -202,15 +188,11 @@ filegroup(
         "//src/utils/merkletrie/filesystem:package_srcs",
         "//src/utils/merkletrie/internal/frame:package_srcs",
         "//src/utils/merkletrie/internal/fsnoder:package_srcs",
-        # Phase 10
         "//src/config:package_srcs",
         "//src/repo:package_srcs",
-        # Phase 11
         "//src/remote:package_srcs",
-        # Phase 12
         "//src/worktree:package_srcs",
         "//src/porcelain:package_srcs",
-        # Phase 13
         "//src/plumbing/transport/file:package_srcs",
         "//src/plumbing/transport/git:package_srcs",
         "//src/plumbing/transport/http:package_srcs",

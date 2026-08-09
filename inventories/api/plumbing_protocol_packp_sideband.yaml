@@ -1,6 +1,4 @@
-# API inventory: plumbing/protocol/packp/sideband (phase 8)
 package: plumbing/protocol/packp/sideband
-phase: 8
 require:
   types:
     - Demuxer

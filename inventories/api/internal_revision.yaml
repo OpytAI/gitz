@@ -1,6 +1,4 @@
-# API inventory: internal/revision (phase 9)
 package: internal/revision
-phase: 9
 require:
   types:
     - Revisioner

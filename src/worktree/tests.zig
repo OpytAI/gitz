@@ -1,4 +1,4 @@
-//! Phase 12 worktree integration tests (status / add / commit / checkout /
+//! Worktree integration tests (status / add / commit / checkout /
 //! reset / clean lifecycle over memory storage + Mem FS).
 //!
 //! Compiles against `Worktree` surface methods. Sibling modules (status, add,
@@ -370,11 +370,56 @@ test "clean skips .git directory name" {
     try std.testing.expect(fileExists(env.fs, ".git/config"));
 }
 
+test "clean preserves case-folded git metadata directory" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try env.fs.mkdirAll(".GIT", 0o755);
+    try writeFile(env.fs, ".GIT/config", "[core]\n");
+
+    try env.wt.clean(.{ .dir = true });
+
+    try std.testing.expect(fileExists(env.fs, ".GIT/config"));
+}
+
+test "add rejects paths outside the worktree" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try std.testing.expectError(error.InvalidPath, env.wt.add("../outside"));
+}
+
+test "remove rejects git metadata paths" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try std.testing.expectError(error.InvalidPath, env.wt.remove(".git/config"));
+}
+
+test "move rejects source paths outside the worktree" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try std.testing.expectError(error.InvalidPath, env.wt.move("../from", "safe"));
+}
+
+test "move rejects destination paths outside the worktree" {
+    const gpa = std.testing.allocator;
+    var env = try setupEmpty(gpa);
+    defer env.deinit(gpa);
+
+    try std.testing.expectError(error.InvalidPath, env.wt.move("safe", "../to"));
+}
+
 // ---------------------------------------------------------------------------
-// Combined phase exit scenario (single long path)
+// Combined lifecycle scenario
 // ---------------------------------------------------------------------------
 
-test "phase exit scenario full lifecycle" {
+test "full worktree lifecycle" {
     const gpa = std.testing.allocator;
     var env = try setupEmpty(gpa);
     defer env.deinit(gpa);
@@ -683,7 +728,7 @@ test "resetSparsely hard keeps only sparse prefix active in index" {
 }
 
 // ---------------------------------------------------------------------------
-// move / removeGlob / grep phase-exit smokes
+// move / removeGlob / grep integration tests
 // ---------------------------------------------------------------------------
 
 test "move renames tracked file in index and worktree" {
@@ -748,7 +793,7 @@ test "grep finds fixed string in committed tree" {
     try std.testing.expect(std.mem.indexOf(u8, results[0].content, "import") != null);
 }
 
-test "phase exit scenario includes move removeGlob grep" {
+test "worktree lifecycle includes move removeGlob grep" {
     const gpa = std.testing.allocator;
     var env = try setupEmpty(gpa);
     defer env.deinit(gpa);

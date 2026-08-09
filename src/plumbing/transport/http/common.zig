@@ -82,6 +82,8 @@ pub const HeaderMap = struct {
 
     pub fn deinit(self: *HeaderMap) void {
         for (self.entries.items) |e| {
+            if (std.ascii.eqlIgnoreCase(e.name, "Authorization") or
+                std.ascii.eqlIgnoreCase(e.name, "Proxy-Authorization")) @memset(e.value, 0);
             self.allocator.free(e.name);
             self.allocator.free(e.value);
         }
@@ -98,14 +100,27 @@ pub const HeaderMap = struct {
         try self.entries.append(self.allocator, .{ .name = n, .value = v });
     }
 
-    /// Set/replace first matching header (case-insensitive), or add if missing.
+    /// Set one header value and remove duplicate values (matches Go Header.Set).
     pub fn set(self: *HeaderMap, name: []const u8, value: []const u8) Allocator.Error!void {
-        for (self.entries.items) |*e| {
+        for (self.entries.items, 0..) |*e, first| {
             if (std.ascii.eqlIgnoreCase(e.name, name)) {
                 const v = try self.allocator.dupe(u8, value);
                 // Free after successful dupe so a failed set leaves the old value.
+                if (std.ascii.eqlIgnoreCase(e.name, "Authorization") or
+                    std.ascii.eqlIgnoreCase(e.name, "Proxy-Authorization")) @memset(e.value, 0);
                 self.allocator.free(e.value);
                 e.value = v;
+                var i = self.entries.items.len;
+                while (i > first + 1) {
+                    i -= 1;
+                    const duplicate = self.entries.items[i];
+                    if (!std.ascii.eqlIgnoreCase(duplicate.name, name)) continue;
+                    if (std.ascii.eqlIgnoreCase(duplicate.name, "Authorization") or
+                        std.ascii.eqlIgnoreCase(duplicate.name, "Proxy-Authorization")) @memset(duplicate.value, 0);
+                    self.allocator.free(duplicate.name);
+                    self.allocator.free(duplicate.value);
+                    _ = self.entries.orderedRemove(i);
+                }
                 return;
             }
         }
@@ -126,15 +141,24 @@ pub const HeaderMap = struct {
     /// go-git `Request.SetBasicAuth` — sets `Authorization: Basic …`.
     pub fn setBasicAuth(self: *HeaderMap, username: []const u8, password: []const u8) Allocator.Error!void {
         const plain = try std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ username, password });
-        defer self.allocator.free(plain);
+        defer {
+            @memset(plain, 0);
+            self.allocator.free(plain);
+        }
 
         const enc_len = std.base64.standard.Encoder.calcSize(plain.len);
         const b64 = try self.allocator.alloc(u8, enc_len);
-        defer self.allocator.free(b64);
+        defer {
+            @memset(b64, 0);
+            self.allocator.free(b64);
+        }
         _ = std.base64.standard.Encoder.encode(b64, plain);
 
         const auth = try std.fmt.allocPrint(self.allocator, "Basic {s}", .{b64});
-        defer self.allocator.free(auth);
+        defer {
+            @memset(auth, 0);
+            self.allocator.free(auth);
+        }
         try self.set("Authorization", auth);
     }
 };
@@ -251,7 +275,10 @@ pub const MockRoundTripper = struct {
         pub fn deinit(self: *Recorded, allocator: Allocator) void {
             allocator.free(self.method);
             allocator.free(self.url);
-            if (self.authorization) |a| allocator.free(a);
+            if (self.authorization) |a| {
+                @memset(a, 0);
+                allocator.free(a);
+            }
         }
     };
 
@@ -447,7 +474,10 @@ pub const TokenAuth = struct {
 
     pub fn setAuth(self: *const TokenAuth, headers: *HeaderMap) anyerror!void {
         const v = try std.fmt.allocPrint(headers.allocator, "Bearer {s}", .{self.token});
-        defer headers.allocator.free(v);
+        defer {
+            @memset(v, 0);
+            headers.allocator.free(v);
+        }
         try headers.set("Authorization", v);
     }
 
@@ -505,13 +535,34 @@ pub const HttpError = struct {
     }
 
     pub fn format(self: *const HttpError, allocator: Allocator) Allocator.Error![]u8 {
+        const safe_url = try redactedUrl(allocator, self.request_url);
+        defer allocator.free(safe_url);
         return std.fmt.allocPrint(
             allocator,
             "unexpected requesting \"{s}\" status code: {d}",
-            .{ self.request_url, self.status_code },
+            .{ safe_url, self.status_code },
         );
     }
 };
+
+/// Return a URL suitable for logs and errors. Never retain userinfo.
+fn redactedUrl(allocator: Allocator, raw_url: []const u8) Allocator.Error![]u8 {
+    var uri = std.Uri.parse(raw_url) catch return allocator.dupe(u8, "<invalid-url>");
+    uri.user = null;
+    uri.password = null;
+    var aw: std.Io.Writer.Allocating = .init(allocator);
+    errdefer aw.deinit();
+    uri.writeToStream(&aw.writer, .{
+        .scheme = true,
+        .authentication = false,
+        .authority = true,
+        .path = true,
+        .query = true,
+        .fragment = true,
+        .port = true,
+    }) catch return error.OutOfMemory;
+    return try aw.toOwnedSlice();
+}
 
 /// Map an HTTP status to transport errors or HttpError (go-git `NewErr`).
 ///
@@ -566,6 +617,8 @@ pub const Error = error{
     HttpConnectFailed,
     /// Proxy does not support CONNECT tunneling.
     TunnelNotSupported,
+    /// Insecure-origin TLS path cannot establish TLS to an HTTPS proxy.
+    TlsProxyUnsupported,
 };
 
 // ---------------------------------------------------------------------------
@@ -928,6 +981,7 @@ pub const Session = struct {
             self.auth = null;
             self.owned_basic = null;
             freeEndpointField(self.allocator, &self.endpoint.user);
+            if (self.endpoint.password.len != 0) @memset(self.endpoint.password, 0);
             freeEndpointField(self.allocator, &self.endpoint.password);
         }
 
@@ -1088,6 +1142,16 @@ test "BasicAuth SetAuth base64" {
     try testing.expectEqualStrings("Basic dXNlcjpwYXNz", headers.get("Authorization").?);
 }
 
+test "HeaderMap set removes ambiguous duplicate authorization" {
+    var headers = HeaderMap.init(testing.allocator);
+    defer headers.deinit();
+    try headers.add("Authorization", "Bearer stale-one");
+    try headers.add("authorization", "Bearer stale-two");
+    try headers.set("Authorization", "Bearer current");
+    try testing.expectEqual(@as(usize, 1), headers.entries.items.len);
+    try testing.expectEqualStrings("Bearer current", headers.get("Authorization").?);
+}
+
 test "NewErr status mapping" {
     try testing.expect(newErr(200, "", "") == .ok);
     try testing.expect(newErr(204, "", "") == .ok);
@@ -1114,6 +1178,19 @@ test "NewErr status mapping" {
         .http => |h| try testing.expectEqual(@as(u16, 500), h.status_code),
         else => return error.TestUnexpectedResult,
     }
+}
+
+test "HttpError formatting redacts URL credentials" {
+    const h = HttpError{
+        .status_code = 500,
+        .reason = "",
+        .request_url = "https://alice:secret@example.com/repo.git/info/refs",
+    };
+    const message = try h.format(testing.allocator);
+    defer testing.allocator.free(message);
+    try testing.expect(std.mem.indexOf(u8, message, "secret") == null);
+    try testing.expect(std.mem.indexOf(u8, message, "alice") == null);
+    try testing.expect(std.mem.indexOf(u8, message, "https://example.com/repo.git/info/refs") != null);
 }
 
 test "infoRefsURL and serviceURL" {

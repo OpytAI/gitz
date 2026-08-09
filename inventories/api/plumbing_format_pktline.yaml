@@ -1,7 +1,5 @@
-# API inventory: plumbing/format/pktline (phase 2)
 # Go constructors NewEncoder/NewScanner map to Zig Encoder.init / Scanner.init.
 package: plumbing/format/pktline
-phase: 2
 require:
   types:
     - Encoder

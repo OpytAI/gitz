@@ -1,7 +1,5 @@
-# API inventory: plumbing/format/objfile (phase 2)
 # Go constructors NewReader/NewWriter map to Zig Reader.open / Writer.open.
 package: plumbing/format/objfile
-phase: 2
 require:
   types:
     - Reader

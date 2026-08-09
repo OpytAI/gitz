@@ -1,5 +1,0 @@
-name: worktree_class_c_move
-type: file_equals
-actual: actual.txt
-expected: expected.txt
-note: "Class C scenario: Move renames worktree+index; old gone, new present, same blob hash."

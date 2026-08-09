@@ -16,7 +16,7 @@
 //! trailer verification is reliable on the seekable path; use it for fixtures
 //! and random access.
 //!
-//! # go-git write-path test map (phase 5)
+//! # go-git write-path test map
 //!
 //! ## encoder_test.go → `encoder.zig`
 //!
@@ -121,7 +121,7 @@ pub const FSObject = fsobject_mod.FSObject;
 pub const FSObjectOs = fsobject_mod.FSObjectOs;
 pub const FSObjectReader = fsobject_mod.FSObjectReader;
 
-// --- Write path (phase 5) ---
+// --- Write path ---
 pub const ObjectToPack = object_to_pack_mod.ObjectToPack;
 pub const newObjectToPack = object_to_pack_mod.newObjectToPack;
 pub const newDeltaObjectToPack = object_to_pack_mod.newDeltaObjectToPack;

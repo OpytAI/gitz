@@ -1,6 +1,4 @@
-# API inventory: plumbing root (phase 1)
 package: plumbing
-phase: 1
 require:
   types:
     - Hash

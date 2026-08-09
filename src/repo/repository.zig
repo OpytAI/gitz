@@ -1,6 +1,6 @@
 //! Repository Init/Open core (go-git root `repository.go` subset).
 //!
-//! Memory-backed lifecycle for phase 10:
+//! Memory-backed repository lifecycle:
 //! - `init` / `initWithOptions` / `open` over `*memory.Storage`
 //! - optional worktree FS field `wt`: `?*fs.Mem` (null = bare; go-git `r.wt`)
 //! - head / config / setConfig / configScoped / reference helpers
@@ -12,7 +12,7 @@
 //!
 //! Filesystem path lifecycle: `plain.zig` (`plainInit` / `plainOpen` over
 //! `//src/storage/filesystem` + `fs.Mem`). Full Worktree: `Repository.worktree`.
-//! Remote Fetch / List / Push: phase 11 (`//src/remote`, methods below).
+//! Remote Fetch / List / Push use `//src/remote` through the methods below.
 
 const std = @import("std");
 const plumbing = @import("plumbing");

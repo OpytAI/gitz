@@ -769,7 +769,7 @@ test "ObjectStore put and get" {
 /// `NewParserWithStorage` + `Parse`). Empty input yields `error.EmptyPackfile`
 /// via `Scanner.header` (go-git `CommonSuite.TestEmptyUpdateObjectStorage`).
 ///
-/// For backends that implement PackfileWriter (filesystem, phase 6), use
+/// For backends that implement PackfileWriter, use
 /// `writePackfileToObjectStorage` instead (go-git type-assert branch).
 pub fn updateObjectStorage(
     allocator: Allocator,
@@ -1167,4 +1167,3 @@ test "thin pack REF-delta: external base in ObjectStore resolves and stores resu
     const base_obj = try store.get(base_hash);
     try std.testing.expectEqualStrings(base_content, base_obj.readerBytes());
 }
-

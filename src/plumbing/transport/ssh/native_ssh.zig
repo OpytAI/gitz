@@ -16,9 +16,11 @@
 //! preference list. No C, no libssh. System `ssh` remains an alternate dial.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const transport_common = @import("transport_common");
 const auth_mod = @import("auth_method.zig");
 const agent_mod = @import("agent.zig");
+const known_hosts_mod = @import("known_hosts.zig");
 const wire = @import("ssh_wire.zig");
 
 const Allocator = std.mem.Allocator;
@@ -34,6 +36,18 @@ const HostName = std.Io.net.HostName;
 const IpAddress = std.Io.net.IpAddress;
 const Stream = std.Io.net.Stream;
 const Server = std.Io.net.Server;
+
+fn processEnviron() std.process.Environ {
+    if (builtin.is_test) return std.testing.environ;
+    if (builtin.link_libc) {
+        if (std.c.environ) |c_environ| {
+            var n: usize = 0;
+            while (c_environ[n] != null) : (n += 1) {}
+            return .{ .block = .{ .slice = c_environ[0..n :null] } };
+        }
+    }
+    return .empty;
+}
 
 /// Dial parameters for `NativeCommand` (owned strings freed by `deinit`).
 ///
@@ -446,16 +460,20 @@ pub const NativeConn = struct {
         // Read server version (line ending with \n, optional \r).
         var line_buf: [255]u8 = undefined;
         var n: usize = 0;
+        var terminated = false;
         while (n < line_buf.len) {
             var b: [1]u8 = undefined;
             self.reader().readSliceAll(&b) catch return error.SshVersionExchangeFailed;
-            if (b[0] == '\n') break;
+            if (b[0] == '\n') {
+                terminated = true;
+                break;
+            }
             if (b[0] != '\r') {
                 line_buf[n] = b[0];
                 n += 1;
             }
         }
-        if (n == 0) return error.SshVersionExchangeFailed;
+        if (!terminated or n == 0) return error.SshVersionExchangeFailed;
         if (!std.mem.startsWith(u8, line_buf[0..n], "SSH-2.0-") and
             !std.mem.startsWith(u8, line_buf[0..n], "SSH-1.99-"))
         {
@@ -588,17 +606,10 @@ pub const NativeConn = struct {
         if (cfg.host_key_callback) |cb| {
             var hk_off: usize = 0;
             const key_type = wire.readString(host_key_blob, &hk_off) catch return error.SshKexFailed;
-            // Report the negotiated host-key algorithm (rsa-sha2-256 vs ssh-rsa type).
-            const report_algo = if (std.mem.eql(u8, host_key_alg, "rsa-sha2-256"))
-                host_key_alg
-            else
-                key_type;
-            // Ed25519: one string (32-byte pub). RSA: e + n mpints after type.
-            const key_body = if (std.mem.eql(u8, key_type, "ssh-ed25519"))
-                (wire.readString(host_key_blob, &hk_off) catch return error.SshKexFailed)
-            else
-                host_key_blob[hk_off..];
-            cb.check(host_with_port, host_with_port, report_algo, key_body) catch return error.SshHostKeyRejected;
+            // known_hosts stores the key type and the complete RFC 4253 blob.
+            // The negotiated RSA signature algorithm is not the stored key type.
+            cb.check(host_with_port, host_with_port, key_type, host_key_blob) catch
+                return error.SshHostKeyRejected;
         }
 
         self.session_id = try self.allocator.dupe(u8, &H);
@@ -1320,6 +1331,7 @@ pub const NativeCommand = struct {
             .io = self.io,
         };
 
+        if (self.params.port > std.math.maxInt(u16)) return error.SshConnectFailed;
         const port: u16 = if (self.params.port <= 0) 22 else @intCast(self.params.port);
         const user = if (self.params.user.len > 0) self.params.user else auth_mod.DefaultUsername;
 
@@ -1327,6 +1339,24 @@ pub const NativeCommand = struct {
         var cfg = self.params.client_config;
         if (self.params.insecure_ignore_host_key and cfg.host_key_callback == null) {
             cfg.host_key_callback = auth_mod.HostKeyCallback.insecureIgnoreHostKey();
+        }
+
+        // The default must verify host keys. Keep the database alive through
+        // KEX, then release it after connect completes or fails.
+        var known_hosts_db: ?*known_hosts_mod.KnownHostsDb = null;
+        defer if (known_hosts_db) |db|
+            known_hosts_mod.freeKnownHostsDb(self.allocator, db);
+        if (cfg.host_key_callback == null) {
+            var loaded_db: *known_hosts_mod.KnownHostsDb = undefined;
+            const callback = known_hosts_mod.newKnownHostsCallbackOwned(
+                self.allocator,
+                self.io,
+                processEnviron(),
+                &.{},
+                &loaded_db,
+            ) catch return error.SshHostKeyRejected;
+            known_hosts_db = loaded_db;
+            cfg.host_key_callback = callback;
         }
 
         try c.connect(
@@ -1900,16 +1930,21 @@ const TestPeerConn = struct {
         // Read client version line.
         var line_buf: [255]u8 = undefined;
         var n: usize = 0;
+        var terminated = false;
         while (n < line_buf.len) {
             var b: [1]u8 = undefined;
             self.reader().readSliceAll(&b) catch return error.SshVersionExchangeFailed;
-            if (b[0] == '\n') break;
+            if (b[0] == '\n') {
+                terminated = true;
+                break;
+            }
             if (b[0] != '\r') {
                 line_buf[n] = b[0];
                 n += 1;
             }
         }
-        if (n == 0 or !std.mem.startsWith(u8, line_buf[0..n], "SSH-")) return error.SshVersionExchangeFailed;
+        if (!terminated or n == 0 or !std.mem.startsWith(u8, line_buf[0..n], "SSH-"))
+            return error.SshVersionExchangeFailed;
         self.client_version = try self.allocator.dupe(u8, line_buf[0..n]);
 
         try self.writer().writeAll(peer_server_version);

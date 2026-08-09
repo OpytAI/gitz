@@ -29,7 +29,6 @@ filegroup(
         "check_api_inventory.py",
         "check_file_inventory.py",
         "check_metrics.py",
-        "phase_util.py",
         "simple_yaml.py",
     ],
     visibility = ["//visibility:public"],

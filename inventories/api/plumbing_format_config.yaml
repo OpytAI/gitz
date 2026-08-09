@@ -1,7 +1,5 @@
-# API inventory: plumbing/format/config (phase 2)
 # Go New() maps to Zig Config.init. Decoder/Encoder use .init (not dual New*).
 package: plumbing/format/config
-phase: 2
 require:
   types:
     - Config

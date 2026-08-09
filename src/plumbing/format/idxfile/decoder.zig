@@ -24,6 +24,9 @@ const crc32_len: i64 = 4;
 const offset32_len: i64 = 4;
 const offset64_len: i64 = 8;
 const trailer_hashes: i64 = 2;
+/// Prevent a forged fanout table from requesting multi-gigabyte allocations
+/// before any object table bytes have been received.
+const max_object_count: u32 = 16 * 1024 * 1024;
 
 /// Reads and decodes idx files from an input stream (go-git `Decoder`).
 pub const Decoder = struct {
@@ -111,6 +114,7 @@ pub const Decoder = struct {
     }
 
     fn readObjectNames(self: *Decoder, idx: *MemoryIndex) (Error || Allocator.Error || Reader.Error)!void {
+        if (idx.fanout[fanout - 1] > max_object_count) return Error.MalformedIdxFile;
         var k: usize = 0;
         while (k < fanout) : (k += 1) {
             const buckets: u32 = if (k == 0)
@@ -228,4 +232,17 @@ fn addInt64(a: i64, b: i64) ?i64 {
     const c = a +% b;
     if (c < a) return null;
     return c;
+}
+
+test "decoder rejects forged fanout before table allocation" {
+    var raw: [8 + fanout * 4]u8 = .{0} ** (8 + fanout * 4);
+    @memcpy(raw[0..4], idxHeader);
+    std.mem.writeInt(u32, raw[4..8], VersionSupported, .big);
+    std.mem.writeInt(u32, raw[raw.len - 4 ..][0..4], std.math.maxInt(u32), .big);
+
+    var reader = Reader.fixed(&raw);
+    var decoder = Decoder.init(&reader);
+    var idx = MemoryIndex.init(std.testing.allocator);
+    defer idx.deinit();
+    try std.testing.expectError(Error.MalformedIdxFile, decoder.decode(&idx));
 }

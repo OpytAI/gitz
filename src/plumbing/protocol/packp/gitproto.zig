@@ -46,6 +46,12 @@ pub const GitProtoRequest = struct {
     pub fn validate(self: *const GitProtoRequest) common.Error!void {
         if (self.request_command.len == 0) return error.InvalidGitProtoRequest;
         if (self.pathname.len == 0) return error.InvalidGitProtoRequest;
+        if (hasControl(self.request_command) or hasControl(self.pathname) or hasControl(self.host)) {
+            return error.InvalidGitProtoRequest;
+        }
+        for (self.extra_params.items) |param| {
+            if (param.len == 0 or hasControl(param)) return error.InvalidGitProtoRequest;
+        }
     }
 
     /// Encodes the request as one pkt-line (go-git `Encode`).
@@ -139,6 +145,17 @@ pub const GitProtoRequest = struct {
             }
         }
 
+        // Validate before ownership moves into `self`. On validation failure,
+        // the errdefers above remain the only owners of these allocations.
+        const candidate: GitProtoRequest = .{
+            .allocator = self.allocator,
+            .request_command = cmd_owned,
+            .pathname = path_owned,
+            .host = host_owned,
+            .extra_params = extras,
+        };
+        try candidate.validate();
+
         self.request_command = cmd_owned;
         self.pathname = path_owned;
         self.host = host_owned;
@@ -160,6 +177,13 @@ pub const GitProtoRequest = struct {
         self.owns_strings = false;
     }
 };
+
+fn hasControl(value: []const u8) bool {
+    for (value) |byte| {
+        if (byte < 0x20 or byte == 0x7f) return true;
+    }
+    return false;
+}
 
 // ---------------------------------------------------------------------------
 // Tests — gitproto_test.go
@@ -197,6 +221,22 @@ test "encode invalid GitProtoRequest missing pathname" {
     defer p.deinit();
     p.request_command = "command";
     try testing.expectError(error.InvalidGitProtoRequest, p.encode(&w));
+}
+
+test "GitProtoRequest rejects control bytes" {
+    var storage: [128]u8 = undefined;
+    var w: Writer = .fixed(&storage);
+    var p = GitProtoRequest.init(testing.allocator);
+    defer p.deinit();
+    p.request_command = "git-upload-pack";
+    p.pathname = "/repo\nsmuggled";
+    try testing.expectError(error.InvalidGitProtoRequest, p.encode(&w));
+
+    const raw = "001fgit-upload-pack /repo\nname\x00";
+    var r: Reader = .fixed(raw);
+    var decoded = GitProtoRequest.init(testing.allocator);
+    defer decoded.deinit();
+    try testing.expectError(error.InvalidGitProtoRequest, decoded.decode(&r));
 }
 
 test "decode empty GitProtoRequest" {

@@ -1,5 +1,4 @@
 package: plumbing/transport/http
-phase: 13
 require:
   types:
     - BasicAuth

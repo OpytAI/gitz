@@ -1,9 +1,7 @@
-# API inventory: plumbing/format/index (phase 5)
 # Go NewDecoder/NewEncoder map to Zig Decoder.init / Encoder.init.
 # Semantic last-path tokens must appear in package-root *.zig (orchestrator re-exports).
 # Fixtures are test-only and are NOT required public API.
 package: plumbing/format/index
-phase: 5
 require:
   types:
     - Index

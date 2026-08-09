@@ -9,6 +9,7 @@ const plumbing = @import("plumbing");
 const filemode = @import("filemode");
 const memory = @import("memory");
 const storer = @import("storer");
+const pathutil = @import("pathutil");
 
 const blob_mod = @import("blob.zig");
 const file_mod = @import("file.zig");
@@ -155,6 +156,10 @@ pub const Tree = struct {
             const nul = std.mem.indexOfScalarPos(u8, data, pos, 0) orelse return error.MalformedTree;
             if (nul == pos) return error.MalformedTree;
             const base_name = data[pos..nul];
+            pathutil.validTreePath(base_name) catch return error.MalformedTree;
+            // Tree entries are single path components. A separator here can
+            // bypass directory boundaries when the entry is materialized.
+            if (std.mem.indexOfAny(u8, base_name, "/\\") != null) return error.MalformedTree;
             pos = nul + 1;
 
             const oid_len = plumbing.digestSize();
@@ -193,9 +198,12 @@ pub const Tree = struct {
         defer buf.deinit(self.allocator);
 
         for (self.entries.items) |ent| {
-            if (std.mem.indexOfScalar(u8, ent.name, 0) != null) {
+            if (std.mem.indexOfScalar(u8, ent.name, 0) != null or
+                std.mem.indexOfAny(u8, ent.name, "/\\") != null)
+            {
                 return error.MalformedTree;
             }
+            pathutil.validTreePath(ent.name) catch return error.MalformedTree;
             var mode_buf: [16]u8 = undefined;
             const mode_str = std.fmt.bufPrint(&mode_buf, "{o}", .{ent.mode}) catch unreachable;
             try buf.appendSlice(self.allocator, mode_str);
@@ -213,7 +221,7 @@ pub const Tree = struct {
 
     /// go-git `(*Tree).FindEntry`.
     pub fn findEntry(self: *Tree, path: []const u8) !*const TreeEntry {
-        try validTreePath(path);
+            try pathutil.validTreePath(path);
 
         const path_parts = try splitPath(self.allocator, path);
         defer self.allocator.free(path_parts);
@@ -293,7 +301,7 @@ pub const Tree = struct {
 
     /// go-git `(*Tree).TreeEntryFile`.
     pub fn treeEntryFile(self: *Tree, e: *const TreeEntry) !File {
-        try validTreePath(e.name);
+        try pathutil.validTreePath(e.name);
         const s = self.storer orelse return error.ObjectNotFound;
         const b = try blob_mod.getBlob(s, e.hash);
         return file_mod.newFile(e.name, e.mode, &b);
@@ -486,7 +494,7 @@ pub const TreeWalker = struct {
                 if (sm.contains(entry.hash)) continue;
             }
 
-            try validTreePath(entry.name);
+            try pathutil.validTreePath(entry.name);
 
             obj = null;
             if (entry.mode == filemode.Dir) {
@@ -725,36 +733,6 @@ fn canonicalTreeMode(mode: FileMode) FileMode {
         0o120000 => filemode.Symlink,
         else => filemode.Submodule,
     };
-}
-
-/// Subset of go-git `pathutil.ValidTreePath`.
-fn validTreePath(p: []const u8) error{InvalidPath}!void {
-    if (p.len == 0) return error.InvalidPath;
-    for (p) |c| {
-        if (c < 0x20 or c == 0x7f) return error.InvalidPath;
-    }
-    if (p.len >= 2 and p[1] == ':' and std.ascii.isAlphabetic(p[0])) return error.InvalidPath;
-
-    var start: usize = 0;
-    var i: usize = 0;
-    var any_part = false;
-    while (i <= p.len) : (i += 1) {
-        const at_sep = i == p.len or p[i] == '/' or p[i] == '\\';
-        if (!at_sep) continue;
-        const part = p[start..i];
-        start = i + 1;
-        if (part.len == 0) continue;
-        any_part = true;
-        if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return error.InvalidPath;
-        if (isDotGitName(part)) return error.InvalidPath;
-    }
-    if (!any_part) return error.InvalidPath;
-}
-
-fn isDotGitName(name: []const u8) bool {
-    if (std.ascii.eqlIgnoreCase(name, ".git")) return true;
-    if (std.ascii.eqlIgnoreCase(name, "git~1")) return true;
-    return false;
 }
 
 fn splitPath(allocator: Allocator, path: []const u8) Allocator.Error![][]const u8 {
@@ -1085,15 +1063,37 @@ test "malformed tree truncated hash" {
     try std.testing.expectError(error.MalformedTree, tree.decode(&obj));
 }
 
-test "validTreePath rejects dots and git" {
-    try std.testing.expectError(error.InvalidPath, validTreePath(""));
-    try std.testing.expectError(error.InvalidPath, validTreePath("."));
-    try std.testing.expectError(error.InvalidPath, validTreePath(".."));
-    try std.testing.expectError(error.InvalidPath, validTreePath("a/../b"));
-    try std.testing.expectError(error.InvalidPath, validTreePath(".git"));
-    try std.testing.expectError(error.InvalidPath, validTreePath("foo/.git/bar"));
-    try validTreePath("vendor/foo.go");
-    try validTreePath("README");
+test "tree decode rejects metadata aliases and embedded separators" {
+    const gpa = std.testing.allocator;
+    const names = [_][]const u8{ ".git", ".GIT", "git~1", "dir/file", "dir\\file", ".." };
+    for (names) |name| {
+        var body: std.ArrayList(u8) = .empty;
+        defer body.deinit(gpa);
+        try body.appendSlice(gpa, "100644 ");
+        try body.appendSlice(gpa, name);
+        try body.append(gpa, 0);
+        try body.appendNTimes(gpa, 0, plumbing.digestSize());
+
+        var obj = MemoryObject.init(gpa);
+        defer obj.deinit();
+        obj.setType(.tree);
+        try obj.setContent(body.items);
+
+        var tree = Tree.init(gpa, null);
+        defer tree.deinit();
+        try std.testing.expectError(error.MalformedTree, tree.decode(&obj));
+    }
+}
+
+test "canonical path validation rejects dots and git" {
+    try std.testing.expectError(error.InvalidPath, pathutil.validTreePath(""));
+    try std.testing.expectError(error.InvalidPath, pathutil.validTreePath("."));
+    try std.testing.expectError(error.InvalidPath, pathutil.validTreePath(".."));
+    try std.testing.expectError(error.InvalidPath, pathutil.validTreePath("a/../b"));
+    try std.testing.expectError(error.InvalidPath, pathutil.validTreePath(".git"));
+    try std.testing.expectError(error.InvalidPath, pathutil.validTreePath("foo/.git/bar"));
+    try pathutil.validTreePath("vendor/foo.go");
+    try pathutil.validTreePath("README");
 }
 
 test "dir sorts after file with same prefix" {

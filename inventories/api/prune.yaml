@@ -1,5 +1,4 @@
 package: git/prune
-phase: 13
 require:
   types:
     - ObjectWalker

@@ -1,11 +1,11 @@
 # Allowlists
 
-Temporary gaps from inventories and goldens.
+Temporary exceptions for inventories and goldens.
 
 ## Rules
 
-- Every entry needs `id`, `reason`, and `remove_by_phase`.
-- The metrics / allowlist checker fails if `remove_by_phase` is less than or equal to `current_phase` and the entry is still listed.
+- Every entry needs `id` and `reason`.
+- The repository limit is `max_active: 0`. The checker rejects active entries.
 - No silent Bazel disable comments. Put gaps here.
 
 ## Schema
@@ -14,13 +14,10 @@ Temporary gaps from inventories and goldens.
 # inventories/allowlists/<name>.yaml
 entries:
   - id: packfile.Encoder.window
-    reason: read path first; encoder lands in phase 5
-    remove_by_phase: 5
-    owner: optional-agent-or-human
+    reason: encoder is not implemented
+    owner: optional-maintainer
 ```
-
-Phase ids match `packages.yaml` (`g`, `1` … `13`). Rank: g=0, numeric phases as integers.
 
 ## Files
 
-Seed files may be empty (`entries: []`). Add a file per concern or per phase as needed.
+Files can be empty (`entries: []`). Add one file per concern when needed.

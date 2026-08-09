@@ -1,6 +1,4 @@
-# API inventory: utils/merkletrie (phase 9)
 package: utils/merkletrie
-phase: 9
 require:
   types:
     - Action

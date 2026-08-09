@@ -1,0 +1,5 @@
+name: porcelain_plain_clone
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "plainCloneEmbedded bare reports a bare repository and a non-zero master tip."

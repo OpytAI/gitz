@@ -38,7 +38,7 @@ bazel run //tools:gen_index_fixtures -- \
   --outdir "$PWD/data/fixtures/index" \
   --embed "$PWD/src/plumbing/format/index/fixtures.zig"
 
-# Gate (part of //check:phase_5)
+# Verify generated fixtures
 bazel test //tools:gen_index_fixtures_test
 
 # bazel-out materialisation for other rules

@@ -1,4 +1,4 @@
-# Guardrail targets (Phase G). Acceptance after G is only via bazel test //check:...
+# Repository quality and test targets.
 
 package(default_visibility = ["//visibility:public"])
 
@@ -88,11 +88,9 @@ sh_test(
     data = CHECK_SCRIPTS + [":check_data"],
 )
 
-# Phase G gate: inventories + goldens + metrics + fail-forward + library smoke.
-# Fixture generators that are part of the hermetic graph are pulled in by later
-# phase suites (e.g. //tools:gen_index_fixtures_test under phase_5).
+# Stable repository-wide acceptance suite. Keep each test label explicit.
 test_suite(
-    name = "phase_g",
+    name = "all",
     tests = [
         ":file_inventory",
         ":api_inventory",
@@ -103,18 +101,6 @@ test_suite(
         ":file_inventory_fail_forward",
         ":api_inventory_fail_forward",
         "//src:gitz_test",
-    ],
-)
-
-# Phase 1–13 chained suites. Green //check:phase_N alone is NOT proof of
-# phase-N packages unless current_phase makes those packages due.
-# Merge-complete means: suite green AND inventories/packages.yaml current_phase
-# bumped so file/api inventory require non-hollow packages for phase <= N.
-# Expand each suite with package unit tests as phases land.
-# Phase 1 foundation package unit tests + gate bundle.
-test_suite(
-    name = "phase_1_packages",
-    tests = [
         "//src/plumbing:plumbing_test",
         "//src/plumbing/hash:hash_test",
         "//src/plumbing/filemode:filemode_test",
@@ -123,135 +109,27 @@ test_suite(
         "//src/utils/sync:sync_test",
         "//src/utils/ioutil:ioutil_test",
         "//src/utils/trace:trace_test",
-    ],
-)
-
-test_suite(
-    name = "phase_1",
-    tests = [
-        ":phase_g",
-        ":phase_1_packages",
-    ],
-)
-
-# Phase 2 leaf codecs.
-test_suite(
-    name = "phase_2_packages",
-    tests = [
         "//src/plumbing/format/pktline:pktline_test",
         "//src/plumbing/format/objfile:objfile_test",
         "//src/plumbing/format/config:config_test",
         "//src/plumbing/format/idxfile:idxfile_test",
-    ],
-)
-
-test_suite(
-    name = "phase_2",
-    tests = [
-        ":phase_1",
-        ":phase_2_packages",
-    ],
-)
-
-# Phase 3 packfile read path.
-test_suite(
-    name = "phase_3_packages",
-    tests = [
         "//src/plumbing/format/packfile:packfile_test",
-    ],
-)
-
-test_suite(
-    name = "phase_3",
-    tests = [
-        ":phase_2",
-        ":phase_3_packages",
-    ],
-)
-
-# Phase 4 storer contracts + cache + storage/memory.
-test_suite(
-    name = "phase_4_packages",
-    tests = [
         "//src/plumbing/storer:storer_test",
         "//src/plumbing/cache:cache_test",
         "//src/storage:storage_test",
         "//src/storage:suite_test",
         "//src/storage/memory:memory_test",
-    ],
-)
-
-test_suite(
-    name = "phase_4",
-    tests = [
-        ":phase_3",
-        ":phase_4_packages",
-    ],
-)
-
-# Phase 5 index format + packfile write path.
-test_suite(
-    name = "phase_5_packages",
-    tests = [
         "//src/plumbing/format/index:index_test",
-        "//src/plumbing/format/packfile:packfile_test",
-        # Hermetic fixture generator must match committed embeds (rules_python).
         "//tools:gen_index_fixtures_test",
-    ],
-)
-
-test_suite(
-    name = "phase_5",
-    tests = [
-        ":phase_4",
-        ":phase_5_packages",
-    ],
-)
-
-# Phase 6: billy-equivalent fs + filesystem storage + transactional.
-test_suite(
-    name = "phase_6_packages",
-    tests = [
         "//src/fs:fs_test",
         "//src/storage/filesystem/dotgit:dotgit_test",
         "//src/storage/filesystem:filesystem_test",
         "//src/storage/transactional:transactional_test",
-        "//src/storage:suite_test",
-    ],
-)
-
-test_suite(
-    name = "phase_6",
-    tests = [
-        ":phase_5",
-        ":phase_6_packages",
-    ],
-)
-
-# Phase 7: logical objects, commitgraph, revlist.
-test_suite(
-    name = "phase_7_packages",
-    tests = [
         "//src/plumbing/object:object_test",
         "//src/plumbing/object/openpgp:openpgp_test",
         "//src/plumbing/format/commitgraph:commitgraph_test",
         "//src/plumbing/object/commitgraph:object_commitgraph_test",
         "//src/plumbing/revlist:revlist_test",
-    ],
-)
-
-test_suite(
-    name = "phase_7",
-    tests = [
-        ":phase_6",
-        ":phase_7_packages",
-    ],
-)
-
-# Phase 8: pack protocol + transport core.
-test_suite(
-    name = "phase_8_packages",
-    tests = [
         "//src/plumbing/protocol/packp/capability:capability_test",
         "//src/plumbing/protocol/packp/sideband:sideband_test",
         "//src/plumbing/protocol/packp:packp_test",
@@ -260,23 +138,7 @@ test_suite(
         "//src/plumbing/transport/server:server_test",
         "//src/plumbing/transport/internal/common:common_test",
         "//src/plumbing/transport/test:transport_test",
-    ],
-)
-
-test_suite(
-    name = "phase_8",
-    tests = [
-        ":phase_7",
-        ":phase_8_packages",
-    ],
-)
-
-# Phase 9: diff / status shell (merkletrie, gitignore, pathutil, revision, …).
-test_suite(
-    name = "phase_9_packages",
-    tests = [
         "//src/internal/pathutil:pathutil_test",
-        "//src/internal/path_util:path_util_test",
         "//src/internal/url:url_test",
         "//src/internal/reference:reference_test",
         "//src/internal/revision:revision_test",
@@ -290,79 +152,12 @@ test_suite(
         "//src/utils/merkletrie:merkletrie_test",
         "//src/utils/merkletrie/index:index_test",
         "//src/utils/merkletrie/filesystem:filesystem_test",
-        # Executable Class A: recompute data/goldens expected dumps from APIs.
         "//tools/golden:recompute_test",
-    ],
-)
-
-test_suite(
-    name = "phase_9",
-    tests = [
-        ":phase_8",
-        ":phase_9_packages",
-    ],
-)
-
-# Phase 10: typed config (gitconfig) + repository Init/Open/facades.
-test_suite(
-    name = "phase_10_packages",
-    tests = [
         "//src/config:config_test",
         "//src/repo:repo_test",
-    ],
-)
-
-test_suite(
-    name = "phase_10",
-    tests = [
-        ":phase_9",
-        ":phase_10_packages",
-    ],
-)
-
-# Phase 11: Remote Fetch / List / Push over transport sessions.
-test_suite(
-    name = "phase_11_packages",
-    tests = [
         "//src/remote:remote_test",
-        "//src/repo:repo_test",
-        # Executable Class A goldens for remote + prior suites.
-        "//tools/golden:recompute_test",
-    ],
-)
-
-test_suite(
-    name = "phase_11",
-    tests = [
-        ":phase_10",
-        ":phase_11_packages",
-    ],
-)
-
-# Phase 12: Worktree status/add/commit/checkout/reset/clean/pull + porcelain clone.
-test_suite(
-    name = "phase_12_packages",
-    tests = [
         "//src/worktree:worktree_test",
         "//src/porcelain:porcelain_test",
-        "//src/repo:repo_test",
-        # Executable Class A goldens for worktree/porcelain + prior suites.
-        "//tools/golden:recompute_test",
-    ],
-)
-
-test_suite(
-    name = "phase_12",
-    tests = [
-        ":phase_11",
-        ":phase_12_packages",
-    ],
-)
-
-# Phase 13: transports + submodule/blame/prune/serverinfo.
-test_suite(
-    name = "phase_13_packages",
-    tests = [
         "//src/plumbing/transport/file:file_test",
         "//src/plumbing/transport/git:git_test",
         "//src/plumbing/transport/http:http_test",
@@ -371,20 +166,5 @@ test_suite(
         "//src/submodule:submodule_test",
         "//src/blame:blame_test",
         "//src/prune:prune_test",
-        "//tools/golden:recompute_test",
     ],
-)
-
-test_suite(
-    name = "phase_13",
-    tests = [
-        ":phase_12",
-        ":phase_13_packages",
-    ],
-)
-
-# All completed phases.
-test_suite(
-    name = "all",
-    tests = [":phase_13"],
 )

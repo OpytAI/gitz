@@ -1,4 +1,4 @@
-# Memory storer empty-blob set/get golden (phase 4 Class A)
+# Memory storer empty-blob set/get golden
 # Path: storage/memory Storage.init → newEncodedObject → setType(blob) →
 # setContent("") → setEncodedObject → encodedObject(any|blob, hash)
 # OID is SHA-1 of git object "blob 0\0" (empty body).

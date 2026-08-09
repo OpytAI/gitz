@@ -215,7 +215,7 @@ pub fn newClient(endpoint: *const Endpoint) Error!Transport {
 }
 
 // ---------------------------------------------------------------------------
-// Tests (go-git plumbing/transport/client/client_test.go adapted for phase 8)
+// Tests adapted from go-git plumbing/transport/client/client_test.go.
 // ---------------------------------------------------------------------------
 
 const DummyTransport = struct {

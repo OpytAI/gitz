@@ -1,7 +1,7 @@
 //! Repository package errors (go-git root `repository.go` error vars).
 //!
 //! `WorktreeNotProvided` / `IsBareRepository` match go-git package vars and are
-//! reserved for phase-12 Worktree methods (go-git documents them; Open does not
+//! reserved for Worktree methods (go-git documents them; Open does not
 //! always enforce WorktreeNotProvided).
 
 /// Errors for repository open/init and related facades.

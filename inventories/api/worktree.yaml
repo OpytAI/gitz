@@ -1,13 +1,10 @@
-# API inventory: worktree (phase 12) — go-git root Worktree + status/options.
 # packages.yaml go key is git/worktree (zig: src/worktree).
 #
 # Present: Worktree status/add/commit/checkout/reset/pull/clean, Status map,
 # StatusCode/FileStatus, Checkout/Reset/Add/Commit/Pull/Clone/Clean options,
 # Move/RemoveGlob/AddGlob/resetSparsely, platform fillSystemInfo.
 # Restore / Grep (+ options/results) are inventory-required residuals; implement
-# when residual API work lands. Network transports remain phase 13.
 package: git/worktree
-phase: 12
 require:
   types:
     - Worktree

@@ -182,9 +182,9 @@ Branches follow a tiered promotion model. Code flows **upward** through each tie
 ```
 master                    production: tagged releases only
   ↑ merge
-develop                   integration: completed phase and feature work lands here first
+develop                   integration: completed feature work lands here first
   ↑ merge
-feature/*                 feature or phase work
+feature/*                 feature work
 hotfix/*                  urgent production fixes (from master; merge to master AND develop)
 ```
 
@@ -192,7 +192,7 @@ hotfix/*                  urgent production fixes (from master; merge to master 
 
 | Prefix | Branches from | Merges into | Purpose |
 |---|---|---|---|
-| `feature/<name>` | `develop` | `develop` | Features and phase work |
+| `feature/<name>` | `develop` | `develop` | Feature work |
 | `hotfix/<name>` | `master` | `master` + `develop` | Urgent production fixes |
 | `develop` | — | `master` | Integration branch |
 | `master` | — | — | Production |
@@ -227,41 +227,22 @@ gitz-hotfix-index/        worktree: hotfix/index-checksum (temporary)
 go-git/                   reference clone (sibling, pinned)
 ```
 
-## Phase workflow
+## Concurrent work
 
-Work runs in **phases**. Phase order is **sequential**. Detail for each phase lives in **`PHASE_PLAN.md`**. Strategy background: **`PORT_STRATEGY.md`**.
+- Parallel tasks must own disjoint files.
+- Run changes to shared files sequentially.
+- Use isolated worktrees for concurrent write tasks.
+- Never let two writers share a dirty worktree.
 
-### Sequence rules
-
-- Complete one phase before you start the next phase.
-- Do not merge phase N+1 work before phase N checks pass.
-- Each phase uses its own worktree and branch (or a named feature branch for that phase).
-- Merge phase results into `develop` when the phase is done and Bazel checks pass.
-- **After Phase G:** acceptance for inventories, goldens, metrics, and phase gates is **only** `bazel test //check:phase_N` (and related `//check:…` targets). Hand-run scripts are not completion criteria. See `docs/GATES.md`.
-
-### Parallel work inside a phase
-
-- Inside one phase, agents may work in parallel **only** on **disjoint file ownership** (separate packages/modules with no shared files).
-- If two tasks touch the same file (or one edits while another might `git restore`), they are **sequential**. Do not parallelize them.
-- Prefer **isolated worktrees** when fanning out; never share one dirty working tree among write agents.
-- Parallel agents still share the same phase branch and the same Bazel checks after integration.
-- Do not open the next phase in parallel with an unfinished phase.
-
-### Git operations (orchestrator only)
+### Git operations
 
 - **Subagents / worker agents must not run git.** No `git add`, `commit`, `checkout`, `restore`, `reset`, `switch`, `merge`, `rebase`, `push`, `pull`, `clean`, or `worktree` from a worker.
 - Only the **orchestrator** (main agent, with the human’s request) may run git, and only for the requested operation.
 - Workers that “clean up” with `git restore` / `git checkout --` destroy other agents’ uncommitted work. That is forbidden.
 
-### After a phase merge
-
-1. Confirm Bazel checks pass on `develop`.
-2. Remove the temporary phase worktree.
-3. Delete the phase branch when it is no longer needed.
-
 ## Progressive merging workflow
 
-### Feature or phase work to production
+### Feature work to production
 
 ```bash
 # 1. Create feature branch and worktree from develop
@@ -325,13 +306,12 @@ git branch -d hotfix/xyz
 
 ## Checks and balances
 
-Port quality is enforced by **Bazel tests under `//check:…`**, not by long checklists in markdown and not by hand-run scripts.
+Port quality is enforced by **Bazel tests under `//check:…`**, not by hand-run scripts or documentation checklists.
 
-**After Phase G:** “done” means the relevant Bazel gate is green. Inventories, goldens, metrics, and allowlists run only through Bazel (`docs/GATES.md`). Example:
+Run the complete acceptance suite:
 
 ```bash
-bazel test //check:phase_g
-bazel test //check:phase_N
+bazel test //check:all
 ```
 
 Required classes of check:
@@ -340,15 +320,13 @@ Required classes of check:
 |---|---|---|
 | **File inventory** | `//check:file_inventory` | Compare gitz surface to inventory; fail on missing/hollow packages |
 | **Function / API inventory** | `//check:api_inventory` | Semantic IDs / exports for due packages |
-| **Behavioral goldens** | `//check:goldens_smoke` (+ later suites) | Known Git cases; fail on mismatch |
+| **Behavioral goldens** | `//check:goldens_smoke` | Known Git cases; fail on mismatch |
 | **Metrics / allowlists** | `//check:metrics`, `//check:allowlists` | Thresholds, pin, overdue gaps |
 
 ### Rules for these checks
 
 - Do not weaken, skip, or disable these targets without user approval.
 - Prefer genrules and tests that read the pinned `go-git/` tree and gitz sources.
-- Phase work is done only when `//check:phase_N` is green **and** `inventories/packages.yaml` `current_phase` is bumped so due packages are enforced.
-- Green `//check:phase_N` while `current_phase` is still behind N is **not** merge-complete for phase N packages.
 - When you add a go-git area to gitz, extend the inventories and goldens in the same change set when possible.
 - Do not treat markdown text as a substitute for failing Bazel checks.
 
@@ -367,7 +345,7 @@ Required classes of check:
 - Keep the long-lived worktrees (`gitz-master`, `gitz-develop`) present. Feature and hotfix worktrees are temporary.
 - Read go-git only from the sibling `go-git/` reference at the pinned revision.
 - Port go-git behavior. Do not redesign Git semantics.
-- Run phases in sequence. Use parallel agents only inside one phase.
+- Run concurrent tasks only when they own disjoint files.
 - Always build and test with Bazel, rules_zig, Zig 0.16, and the shared `--output_user_root`.
 - Do not use system Zig for project verification.
 - Do not treat markdown text as a substitute for failing Bazel checks.

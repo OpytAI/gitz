@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const fs_pkg = @import("fs");
+const pathutil = @import("pathutil");
 
 const options_mod = @import("options.zig");
 const status_types = @import("status_types.zig");
@@ -42,7 +43,7 @@ fn doClean(
     files: []const FileInfo,
 ) !void {
     for (files) |fi| {
-        if (std.mem.eql(u8, fi.name, git_dir_name)) continue;
+        if (std.mem.eql(u8, fi.name, git_dir_name) or pathutil.isDotGitName(fi.name)) continue;
 
         const path = try joinRel(w.allocator, dir, fi.name);
         defer w.allocator.free(path);

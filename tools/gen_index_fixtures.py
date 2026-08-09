@@ -1,4 +1,4 @@
-"""Generate Phase 5 index (DIRC) fixtures.
+"""Generate index (DIRC) fixtures.
 
 Entry point: Bazel only.
 
@@ -280,7 +280,7 @@ def write_outdir(outdir: Path, images: dict[str, bytes]) -> None:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
-            "Generate/check Phase 5 index DIRC fixtures. "
+            "Generate or check index DIRC fixtures. "
             "Invoke only via Bazel: bazel run //tools:gen_index_fixtures"
         )
     )

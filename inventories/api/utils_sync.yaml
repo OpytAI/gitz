@@ -1,6 +1,4 @@
-# API inventory: utils/sync (phase 1)
 package: utils/sync
-phase: 1
 require:
   types:
     - ZlibReader

@@ -1,4 +1,4 @@
-# go-git plumbing empty blob OID (phase 1 Class A)
+# go-git plumbing empty blob OID
 # SHA-1 of git object header+body for type blob size 0: "blob 0\0"
 # Source: go-git/plumbing/hash_test.go TestComputeHash
 # ComputeHash(BlobObject, []byte("")) == e69de29bb2d1d6434b8b29ae775ad8c2e48c5391

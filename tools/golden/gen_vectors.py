@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Emit vectors.zig with string constants for each Class A expected dump."""
+"""Emit vectors.zig with string constants for each expected dump."""
 
 from __future__ import annotations
 

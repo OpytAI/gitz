@@ -170,7 +170,7 @@ pub fn Storage(comptime Fs: type) type {
         }
 
         /// go-git `AddAlternate`.
-        pub fn addAlternate(self: *Self, remote: []const u8) (Allocator.Error || fs_pkg.Error)!void {
+        pub fn addAlternate(self: *Self, remote: []const u8) (Allocator.Error || fs_pkg.Error || dotgit.Error)!void {
             try self.dir.addAlternate(remote);
         }
 

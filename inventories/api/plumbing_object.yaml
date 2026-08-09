@@ -1,6 +1,4 @@
-# API inventory: plumbing/object (phase 7)
 package: plumbing/object
-phase: 7
 require:
   types:
     - Blob

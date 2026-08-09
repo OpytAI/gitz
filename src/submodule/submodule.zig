@@ -22,6 +22,7 @@ const options_mod = @import("options.zig");
 const status_mod = @import("status.zig");
 const host_mod = @import("host.zig");
 const relative_url_mod = @import("relative_url.zig");
+const owned = @import("owned.zig");
 
 const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
@@ -68,6 +69,7 @@ pub const Submodule = struct {
 
     /// go-git `Submodule.Init` — record the submodule in the host registry.
     pub fn init(self: *Submodule) !void {
+        try pathutil.validTreePath(self.c.path);
         try self.host.putInitialized(self.c);
         self.initialized = true;
     }
@@ -184,6 +186,7 @@ pub const Submodule = struct {
     ///
     /// Explicit `anyerror` breaks the inferred-error cycle with `doRecursiveUpdate`.
     fn updateWithHash(self: *Submodule, o: *const SubmoduleUpdateOptions, force_hash: Hash) anyerror!void {
+        try pathutil.validTreePath(self.c.path);
         if (!self.initialized and !o.init) return error.SubmoduleNotInitialized;
         if (!self.initialized and o.init) try self.init();
 
@@ -557,24 +560,16 @@ fn cloneSubmoduleConfig(allocator: Allocator, src: *const SubmoduleConfig) Alloc
     errdefer allocator.destroy(m);
     m.* = SubmoduleConfig.init(allocator);
     errdefer m.deinit();
-    try setOwned(allocator, &m.name, src.name);
-    try setOwned(allocator, &m.path, src.path);
-    try setOwned(allocator, &m.url, src.url);
-    try setOwned(allocator, &m.branch, src.branch);
+    try owned.set(allocator, &m.name, src.name);
+    try owned.set(allocator, &m.path, src.path);
+    try owned.set(allocator, &m.url, src.url);
+    try owned.set(allocator, &m.branch, src.branch);
     return m;
 }
 
-fn setOwned(allocator: Allocator, dest: *[]const u8, value: []const u8) Allocator.Error!void {
-    if (dest.*.len > 0) allocator.free(dest.*);
-    if (value.len == 0) {
-        dest.* = "";
-        return;
-    }
-    dest.* = try allocator.dupe(u8, value);
-}
-
 /// go-git `Worktree.newSubmodule` — merge Modules entry with initialized config.
-fn newSubmodule(host: *Host, from_modules: *const SubmoduleConfig, from_config: ?*const SubmoduleConfig) Allocator.Error!*Submodule {
+fn newSubmodule(host: *Host, from_modules: *const SubmoduleConfig, from_config: ?*const SubmoduleConfig) !*Submodule {
+    try pathutil.validTreePath(from_modules.path);
     const sm = try host.allocator.create(Submodule);
     errdefer host.allocator.destroy(sm);
 
@@ -586,7 +581,7 @@ fn newSubmodule(host: *Host, from_modules: *const SubmoduleConfig, from_config: 
         host.allocator.destroy(c);
     }
     // Always take path from .gitmodules (go-git: m.c.Path = fromModules.Path).
-    try setOwned(host.allocator, &c.path, from_modules.path);
+    try owned.set(host.allocator, &c.path, from_modules.path);
 
     sm.* = .{
         .host = host,

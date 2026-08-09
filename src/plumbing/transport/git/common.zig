@@ -268,6 +268,12 @@ pub const Runner = struct {
     ) anyerror!Command {
         // Auth not allowed — git protocol has no authentication.
         if (auth != null) return transport.Error.InvalidAuthMethod;
+        if (!std.mem.eql(u8, cmd, transport.UploadPackServiceName) and
+            !std.mem.eql(u8, cmd, transport.ReceivePackServiceName))
+            return transport.Error.InvalidEndpoint;
+        if (std.mem.indexOfScalar(u8, ep.path, 0) != null or
+            std.mem.indexOfScalar(u8, ep.host, 0) != null)
+            return transport.Error.InvalidEndpoint;
 
         const c = try self.allocator.create(GitCommand);
         errdefer self.allocator.destroy(c);
@@ -317,7 +323,7 @@ pub const GitCommand = struct {
 
     fn connect(self: *GitCommand, runner: *Runner) !void {
         if (self.connected) return transport.Error.AlreadyConnected;
-        const port = connectPort(self.endpoint);
+        const port = try connectPort(self.endpoint);
         const host = self.endpoint.host;
         // Dial owns the Conn until close/release. On dial error, no state kept.
         self.conn = try runner.dial_fn(runner.dial_ctx, self.allocator, runner.io, host, port);
@@ -411,8 +417,9 @@ pub const GitCommand = struct {
 fn nopClose(_: *anyopaque) anyerror!void {}
 
 /// Port used for TCP dial (go-git `getHostWithPort` port half).
-pub fn connectPort(ep: *const Endpoint) u16 {
+pub fn connectPort(ep: *const Endpoint) transport.Error!u16 {
     if (ep.port <= 0) return @intCast(DefaultPort);
+    if (ep.port > std.math.maxInt(u16)) return transport.Error.InvalidEndpoint;
     return @intCast(ep.port);
 }
 

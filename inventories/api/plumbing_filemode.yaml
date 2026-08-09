@@ -1,6 +1,4 @@
-# API inventory: plumbing/filemode (phase 1)
 package: plumbing/filemode
-phase: 1
 require:
   types:
     - FileMode

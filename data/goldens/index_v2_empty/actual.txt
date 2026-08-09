@@ -1,4 +1,4 @@
-# Empty Git index v2 (dircache) Class A golden (phase 5)
+# Empty Git index v2 (dircache)
 # go-git: plumbing/format/index Encoder.Encode / Decoder.Decode
 # Layout: 12-byte header + 0 entries + 20-byte SHA-1 trailer (no extensions)
 # Header = signature DIRC | version 2 | entry_count 0 (network byte order)

@@ -1,6 +1,4 @@
-# API inventory: utils/merkletrie/noder (phase 9)
 package: utils/merkletrie/noder
-phase: 9
 require:
   types:
     - Noder

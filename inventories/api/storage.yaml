@@ -1,8 +1,6 @@
-# API inventory: storage root (phase 4)
 # Storer is an alias of memory.Storage. ModuleStorer documents the module method set.
 # ErrReferenceHasChanged → Error.ReferenceHasChanged.
 package: storage
-phase: 4
 require:
   types:
     - Storer

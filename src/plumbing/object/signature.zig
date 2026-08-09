@@ -69,13 +69,16 @@ pub const Signature = struct {
         var tmp: Signature = .{};
         tmp.fillFrom(b);
 
-        self.when = tmp.when;
-        self.tz_offset_minutes = tmp.tz_offset_minutes;
-        self.name = try allocator.dupe(u8, tmp.name);
-        errdefer allocator.free(self.name);
-        self.email = try allocator.dupe(u8, tmp.email);
-        errdefer allocator.free(self.email);
-        self.owned = true;
+        const name = try allocator.dupe(u8, tmp.name);
+        errdefer allocator.free(name);
+        const email = try allocator.dupe(u8, tmp.email);
+        self.* = .{
+            .name = name,
+            .email = email,
+            .when = tmp.when,
+            .tz_offset_minutes = tmp.tz_offset_minutes,
+            .owned = true,
+        };
     }
 
     fn fillFrom(self: *Signature, b: []const u8) void {

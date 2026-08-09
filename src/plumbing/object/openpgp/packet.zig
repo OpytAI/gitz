@@ -34,7 +34,7 @@ pub fn nextPacket(data: []const u8, pos: *usize) Error!Packet {
             pos.* += 1;
             body_len = @as(usize, (@as(u16, l0) - 192) << 8) + l1 + 192;
         } else if (l0 == 255) {
-            if (pos.* + 4 > data.len) return error.InvalidPacket;
+            if (data.len - pos.* < 4) return error.InvalidPacket;
             body_len = std.mem.readInt(u32, data[pos.*..][0..4], .big);
             pos.* += 4;
         } else {
@@ -50,30 +50,30 @@ pub fn nextPacket(data: []const u8, pos: *usize) Error!Packet {
                 pos.* += 1;
             },
             1 => {
-                if (pos.* + 2 > data.len) return error.InvalidPacket;
+                if (data.len - pos.* < 2) return error.InvalidPacket;
                 body_len = std.mem.readInt(u16, data[pos.*..][0..2], .big);
                 pos.* += 2;
             },
             2 => {
-                if (pos.* + 4 > data.len) return error.InvalidPacket;
+                if (data.len - pos.* < 4) return error.InvalidPacket;
                 body_len = std.mem.readInt(u32, data[pos.*..][0..4], .big);
                 pos.* += 4;
             },
             else => body_len = data.len - pos.*,
         }
     }
-    if (pos.* + body_len > data.len) return error.InvalidPacket;
+    if (body_len > data.len - pos.*) return error.InvalidPacket;
     const body = data[pos.* .. pos.* + body_len];
     pos.* += body_len;
     return .{ .tag = tag, .body = body };
 }
 
 pub fn readMpi(data: []const u8, pos: *usize) Error![]const u8 {
-    if (pos.* + 2 > data.len) return error.InvalidPacket;
+    if (pos.* > data.len or data.len - pos.* < 2) return error.InvalidPacket;
     const bitlen = std.mem.readInt(u16, data[pos.*..][0..2], .big);
     pos.* += 2;
     const bytelen = (@as(usize, bitlen) + 7) / 8;
-    if (pos.* + bytelen > data.len) return error.InvalidPacket;
+    if (bytelen > data.len - pos.*) return error.InvalidPacket;
     const mpi = data[pos.* .. pos.* + bytelen];
     pos.* += bytelen;
     return mpi;

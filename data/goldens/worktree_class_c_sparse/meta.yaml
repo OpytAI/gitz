@@ -1,5 +1,0 @@
-name: worktree_class_c_sparse
-type: file_equals
-actual: actual.txt
-expected: expected.txt
-note: "Class C scenario: sparse dirs keep only matching prefix paths in the index."

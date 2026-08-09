@@ -1,6 +1,5 @@
 # API inventory: pure Zig sha1cd (go-git uses github.com/pjbgf/sha1cd)
 package: github.com/pjbgf/sha1cd
-phase: 1
 require:
   types:
     - Sha1cd

@@ -1,8 +1,6 @@
-# API inventory: plumbing/cache (phase 4)
 # ObjectLRU → ObjectLru; BufferLRU → BufferLru; New* → init / initDefault.
 # Object / Buffer are go-git interfaces; methods live on ObjectLru / BufferLru.
 package: plumbing/cache
-phase: 4
 require:
   types:
     - FileSize

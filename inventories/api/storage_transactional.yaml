@@ -1,4 +1,3 @@
-# API inventory: storage/transactional (phase 6)
 # Two-storer demux: reads from base, writes to temporal; Commit merges temporal
 # into base. NewStorage → newStorage. Go Storage is an interface with Commit;
 # Zig uses a concrete Storage type with commit method.
@@ -6,9 +5,7 @@
 # Method names camelCase (setEncodedObject, setReference, packfileWriter, …).
 # PackfileWriter capability follows temporal (memory: false).
 # MultiObjectIter / MultiReferenceIter concatenate base then temporal iterators.
-# Phase 6 scopes transactional over memory.Storage (base + temporal).
 package: storage/transactional
-phase: 6
 require:
   types:
     - Storage

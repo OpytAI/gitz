@@ -1,4 +1,4 @@
-# Index v3 with intent-to-add extended flags (Class A golden, phase 5)
+# Index v3 with intent-to-add extended flags
 # go-git: plumbing/format/index Encoder.encodeEntry (entryExtended | intentToAddMask)
 # Layout: 12-byte header + 1 entry (v3 extended flags) + 20-byte SHA-1 trailer
 # Entry name "x"; all timestamps/mode/hash zeroed for determinism

@@ -1,6 +1,4 @@
-# API inventory: plumbing/format/diff (phase 9)
 package: plumbing/format/diff
-phase: 9
 require:
   types:
     - Operation

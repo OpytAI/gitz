@@ -181,7 +181,7 @@ def _parse_scalar(s: str) -> Any:
     # int
     try:
         if s.startswith("0") and len(s) > 1 and not s.startswith("0."):
-            # keep leading-zero strings as strings (phase ids rarely)
+            # Keep leading-zero identifiers as strings.
             pass
         else:
             return int(s)
@@ -230,11 +230,9 @@ def self_test() -> None:
         """
 # comment
 pin: v5.19.2
-current_phase: g
 packages:
   - go: plumbing/hash
     zig: src/plumbing/hash
-    phase: 1
     status: required
   - go: _examples
     status: excluded
@@ -245,10 +243,8 @@ empty:
 """
     )
     assert doc["pin"] == "v5.19.2"
-    assert doc["current_phase"] == "g"
     assert len(doc["packages"]) == 2
     assert doc["packages"][0]["go"] == "plumbing/hash"
-    assert doc["packages"][0]["phase"] == 1
     assert doc["packages"][1]["status"] == "excluded"
     assert doc["packages"][1]["notes"] == "examples only"
     assert doc["counts"] == [1, 2, 3]
@@ -259,7 +255,6 @@ empty:
     api = load(
         """
 package: plumbing/hash
-phase: 1
 require:
   types: []
   functions:

@@ -1,5 +1,0 @@
-name: worktree_class_c_pull_ff
-type: file_equals
-actual: actual.txt
-expected: expected.txt
-note: "Class C scenario: Pull MapLoader embedded FF then AlreadyUpToDate."

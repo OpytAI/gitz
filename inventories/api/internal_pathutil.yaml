@@ -1,6 +1,5 @@
-# API inventory: internal/pathutil (phase 9)
+# API inventory: go-git internal/pathutil, implemented in the consolidated pathutil package
 package: internal/pathutil
-phase: 9
 require:
   functions:
     - isNTFSDotGit

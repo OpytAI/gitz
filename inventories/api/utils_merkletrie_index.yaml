@@ -1,6 +1,4 @@
-# API inventory: utils/merkletrie/index (phase 9)
 package: utils/merkletrie/index
-phase: 9
 require:
   functions:
     - newRootNode

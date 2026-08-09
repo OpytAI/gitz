@@ -1,6 +1,0 @@
-# go-git Worktree.Pull via MapLoader embedded (Class C scenario state)
-# Setup: empty local memory + symbolic HEAD master; origin → MapLoader remote with tip;
-# PullOptions defaults (remote_name=origin). First pull fetches and updates master.
-# Second pull when tip matches remote → AlreadyUpToDate (remote.AlreadyUpToDate).
-first_pull: master_updated=true
-second_pull: AlreadyUpToDate

@@ -50,7 +50,8 @@
 //! `configure` applies `TransportConfig` (ClientOptions + Endpoint; Endpoint
 //! wins when set) onto the live OS client:
 //! - **Proxy** — `std.http.Client.Proxy` on `http_proxy` / `https_proxy`.
-//!   Insecure HTTPS uses HTTP CONNECT through the same proxy.
+//!   Insecure HTTPS uses CONNECT through plain HTTP proxies. It rejects HTTPS
+//!   proxies because this manual path cannot authenticate their TLS layer.
 //! - **CA bundle** — PEM bytes into `client.ca_bundle` (system roots + custom).
 //! - **Client cert/key** — validated; Zig 0.16 std TLS has no client-cert
 //!   option, so HTTPS returns `error.ClientCertificateUnsupported`.
@@ -173,6 +174,10 @@ pub const OsRoundTripper = struct {
 
     /// Perform one HTTP request. Returns an owned `Response` (caller deinits).
     pub fn roundTrip(self: *OsRoundTripper, req: *const Request) anyerror!Response {
+        // Validate before opening a socket. The manual TLS path writes these
+        // bytes directly and must not permit request-line or header injection.
+        _ = try mapMethod(req.method);
+        try validateRequestHeaders(&req.headers);
         if (self.client_cert.len != 0 and isHttpsUrl(req.url)) {
             return error.ClientCertificateUnsupported;
         }
@@ -191,6 +196,7 @@ pub const OsRoundTripper = struct {
             self.proxy_host_owned = &.{};
         }
         if (self.proxy_auth_owned) |auth| {
+            @memset(auth, 0);
             self.allocator.free(auth);
             self.proxy_auth_owned = null;
         }
@@ -485,8 +491,9 @@ pub const OsRoundTripper = struct {
                     .write_buffer = tls_write_buf,
                     .entropy = &random_buffer,
                     .realtime_now = now,
-                    // HTTP framing detects truncation; close_notify is best-effort.
-                    .allow_truncation_attacks = true,
+                    // Require close_notify. A connection-close response body has
+                    // no independent framing that proves it is complete.
+                    .allow_truncation_attacks = false,
                 },
             );
 
@@ -529,7 +536,9 @@ pub const OsRoundTripper = struct {
             return target_host.connect(self.io, target_port, .{ .mode = .stream });
         };
         _ = use_tls;
-        if (!proxy.supports_connect) return error.TunnelNotSupported;
+        // This manual path has TLS only for the origin connection. Never send
+        // proxy credentials in cleartext to a configured HTTPS proxy.
+        try validateInsecureProxy(proxy);
 
         var stream = try proxy.host.connect(self.io, proxy.port, .{ .mode = .stream });
         errdefer stream.close(self.io);
@@ -628,6 +637,11 @@ fn readInsecureResponse(allocator: Allocator, http_reader: *http.Reader) anyerro
         .body = body,
         .headers = headers,
     };
+}
+
+fn validateInsecureProxy(proxy: http.Client.Proxy) error{ TlsProxyUnsupported, TunnelNotSupported }!void {
+    if (proxy.protocol == .tls) return error.TlsProxyUnsupported;
+    if (!proxy.supports_connect) return error.TunnelNotSupported;
 }
 
 /// Copy every non-trailer header from a parsed response head into an owned map.
@@ -801,7 +815,43 @@ fn shouldDropAuthOnRedirect(from_url: []const u8, to_url: []const u8) bool {
     var to_host_buf: [HostName.max_len]u8 = undefined;
     const from_host = from.getHost(&from_host_buf) catch return true;
     const to_host = to.getHost(&to_host_buf) catch return true;
-    return !from_host.sameParentDomain(to_host);
+    return !isDomainOrSubdomain(to_host.bytes, from_host.bytes);
+}
+
+/// Match Go net/http's directional credential rule. Credentials may move
+/// from a parent host to an exact host or subdomain, never in reverse.
+fn isDomainOrSubdomain(sub_in: []const u8, parent_in: []const u8) bool {
+    const sub = std.mem.trimEnd(u8, sub_in, ".");
+    const parent = std.mem.trimEnd(u8, parent_in, ".");
+    if (std.ascii.eqlIgnoreCase(sub, parent)) return true;
+    if (std.mem.indexOfAny(u8, sub, ":%") != null) return false;
+    if (sub.len <= parent.len or
+        !std.ascii.eqlIgnoreCase(sub[sub.len - parent.len ..], parent)) return false;
+    return sub[sub.len - parent.len - 1] == '.';
+}
+
+fn validateRequestHeaders(headers: *const HeaderMap) error{InvalidHttpHeader}!void {
+    for (headers.entries.items) |entry| {
+        if (!validHeaderName(entry.name) or !validHeaderValue(entry.value)) {
+            return error.InvalidHttpHeader;
+        }
+    }
+}
+
+fn validHeaderName(name: []const u8) bool {
+    if (name.len == 0) return false;
+    for (name) |c| switch (c) {
+        'a'...'z', 'A'...'Z', '0'...'9', '!', '#', '$', '%', '&', '\'', '*', '+', '-', '.', '^', '_', '`', '|', '~' => {},
+        else => return false,
+    };
+    return true;
+}
+
+fn validHeaderValue(value: []const u8) bool {
+    for (value) |c| {
+        if ((c < 0x20 and c != '\t') or c == 0x7f) return false;
+    }
+    return true;
 }
 
 /// Write HTTP/1.1 request line, headers, and optional body to `w`.
@@ -813,6 +863,8 @@ fn writeInsecureHttpRequest(
     headers: *const HeaderMap,
     drop_auth: bool,
 ) anyerror!void {
+    _ = try mapMethod(method);
+    try validateRequestHeaders(headers);
     try w.writeAll(method);
     try w.writeByte(' ');
     try uri.writeToStream(w, .{
@@ -1114,6 +1166,41 @@ test "shouldDropAuthOnRedirect host matrix" {
         "http://example.com/a",
         "https://example.com/a",
     ));
+    try std.testing.expect(!shouldDropAuthOnRedirect(
+        "https://example.com/a",
+        "https://sub.example.com/b",
+    ));
+    try std.testing.expect(shouldDropAuthOnRedirect(
+        "https://sub.example.com/a",
+        "https://example.com/b",
+    ));
+    try std.testing.expect(shouldDropAuthOnRedirect(
+        "https://example.com/a",
+        "https://notexample.com/b",
+    ));
+}
+
+test "insecure request writer rejects request splitting" {
+    const gpa = std.testing.allocator;
+    const uri = try std.Uri.parse("https://example.com/repo.git");
+
+    var headers = HeaderMap.init(gpa);
+    defer headers.deinit();
+    try headers.add("X-Test", "safe\r\nInjected: yes");
+
+    var aw: std.Io.Writer.Allocating = .init(gpa);
+    defer aw.deinit();
+    try std.testing.expectError(
+        error.InvalidHttpHeader,
+        writeInsecureHttpRequest(&aw.writer, "GET", &uri, "", &headers, false),
+    );
+
+    var clean_headers = HeaderMap.init(gpa);
+    defer clean_headers.deinit();
+    try std.testing.expectError(
+        error.UnsupportedMethod,
+        writeInsecureHttpRequest(&aw.writer, "GET / HTTP/1.1\r\nX-Evil: yes", &uri, "", &clean_headers, false),
+    );
 }
 
 test "redirectForcesGet status matrix" {
@@ -1284,6 +1371,20 @@ test "buildHttpProxy parses host port scheme" {
     try std.testing.expectEqualStrings("127.0.0.1", built.proxy.host.bytes);
     try std.testing.expectEqual(@as(u16, 3128), built.proxy.port);
     try std.testing.expect(built.proxy.authorization == null);
+}
+
+test "buildHttpProxy preserves HTTPS proxy protocol" {
+    const gpa = std.testing.allocator;
+    const built = try buildHttpProxy(gpa, .{
+        .url = "https://proxy.example:8443",
+        .username = "user",
+        .password = "secret",
+    });
+    defer gpa.free(built.host_owned);
+    defer if (built.auth_owned) |auth| gpa.free(auth);
+    try std.testing.expect(built.proxy.protocol == .tls);
+    try std.testing.expect(built.proxy.authorization != null);
+    try std.testing.expectError(error.TlsProxyUnsupported, validateInsecureProxy(built.proxy));
 }
 
 test "addCertsFromPemBytes rejects garbage" {

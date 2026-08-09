@@ -1,11 +1,9 @@
-# API inventory: go-billy equivalent (phase 6)
 # External in go-git (`github.com/go-git/go-billy/v5`); gitz ports a pure-Zig
 # subset as `src/fs`: concrete Mem + Os backends with the same method sets.
 # Join → joinPath; File.Name → fileName. No Go interface type; call sites use anytype.
 # Os is a real host-backed backend (std.Io); Mem is the primary in-memory backend for tests.
 # path helpers (join, clean, baseName, parentRel) live under the path submodule.
 package: go-billy
-phase: 6
 require:
   types:
     - Mem
@@ -75,9 +73,8 @@ require:
     - MemFile.truncate
     - MemFile.lock
     - MemFile.unlock
-    # Os constructors (init path / temp dir / wrap open Dir)
+    # Os constructors (init path / wrap open Dir)
     - Os.init
-    - Os.initTemp
     - Os.initFromDir
     - Os.deinit
     - Os.root

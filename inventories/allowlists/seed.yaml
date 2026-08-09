@@ -1,2 +1,2 @@
-# Seed allowlist — empty. Add temporary gaps with remove_by_phase.
+# Seed allowlist. Add temporary gaps with an id and reason.
 entries: []

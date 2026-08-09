@@ -1,5 +1,4 @@
 package: plumbing/serverinfo
-phase: 13
 require:
   functions:
     - updateServerInfo

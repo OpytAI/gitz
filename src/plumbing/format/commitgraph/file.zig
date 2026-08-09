@@ -58,6 +58,7 @@ pub const FileIndex = struct {
         try fi.verifyFileHeader();
         try fi.readChunkHeaders();
         try fi.readFanout();
+        try fi.validateRequiredChunkSizes();
         fi.has_generation_v2 = fi.offsets[@intFromEnum(ChunkType.generation_data)] > 0;
         if (parent) |p| {
             fi.has_generation_v2 = fi.has_generation_v2 and p.hasGenerationV2();
@@ -85,7 +86,7 @@ pub const FileIndex = struct {
     /// Empty `graphs` returns `error.MalformedCommitGraphFile` (unlike go-git
     /// which can return a nil Index for an empty chain).
     pub fn openChainIndexFromBytes(allocator: Allocator, graphs: []const []const u8) Error!FileIndex {
-        if (graphs.len == 0) return Error.MalformedCommitGraphFile;
+        if (graphs.len == 0 or graphs.len > commitgraph.max_chain_graphs) return Error.MalformedCommitGraphFile;
 
         var current: ?FileIndex = null;
         errdefer if (current) |*c| c.deinit();
@@ -158,6 +159,11 @@ pub const FileIndex = struct {
             }
             const chunk_id = self.data[base .. base + chunk_mod.sz_chunk_sig];
             const chunk_offset = std.mem.readInt(u64, self.data[base + 4 ..][0..8], .big);
+            if (chunk_offset > std.math.maxInt(i64) or
+                chunk_offset > @as(u64, @intCast(self.data.len)))
+            {
+                return Error.MalformedCommitGraphFile;
+            }
 
             const ct = ChunkType.fromBytes(chunk_id) orelse continue;
             if (ct == .zero or @intFromEnum(ct) >= ChunkType.len_chunks) break;
@@ -181,8 +187,28 @@ pub const FileIndex = struct {
         while (i < commitgraph.len_fanout) : (i += 1) {
             const v = std.mem.readInt(u32, self.data[off + i * 4 ..][0..4], .big);
             if (v > 0x7fffffff) return Error.MalformedCommitGraphFile;
+            if (i > 0 and v < self.fanout[i - 1]) return Error.MalformedCommitGraphFile;
             self.fanout[i] = v;
         }
+    }
+
+    fn validateRequiredChunkSizes(self: *const FileIndex) Error!void {
+        const count: usize = self.fanout[0xff];
+        const oid_off: usize = @intCast(self.offsets[@intFromEnum(ChunkType.oid_lookup)]);
+        const cdat_off: usize = @intCast(self.offsets[@intFromEnum(ChunkType.commit_data)]);
+        const hash_size = commitgraph.hashSize();
+        const commit_entry_size = hash_size + commitgraph.sz_commit_data;
+
+        if (!regionFits(self.data.len, oid_off, count, hash_size) or
+            !regionFits(self.data.len, cdat_off, count, commit_entry_size))
+        {
+            return Error.MalformedCommitGraphFile;
+        }
+    }
+
+    fn regionFits(total: usize, offset: usize, count: usize, item_size: usize) bool {
+        if (offset > total or item_size == 0) return false;
+        return count <= (total - offset) / item_size;
     }
 
     fn readHashAt(self: *const FileIndex, offset: usize) Error!Hash {
@@ -403,6 +429,19 @@ test "FileIndex rejects bad signature" {
         Error.MalformedCommitGraphFile,
         FileIndex.open(gpa, "not a commit graph file!!!!"),
     );
+}
+
+test "FileIndex rejects chunk offsets outside the input without trapping" {
+    const gpa = std.testing.allocator;
+    var raw: [20]u8 = .{0} ** 20;
+    @memcpy(raw[0..4], commitgraph.commit_file_signature);
+    raw[4] = 1; // version
+    raw[5] = 1; // SHA-1
+    raw[6] = 1; // chunk count
+    @memcpy(raw[8..12], "OIDF");
+    std.mem.writeInt(u64, raw[12..20], std.math.maxInt(u64), .big);
+
+    try std.testing.expectError(Error.MalformedCommitGraphFile, FileIndex.open(gpa, &raw));
 }
 
 test "openChainIndexFromBytes empty rejected" {

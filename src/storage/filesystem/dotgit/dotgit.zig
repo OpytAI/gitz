@@ -33,6 +33,7 @@ const objects_path = "objects";
 const pack_dir = "pack";
 const refs_path = "refs";
 const tmp_packed_refs_prefix = "._packed-refs";
+const max_loose_ref_size: i64 = 4096;
 const pack_prefix = "pack-";
 const pack_ext = ".pack";
 const symref_prefix = "ref: ";
@@ -498,6 +499,7 @@ pub fn DotGit(comptime Fs: type) type {
         /// Write a reference (go-git `SetRef`). `old` enables check-and-set.
         pub fn setRef(self: *Self, r: Reference, old: ?Reference) !void {
             try validReferenceName(r.name);
+            if (r.type == .symbolic) try validReferenceName(r.target);
 
             const content = try formatRefContent(self.allocator(), r);
             defer self.allocator().free(content);
@@ -633,7 +635,10 @@ pub fn DotGit(comptime Fs: type) type {
         }
 
         /// Append an alternate objects path (go-git `AddAlternate`).
-        pub fn addAlternate(self: *Self, remote: []const u8) (Allocator.Error || fs_mod.Error)!void {
+        pub fn addAlternate(self: *Self, remote: []const u8) (Allocator.Error || fs_mod.Error || Error)!void {
+            if (remote.len == 0 or std.mem.indexOfAny(u8, remote, "\r\n\x00") != null) {
+                return error.InvalidAlternate;
+            }
             try self.fs.mkdirAll("objects/info", Mode.dir);
             var f = try self.fs.openFile("objects/info/alternates", O.RDWR | O.CREATE | O.APPEND, 0o640);
             defer f.close() catch {};
@@ -790,6 +795,13 @@ pub fn DotGit(comptime Fs: type) type {
             if (data.len == 0) return error.EmptyRefFile;
             const line = std.mem.trim(u8, data, &std.ascii.whitespace);
             if (line.len == 0) return error.EmptyRefFile;
+            try validReferenceName(ReferenceName.init(name));
+            if (std.mem.startsWith(u8, line, symref_prefix)) {
+                const target = line[symref_prefix.len..];
+                try validReferenceName(ReferenceName.init(target));
+            } else if (!isValidHashText(line)) {
+                return error.MalformedRefFile;
+            }
             return try ownedReferenceFromStrings(self.allocator(), name, line);
         }
 
@@ -799,6 +811,7 @@ pub fn DotGit(comptime Fs: type) type {
 
             const st = try self.fs.stat(path);
             if (st.isDir()) return error.IsDir;
+            if (st.size < 0 or st.size > max_loose_ref_size) return error.MalformedRefFile;
 
             var f = try self.fs.open(path);
             defer f.close() catch {};
@@ -841,6 +854,9 @@ pub fn DotGit(comptime Fs: type) type {
                     const hash_s = parts.next() orelse return error.PackedRefsBadFormat;
                     const name_s = parts.next() orelse return error.PackedRefsBadFormat;
                     if (parts.next() != null) return error.PackedRefsBadFormat;
+                    if (!isValidHashText(hash_s)) return error.PackedRefsBadFormat;
+                    validReferenceName(ReferenceName.init(name_s)) catch
+                        return error.PackedRefsBadFormat;
                     return try ownedReferenceFromStrings(self.allocator(), name_s, hash_s);
                 },
             }
@@ -1165,6 +1181,9 @@ pub fn readFileAll(allocator: Allocator, f: anytype) (Allocator.Error || fs_mod.
 fn validReferenceName(name: ReferenceName) Error!void {
     if (!name.isSafe()) return error.ReferenceNameEscape;
     const s = name.string();
+    if (std.mem.startsWith(u8, s, "refs/")) {
+        name.validate() catch return error.ReferenceNameEscape;
+    }
     for (s) |c| {
         if (c < 0x20 or c == 0x7f) return error.ReferenceNameEscape;
     }
@@ -1179,6 +1198,10 @@ fn validReferenceName(name: ReferenceName) Error!void {
         }
         if (std.mem.indexOfScalar(u8, part, ':') != null) return error.ReferenceNameEscape;
     }
+}
+
+fn isValidHashText(text: []const u8) bool {
+    return text.len == plumbing.digestSize() * 2 and isHex(text);
 }
 
 fn ownedReferenceFromStrings(allocator: Allocator, name: []const u8, target: []const u8) !Reference {

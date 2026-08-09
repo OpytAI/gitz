@@ -1,6 +1,4 @@
-# API inventory: plumbing/transport (phase 8)
 package: plumbing/transport
-phase: 8
 require:
   types:
     - Endpoint

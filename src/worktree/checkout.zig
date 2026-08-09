@@ -12,6 +12,7 @@ const index_fmt = @import("index");
 const memory = @import("memory");
 const fs_pkg = @import("fs");
 const storer = @import("storer");
+const pathutil = @import("pathutil");
 
 const worktree_mod = @import("worktree.zig");
 const options_mod = @import("options.zig");
@@ -72,12 +73,27 @@ pub fn checkout(w: *Worktree, o: CheckoutOptions) !void {
 pub fn checkoutTree(w: *Worktree, tree_hash: Hash) !void {
     const allocator = w.allocator;
 
+    const tree = try objpkg.getTree(allocator, w.storer, tree_hash);
+    defer objpkg.freeTree(allocator, tree);
+
+    // Validate the complete untrusted tree before deleting or writing any
+    // worktree path. This prevents a late hostile entry from leaving a partial
+    // checkout or reaching repository metadata.
+    {
+        var validation_files = try tree.files();
+        defer validation_files.close();
+        while (true) {
+            const f = validation_files.next() catch |err| {
+                if (err == error.EndOfStream) break;
+                return err;
+            };
+            try pathutil.validTreePath(f.name);
+        }
+    }
+
     // Drop files tracked by the previous index so force-style checkouts do not
     // leave stale paths (simplified vs full merkletrie diff).
     try removeIndexFiles(w);
-
-    const tree = try objpkg.getTree(allocator, w.storer, tree_hash);
-    defer objpkg.freeTree(allocator, tree);
 
     const idx = try allocator.create(Index);
     errdefer {
@@ -169,6 +185,7 @@ fn getCommitFromCheckoutOptions(w: *Worktree, opts: *const CheckoutOptions) !Has
 // ---------------------------------------------------------------------------
 
 fn checkoutFile(w: *Worktree, f: *const objpkg.File) !void {
+    try pathutil.validTreePath(f.name);
     try ensureParentDirs(w.filesystem, f.name);
 
     if (f.mode == filemode.Symlink) {
@@ -223,6 +240,9 @@ fn addIndexFromFile(
 
 fn removeIndexFiles(w: *Worktree) !void {
     const idx = try w.storer.index();
+    // Validate all names before removing the first path. The index can be
+    // loaded from an untrusted repository.
+    for (idx.entries.items) |entry| try pathutil.validTreePath(entry.name);
     // Collect names first: remove may not touch the index list itself.
     var i: usize = 0;
     while (i < idx.entries.items.len) : (i += 1) {

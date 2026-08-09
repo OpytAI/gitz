@@ -1,6 +1,4 @@
-# API inventory: plumbing/object/commitgraph (phase 7)
 package: plumbing/object/commitgraph
-phase: 7
 require:
   types:
     - CommitNode

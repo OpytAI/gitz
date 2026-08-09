@@ -8,60 +8,21 @@ pin:
 packages:
   # At least this many package rows (required + excluded + test_only).
   min_total: 50
-  # Required packages for phases 1–13 (approx full surface).
+  # Required package surface.
   min_required: 40
-  # Missing required packages for phase <= current_phase must be 0.
+  # Every required package must be present.
   max_missing: 0
 
 api:
-  # Count of inventories/api/*.yaml (phases 1–9).
-  # Phase 8 adds: packp, capability, sideband, transport, client, server, internal/common.
-  # Phase 9 adds: merkletrie(+noder/index/filesystem/frame), gitignore, gitattributes,
-  # format/diff, utils/diff, pathutil, path_util, revision, url, internal/reference.
-  # Phase 10 adds: config (gitconfig), repo.
-  # Phase 11 adds: remote.
-  # Phase 12 adds: worktree, porcelain (+2 → 54).
-  # Phase 13 adds: file/git/http/ssh, serverinfo, submodule, blame, prune (+8 → 62).
+  # Count of inventories/api/*.yaml.
   min_files: 62
-  # For due API files (phase ≤ current): zig_map coverage of require names.
-  # Phase 1: due API packages should map zig_map names into sources.
+  # zig_map coverage of required API names.
   min_mapped_ratio: 0.5
 
 goldens:
-  # Number of Class A golden case dirs (data/goldens/**/meta.yaml).
-  # Phase 1–4: 17; phase 5: index multi-version (v2 empty, v3 intent, v4 prefix)
-  # + pack_encode_empty + pack_encode_one_empty_commit (22).
-  # Phase 6: storage_fs_init_layout + storage_fs_packed_refs +
-  # storage_fs_loose_object_path (25).
-  # Phase 7: object_empty_tree + object_empty_blob + object_empty_commit_tree
-  # + revlist_empty_tips (29).
-  # Phase 8: packp_advrefs_empty + packp_advrefs_with_head + packp_ulreq_simple
-  # + packp_report_status_ok + sideband_channel_byte + sideband_pack_channel
-  # + transport_endpoint_http + transport_endpoint_scp (37).
-  # Phase 9: pathutil_ntfs_dotgit + gitignore_simple + revision_parse +
-  # diff_do_equal + merkletrie_empty + pathutil_tree_reject +
-  # unified_diff_one_line + merkletrie_insert + merkletrie_modify_delete +
-  # gitattributes_simple (47).
-  # Phase 10: gitconfig_new_defaults + gitconfig_marshal_core + repo_init_bare
-  # + repo_init_nonbare + repo_open_head + repo_object_getters (53).
-  # Phase 11: remote_string + remote_fetch_options_defaults +
-  # remote_default_fetch_refspec + remote_default_push_refspec +
-  # remote_list_ref_names (58).
-  # Phase 12: worktree status/add/commit/checkout + pull FF + porcelain
-  # PlainClone/clone options (+8 → 66).
-  # Phase 12 Class C (+7 → 73). Phase 13 transports/extras (+8 → 81).
-  # Phase 12 residuals: true Class C scenario goldens (+7 → 73):
-  # worktree_class_c_lifecycle, worktree_class_c_reset_soft,
-  # worktree_class_c_pull_ff, worktree_class_c_checkout_force,
-  # worktree_class_c_sparse, worktree_class_c_move,
-  # porcelain_class_c_plain_clone.
+  # Number of golden case directories under data/goldens.
   min_count: 81
 
-
 allowlists:
-  # Entries with remove_by_phase <= current_phase must not remain.
-  max_overdue: 0
-
-current_phase:
-  # Allowed phase ids.
-  allowed: [g, "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"]
+  # The final tree carries no accepted gaps.
+  max_active: 0

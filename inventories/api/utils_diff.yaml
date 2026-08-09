@@ -1,6 +1,4 @@
-# API inventory: utils/diff (phase 9)
 package: utils/diff
-phase: 9
 require:
   types:
     - Diff

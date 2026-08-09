@@ -25,6 +25,7 @@ _DEPS = [
     "//src/plumbing",
     "//src/plumbing/filemode",
     "//src/plumbing/format/diff",
+    "//src/internal/pathutil",
     "//src/plumbing/object/openpgp",
     "//src/plumbing/storer",
     "//src/storage/memory",

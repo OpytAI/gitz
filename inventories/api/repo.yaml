@@ -1,18 +1,13 @@
-# API inventory: repo (phase 10) — go-git root repository partial
 # packages.yaml go key is git/repository (zig: src/repo).
 #
 # Present: Init/Open (memory), PlainInit/PlainOpen (fs.Mem), configScoped,
 # Log (+ PathFilter fields), CreateTagOptions (tagger/message/pgp_signature),
 # CRUD remotes/branches/tags, object facades, ResolveRevision.
-# Phase 11: Repository.fetch / push via //src/remote.
-# Phase 12 Worktree glue: Repository.worktree / worktreeEmbedded (+ free
 # functions worktreeOf / worktreeEmbedded) over //src/worktree; worktreeFs is
 # the FS-only probe. Field is `wt` (go-git `r.wt`).
-# Phase 13: RepackObjects / RepackConfig (full FS path; memory PackfileWriterNotSupported).
 # Full Worktree engine lives in git/worktree. PlainClone / Clone: git/porcelain.
 # Deferred: EnableDotGitCommonDir (stub flag).
 package: git/repository
-phase: 10
 require:
   types:
     - Repository
@@ -148,12 +143,10 @@ require:
     - plainInitWithOptions
     - plainOpen
     - plainOpenWithOptions
-    # Phase 12 Worktree glue (go-git Repository.Worktree)
     - worktreeOf
     - worktreeEmbedded
     - WorktreeNotProvided
     - IsBareRepository
-    # Phase 13 repack
     - repackObjects
     - repackObjectsFs
 zig_map:

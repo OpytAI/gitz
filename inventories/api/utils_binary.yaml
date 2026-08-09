@@ -1,6 +1,4 @@
-# API inventory: utils/binary (phase 1)
 package: utils/binary
-phase: 1
 require:
   types: []
   functions:

@@ -64,38 +64,6 @@ pub const Os = struct {
         };
     }
 
-    /// Create a unique temporary directory under process cwd `gitz-os-*`.
-    /// Prefer `initFromDir` + `std.testing.tmpDir` in unit tests.
-    pub fn initTemp(allocator: Allocator, io: Io) (Allocator.Error || Error)!Os {
-        var name_buf: [64]u8 = undefined;
-        // Unique-enough name without depending on std.time (slim in Zig 0.16).
-        const stamp = @intFromPtr(allocator.ptr) ^ @intFromPtr(&name_buf);
-        const name = std.fmt.bufPrint(&name_buf, "gitz-os-{x}", .{stamp}) catch return error.InvalidMode;
-
-        // Prefer cache/tmp when present; else cwd.
-        const base: Dir = Dir.cwd();
-        const dir = base.createDirPathOpen(io, name, .{
-            .open_options = .{ .iterate = true, .access_sub_paths = true },
-        }) catch |e| return mapHostErr(e);
-
-        // Best-effort absolute-ish path for root() display.
-        var abs_buf: [Dir.max_path_bytes]u8 = undefined;
-        const abs_len = base.realPath(io, &abs_buf) catch 0;
-        const root_owned = if (abs_len > 0)
-            try std.fmt.allocPrint(allocator, "{s}/{s}", .{ abs_buf[0..abs_len], name })
-        else
-            try allocator.dupe(u8, name);
-        errdefer allocator.free(root_owned);
-
-        return .{
-            .allocator = allocator,
-            .io = io,
-            .root_path = root_owned,
-            .root_dir = dir,
-            .owns_root_dir = true,
-        };
-    }
-
     /// Wrap an already-open directory (e.g. `std.testing.tmpDir().dir`).
     /// Does not take ownership of `dir` unless `take_ownership` is true.
     pub fn initFromDir(

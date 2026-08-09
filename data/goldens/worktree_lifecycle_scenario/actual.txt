@@ -1,4 +1,4 @@
-# go-git Worktree status/add/commit lifecycle (Class C scenario, documented)
+# go-git Worktree status/add/commit lifecycle
 # Setup: empty non-bare memory repo + Mem FS worktree; symbolic HEAD → master.
 step1_after_init:
   status_is_clean=true

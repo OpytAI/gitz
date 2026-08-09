@@ -1,0 +1,5 @@
+name: worktree_lifecycle
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "The status/add/commit cycle pins Git-visible status codes for memory storage and Mem FS."

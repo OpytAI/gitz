@@ -1,4 +1,4 @@
-# Index v4 with path prefix compression (Class A golden, phase 5)
+# Index v4 with path prefix compression
 # go-git: plumbing/format/index Encoder.encodeEntryNameV4 / TestEncodeV4
 # Layout: 12-byte header + 2 entries (v4 names, no 8-byte padding) + 20-byte SHA-1 trailer
 # Sorted names: "bar", "baz/bar" (common prefix "ba")

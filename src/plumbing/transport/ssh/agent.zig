@@ -107,7 +107,7 @@ pub fn parseSignResponse(allocator: Allocator, body: []const u8) (Allocator.Erro
 }
 
 fn readU32(buf: []const u8, off: *usize) error{AgentProtocol}!u32 {
-    if (off.* + 4 > buf.len) return error.AgentProtocol;
+    if (off.* > buf.len or buf.len - off.* < 4) return error.AgentProtocol;
     const v = std.mem.readInt(u32, buf[off.* ..][0..4], .big);
     off.* += 4;
     return v;
@@ -116,7 +116,7 @@ fn readU32(buf: []const u8, off: *usize) error{AgentProtocol}!u32 {
 fn readString(buf: []const u8, off: *usize) error{AgentProtocol}![]const u8 {
     const n = try readU32(buf, off);
     if (n > max_string_len) return error.AgentProtocol;
-    if (off.* + n > buf.len) return error.AgentProtocol;
+    if (n > buf.len - off.*) return error.AgentProtocol;
     const s = buf[off.* .. off.* + n];
     off.* += n;
     return s;

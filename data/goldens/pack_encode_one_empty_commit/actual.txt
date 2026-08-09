@@ -1,4 +1,4 @@
-# Pack encode with one empty commit object Class A golden (phase 5)
+# Pack encode with one empty commit object
 # go-git: plumbing/format/packfile Encoder.Encode([empty_commit], packWindow)
 # Source: encoder_test.go TestCorrectPackWithOneEmptyObject
 # Layout: PACK | version 2 | object_count 1 | type/size byte | zlib(empty) | SHA-1 trailer

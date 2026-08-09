@@ -19,6 +19,9 @@ const err_mod = @import("error.zig");
 const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
 const Error = err_mod.Error;
+/// Bound linked parent depth so malformed chain files cannot drive recursive
+/// lookup and deinitialization into a stack exhaustion.
+const max_chain_graphs = @import("commitgraph.zig").max_chain_graphs;
 
 /// Read a commit-graph chain file body and return hashes oldest-to-newest
 /// (go-git `OpenChainFile`).
@@ -45,6 +48,7 @@ pub fn openChainFile(allocator: Allocator, data: []const u8) Error![]Hash {
             return Error.MalformedCommitGraphFile;
         }
         const h = plumbing.parseHash(line) catch return Error.MalformedCommitGraphFile;
+        if (list.items.len >= max_chain_graphs) return Error.MalformedCommitGraphFile;
         list.append(allocator, h) catch return Error.MalformedCommitGraphFile;
     }
 
@@ -156,4 +160,14 @@ test "openChainFile ignores trailing partial line" {
     const chain = try openChainFile(gpa, body);
     defer gpa.free(chain);
     try std.testing.expectEqual(@as(usize, 1), chain.len);
+}
+
+test "openChainFile bounds recursive graph depth" {
+    const gpa = std.testing.allocator;
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(gpa);
+    for (0..max_chain_graphs + 1) |_| {
+        try body.appendSlice(gpa, "c336d16298a017486c4164c40f8acb28afe64e84\n");
+    }
+    try std.testing.expectError(Error.MalformedCommitGraphFile, openChainFile(gpa, body.items));
 }

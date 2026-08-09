@@ -1,6 +1,4 @@
-# API inventory: plumbing/revlist (phase 7)
 package: plumbing/revlist
-phase: 7
 require:
   types: []
   functions:

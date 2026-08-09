@@ -1,6 +1,6 @@
 load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
 
-# go-git internal/pathutil — NTFS/HFS path security and ValidTreePath.
+# Internal path handling and path security.
 zig_library(
     name = "pathutil",
     main = "root.zig",
@@ -8,6 +8,7 @@ zig_library(
         "dotgit.zig",
         "hfs.zig",
         "ntfs.zig",
+        "tilde.zig",
         "tree.zig",
     ],
     import_name = "pathutil",
@@ -22,6 +23,7 @@ zig_test(
         "dotgit.zig",
         "hfs.zig",
         "ntfs.zig",
+        "tilde.zig",
         "tree.zig",
     ],
 )

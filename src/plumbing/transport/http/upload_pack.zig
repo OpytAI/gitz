@@ -26,7 +26,7 @@ pub const UploadPackSession = struct {
         return self.session.advertisedReferences(transport.UploadPackServiceName);
     }
 
-    /// go-git `AdvertisedReferencesContext` (context ignored; no cancel yet).
+    /// go-git `AdvertisedReferencesContext`.
     pub fn advertisedReferencesContext(self: *UploadPackSession) !*packp.AdvRefs {
         return self.advertisedReferences();
     }

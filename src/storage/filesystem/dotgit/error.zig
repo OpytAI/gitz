@@ -16,10 +16,14 @@ pub const Error = error{
     PackedRefsBadFormat,
     /// Loose ref file is empty (go-git `ErrEmptyRefFile`).
     EmptyRefFile,
+    /// Loose ref content is neither a valid object ID nor a safe symbolic ref.
+    MalformedRefFile,
     /// Reference name escapes safe storage paths (go-git `ErrReferenceNameEscape`).
     ReferenceNameEscape,
     /// Submodule name escapes `modules/` (go-git `ErrModuleNameEscape`).
     ModuleNameEscape,
+    /// Alternate object directory contains an invalid line delimiter or path.
+    InvalidAlternate,
     /// Reference path is a directory (go-git `ErrIsDir`).
     IsDir,
     /// Concurrent reference update lost the race (go-git `storage.ErrReferenceHasChanged`).

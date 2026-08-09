@@ -1,6 +1,4 @@
-# API inventory: plumbing/color (phase 1)
 package: plumbing/color
-phase: 1
 require:
   types: []
   functions: []

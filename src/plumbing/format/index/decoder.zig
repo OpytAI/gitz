@@ -45,6 +45,11 @@ const entry_extended: u16 = 0x4000;
 const name_mask: u16 = 0xfff;
 const intent_to_add_mask: u16 = 1 << 13;
 const skip_work_tree_mask: u16 = 1 << 14;
+/// Generous defensive limits for attacker-controlled, streaming index data.
+/// Normal Git paths and extensions are far smaller; the limits prevent a tiny
+/// prefix from forcing unbounded allocation before the body is available.
+const max_path_bytes: usize = 1024 * 1024;
+const max_extension_bytes: u32 = 64 * 1024 * 1024;
 
 /// Reads and decodes index files from an input stream (go-git `Decoder`).
 pub const Decoder = struct {
@@ -233,9 +238,18 @@ pub const Decoder = struct {
         try self.readHashed(&header);
 
         const ext_len = try self.readHashedUint32();
-        const body = try idx.allocator.alloc(u8, ext_len);
-        defer idx.allocator.free(body);
-        try self.readHashed(body);
+        if (ext_len > max_extension_bytes) return Error.MalformedIndexFile;
+        var body_list: std.ArrayList(u8) = .empty;
+        defer body_list.deinit(idx.allocator);
+        var remaining: usize = ext_len;
+        var chunk: [4096]u8 = undefined;
+        while (remaining > 0) {
+            const n = @min(remaining, chunk.len);
+            try self.readHashed(chunk[0..n]);
+            try body_list.appendSlice(idx.allocator, chunk[0..n]);
+            remaining -= n;
+        }
+        const body = body_list.items;
 
         var body_reader = Reader.fixed(body);
 
@@ -325,6 +339,7 @@ pub const Decoder = struct {
         while (true) {
             const b = try self.readHashedByte();
             if (b == delim) return try list.toOwnedSlice(allocator);
+            if (list.items.len >= max_path_bytes) return Error.MalformedIndexFile;
             try list.append(allocator, b);
         }
     }
@@ -471,6 +486,7 @@ fn readUntilPlain(r: *Reader, allocator: Allocator, delim: u8) DecodeError![]u8 
     while (true) {
         const b = r.takeByte() catch |e| return mapReaderError(e);
         if (b == delim) return try list.toOwnedSlice(allocator);
+        if (list.items.len >= max_path_bytes) return Error.MalformedIndexFile;
         try list.append(allocator, b);
     }
 }
@@ -1584,3 +1600,18 @@ test "TestDecodeAllIndexFixtures data accessors" {
     try std.testing.expect(got[2] and got[3] and got[4]);
 }
 
+test "decoder rejects oversized extension before allocation" {
+    const allocator = std.testing.allocator;
+    var raw: [4 + 4 + 4 + 4 + 4 + plumbing.MaxSize]u8 = .{0} ** (4 + 4 + 4 + 4 + 4 + plumbing.MaxSize);
+    @memcpy(raw[0..4], &index.index_signature);
+    std.mem.writeInt(u32, raw[4..8], 2, .big);
+    std.mem.writeInt(u32, raw[8..12], 0, .big);
+    @memcpy(raw[12..16], "ABCD");
+    std.mem.writeInt(u32, raw[16..20], max_extension_bytes + 1, .big);
+
+    var reader = Reader.fixed(raw[0 .. 20 + plumbing.digestSize()]);
+    var decoder = Decoder.init(&reader);
+    var idx = Index.init(allocator);
+    defer idx.deinit();
+    try std.testing.expectError(Error.MalformedIndexFile, decoder.decode(&idx));
+}

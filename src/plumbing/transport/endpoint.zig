@@ -83,6 +83,7 @@ pub const Endpoint = struct {
     pub fn deinit(self: *Endpoint) void {
         freeOwned(self.allocator, self.protocol);
         freeOwned(self.allocator, self.user);
+        if (self.password.len != 0) @memset(self.password, 0);
         freeOwned(self.allocator, self.password);
         freeOwned(self.allocator, self.host);
         freeOwned(self.allocator, self.path);

@@ -1,12 +1,9 @@
-# API inventory: remote (phase 11) — go-git root remote.go + remote options.
 # packages.yaml go key is git/remote (zig: src/remote).
 #
 # Present: Remote, NewRemote, List/Fetch/Push, TransportClientOpts, SessionOpts,
 # force-with-lease, follow-tags (IsAncestor), updateShallow, depth/shallow server,
 # Progress / no-progress, MapLoader path, Repository.fetch/push glue.
-# Network HTTP/SSH: phase 13. PlainClone: phase 12.
 package: git/remote
-phase: 11
 require:
   types:
     - Remote

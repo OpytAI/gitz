@@ -1,0 +1,5 @@
+name: worktree_reset_soft
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "After two commits, a soft reset to the first leaves b.txt staged as added."

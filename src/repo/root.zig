@@ -2,8 +2,8 @@
 //!
 //! Init/Open over `*memory.Storage` plus object/ref facades, Log, CreateTag,
 //! and configScoped. PlainInit/PlainOpen over filesystem storage + `fs.Mem`
-//! live in `plain.zig`. Full Worktree engine is phase 12 (`worktree` / `worktree_api`).
-//! Phase 11: Remote Fetch / List / Push via `//src/remote` (re-exported here).
+//! live in `plain.zig`. Worktree integration lives in `worktree` / `worktree_api`.
+//! Remote Fetch / List / Push use `//src/remote` and are re-exported here.
 //! Storer config is `memory.Config`; high-level remotes/branches use `gitconfig`
 //! (also via `configScoped`).
 

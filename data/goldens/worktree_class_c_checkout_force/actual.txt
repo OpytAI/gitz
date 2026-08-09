@@ -1,5 +1,0 @@
-# go-git Worktree.Checkout Force (Class C scenario state)
-# Setup: memory + Mem FS; commit file.txt content=original; dirty worktree to dirty.
-# CheckoutOptions.force=true → HardReset mode materialises tree (checkout.zig).
-before_force: file.txt worktree=M content=dirty clean=false
-after_force: file.txt content=original clean=true

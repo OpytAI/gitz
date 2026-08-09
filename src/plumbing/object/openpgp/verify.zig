@@ -56,7 +56,7 @@ pub const VerifiedKey = struct {
 };
 
 pub fn parsePublicKey(allocator: Allocator, body: []const u8) (Allocator.Error || Error)!PublicKey {
-    if (body.len < 6 or body[0] != 4) return error.UnsupportedAlgorithm;
+    if (body.len < 6 or body.len > std.math.maxInt(u16) or body[0] != 4) return error.UnsupportedAlgorithm;
     const algo = body[5];
     const owned = try allocator.dupe(u8, body);
     errdefer allocator.free(owned);
@@ -300,7 +300,7 @@ pub fn parseKeyring(allocator: Allocator, binary: []const u8) (Allocator.Error |
     errdefer kr.deinit();
     var pos: usize = 0;
     while (pos < binary.len) {
-        const pkt = nextPacket(binary, &pos) catch break;
+        const pkt = try nextPacket(binary, &pos);
         if (pkt.tag == tag_public_key or pkt.tag == tag_public_subkey) {
             const pk = parsePublicKey(allocator, pkt.body) catch |err| switch (err) {
                 error.OutOfMemory => return error.OutOfMemory,

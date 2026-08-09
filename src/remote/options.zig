@@ -15,7 +15,7 @@ const ProxyOptions = transport.ProxyOptions;
 pub const default_remote_name: []const u8 = "origin";
 
 /// go-git default ListOptions.Timeout when the field is zero (seconds).
-/// Applied when opening network transports (phase 13); in-process MapLoader
+/// Applied when opening network transports; in-process MapLoader
 /// ignores deadlines.
 pub const default_list_timeout_sec: i32 = 10;
 

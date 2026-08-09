@@ -1,21 +1,21 @@
 # Fixtures
 
-Vendored binary and repository fixtures for Class A–C goldens.
+Vendored binary and repository fixtures for deterministic tests.
 
 ## Layout
 
 ```text
 data/fixtures/
-  sha1cd/         # SHA-1 collision vectors (sha-mbles; Phase 1)
+  sha1cd/         # SHA-1 collision vectors (sha-mbles)
                   # mirrored in src/crypto/sha1cd/collision_vectors.zig for tests
-  idxfile/        # pack idx samples (Phase 2)
+  idxfile/        # pack index samples
                   # basic.idx — go-git-fixtures basic pack (a3fed42d…), 31 objects
                   # also embedded as src/plumbing/format/idxfile/basic_idx.zig for tests
-  packfile/       # .pack / .idx samples (Phase 3)
+  packfile/       # .pack and .idx samples
                   # see table below; also embedded as *.zig under
                   # src/plumbing/format/packfile/ for package unit tests
-  repos/          # small on-disk git repos (Phase 6+)
-  indexes/        # .git/index samples (Phase 5+)
+  repos/          # small on-disk Git repositories
+  indexes/        # .git/index samples
   README.md       # this file
 ```
 
@@ -34,7 +34,7 @@ bytes of the pack image), unless noted.
 | File | Size | PackfileHash (trailer) | Role |
 |------|------|------------------------|------|
 | `packfile/basic.pack` | 84794 bytes | `a3fed42da1e8189a077c0e6846c040dcf73fc9dd` | go-git-fixtures **basic** OFS-delta pack (31 objects) |
-| `packfile/basic.idx` | (matches phase-2 idx) | index for `basic.pack` | same bytes as `idxfile/basic.idx` |
+| `packfile/basic.idx` | (matches `idxfile/basic.idx`) | index for `basic.pack` | same bytes as `idxfile/basic.idx` |
 | `packfile/ref_delta.pack` | 85585 bytes | `c544593473465e6315ad4182d04d366c4592b829` | basic.git **ref-delta** pack (31 objects) |
 | `packfile/ref_delta.idx` | (idx for ref-delta) | index for `ref_delta.pack` | pack-c5445934… idx |
 | `packfile/thinpack.pack` | 2461 bytes | `ee4fef0ef8be5053ebae4ce75acf062ddf3031fb` | thin pack (adds commit on spinnaker base) |
@@ -54,7 +54,7 @@ bytes of the pack image), unless noted.
 | `codecommit.pack` | `codecommit_pack.zig` |
 | `delta_before_base.pack` | `delta_before_base_pack.zig` |
 
-**Proven bytes (Class A goldens):**
+**Verified bytes:**
 
 | Field | Value | Golden |
 |-------|-------|--------|
@@ -65,6 +65,5 @@ bytes of the pack image), unless noted.
 | Ref-delta object count | 31 | `data/goldens/packfile_ref_delta_count/` |
 | Ref-delta pack trailer | `c544593473465e6315ad4182d04d366c4592b829` | `data/goldens/packfile_ref_delta_count/` |
 
-The basic trailer hash is also recorded as `packfile_hash` in `data/goldens/idxfile_basic_count/` (Phase 2).
-
-Phase 2 added `idxfile/basic.idx`. Phase 3 vendors the matching full packs under `packfile/`.
+The basic trailer hash is also recorded as `packfile_hash` in
+`data/goldens/idxfile_basic_count/`.

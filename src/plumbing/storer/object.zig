@@ -316,7 +316,7 @@ pub fn forEachIterator(iter: anytype, cb: anytype) !void {
     }
 }
 
-/// Alias used in phase task wording (`forEachEncodedObject`).
+/// Compatibility alias for `forEachEncodedObject`.
 pub const forEachEncodedObject = forEachIterator;
 
 // ---------------------------------------------------------------------------

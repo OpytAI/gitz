@@ -1,9 +1,6 @@
-# API inventory: plumbing/format/packfile (phase 3 read + phase 5 write)
-# Encoder / DiffDelta / GetDelta / ObjectToPack land in phase 5.
 # Go NewEncoder maps to Zig Encoder.init; DiffDelta/GetDelta keep go names as zig_map
 # targets diffDelta/getDelta (package-root re-exports, same style as patchDelta).
 package: plumbing/format/packfile
-phase: 3
 require:
   types:
     - Scanner
@@ -84,7 +81,6 @@ require:
     - VersionSupported
     - signature
     - max_delta_chain_depth
-    # Phase 5 write path (package-root re-exports)
     - Encoder
     - Encoder.init
     - Encoder.initFrom

@@ -6,6 +6,7 @@ _SRCS = [
     "options.zig",
     "status.zig",
     "host.zig",
+    "owned.zig",
     "relative_url.zig",
     "submodule.zig",
 ]

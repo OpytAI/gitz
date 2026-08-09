@@ -1,0 +1,5 @@
+name: worktree_checkout_force
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "Checkout Force restores the original content of a dirty file."

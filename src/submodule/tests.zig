@@ -636,6 +636,36 @@ test "list with pre-parsed Modules" {
     try std.testing.expectEqualStrings("only", list.items[0].config().name);
 }
 
+test "list drops dot-dot submodule paths and rejects git metadata paths" {
+    const gpa = std.testing.allocator;
+    var fx = try Fixture.create(gpa);
+    defer fx.deinit();
+
+    const cases = [_]struct { path: []const u8, rejected: bool }{
+        .{ .path = "../outside", .rejected = false },
+        .{ .path = ".git/modules/evil", .rejected = true },
+        .{ .path = "libs/../../outside", .rejected = false },
+    };
+    for (cases) |case| {
+        var modules = try gitconfig.Modules.create(gpa);
+        defer modules.deinit();
+        const text = try std.fmt.allocPrint(
+            gpa,
+            "[submodule \"hostile\"]\n\tpath = {s}\n\turl = https://example.invalid/hostile.git\n",
+            .{case.path},
+        );
+        defer gpa.free(text);
+        try modules.unmarshal(text);
+        if (case.rejected) {
+            try std.testing.expectError(error.InvalidPath, submodule.listSubmodules(&fx.host, &modules));
+        } else {
+            var list = try submodule.listSubmodules(&fx.host, &modules);
+            defer list.free(gpa);
+            try std.testing.expectEqual(@as(usize, 0), list.items.len);
+        }
+    }
+}
+
 test "Host.fromWorktree shares storer and filesystem" {
     const gpa = std.testing.allocator;
     var fx = try Fixture.create(gpa);

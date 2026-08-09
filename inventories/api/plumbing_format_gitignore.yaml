@@ -1,6 +1,4 @@
-# API inventory: plumbing/format/gitignore (phase 9)
 package: plumbing/format/gitignore
-phase: 9
 require:
   types:
     - Pattern

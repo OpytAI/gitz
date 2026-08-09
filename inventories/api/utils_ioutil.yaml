@@ -1,6 +1,4 @@
-# API inventory: utils/ioutil (phase 1)
 package: utils/ioutil
-phase: 1
 require:
   types:
     - ReadCloser

@@ -1,5 +1,4 @@
 package: fixture/alpha
-phase: 1
 require:
   types: []
   functions:

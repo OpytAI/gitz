@@ -1,7 +1,7 @@
 //! storage — repository storage façade (go-git `storage` package).
 //!
 //! Holds cross-backend errors and re-exports the memory backend. Filesystem
-//! and transactional storers land in later phases.
+//! and transactional storers are provided by their respective packages.
 //!
 //! # go-git interfaces (method sets in Zig)
 //!

@@ -998,7 +998,7 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
 
             /// Next object or `error.EndOfStream` (go-git `io.EOF`; matches memory suite).
             pub fn next(self: *Self.ObjectHashIter) error{EndOfStream}!*MemoryObject {
-                // Phase 1: loose objects (go-git `objectsIter`).
+                // First, loose objects (go-git `objectsIter`).
                 while (self.loose_pos < self.loose_hashes.len) {
                     const h = self.loose_hashes[self.loose_pos];
                     self.loose_pos += 1;
@@ -1007,7 +1007,7 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
                     return obj;
                 }
 
-                // Phase 2: pack index entries (go-git `lazyPackfilesIter` + `packfileIter`).
+                // Then pack index entries (go-git `lazyPackfilesIter` + `packfileIter`).
                 while (true) {
                     while (self.active == null) {
                         if (self.pack_pos >= self.pack_hashes.len) return error.EndOfStream;

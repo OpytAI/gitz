@@ -42,7 +42,7 @@ test {
 }
 
 // ---------------------------------------------------------------------------
-// Required phase tests (Mem backend)
+// Core Mem backend tests.
 // ---------------------------------------------------------------------------
 
 test "Init scaffolding creates layout dirs" {
@@ -844,7 +844,7 @@ test "iterEncodedObjects type filter loose and pack" {
 }
 
 // ---------------------------------------------------------------------------
-// StorageOs over Os.initFromDir + tmpDir (phase 6 exit: real disk path)
+// StorageOs over Os.initFromDir + tmpDir (real disk path).
 // ---------------------------------------------------------------------------
 
 test "StorageOs initLayout setEncodedObject encodedObject" {

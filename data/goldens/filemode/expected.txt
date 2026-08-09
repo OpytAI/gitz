@@ -1,4 +1,4 @@
-# go-git plumbing/filemode constants (phase 1 Class A)
+# go-git plumbing/filemode constants
 # Source: go-git/plumbing/filemode/filemode.go + filemode_test.go
 # New() accepts unpadded octal; String() returns 7-digit zero-padded octal.
 Empty=0 parse=000000 string=0000000

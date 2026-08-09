@@ -1,6 +1,4 @@
-# API inventory: internal/reference (phase 9)
 package: internal/reference
-phase: 9
 require:
   functions:
     - sort

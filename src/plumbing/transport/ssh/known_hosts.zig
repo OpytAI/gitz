@@ -223,23 +223,33 @@ pub fn parseKnownHostsFile(allocator: Allocator, content: []const u8) Allocator.
 /// Supports comma-separated hosts, optional `[host]:port`, trailing `.` strip,
 /// and OpenSSH hashed `|1|salt|hash` entries (HMAC-SHA1).
 pub fn hostFieldMatches(hosts_field: []const u8, hostname: []const u8) bool {
+    var canonical_buf: [1024]u8 = undefined;
+    const canonical_host = canonicalKnownHost(hostname, &canonical_buf);
     if (std.mem.startsWith(u8, hosts_field, "|1|")) {
-        return hashedHostFieldMatches(hosts_field, hostname);
+        return hashedHostFieldMatches(hosts_field, canonical_host);
     }
+    var matched = false;
     var it = std.mem.splitScalar(u8, hosts_field, ',');
-    while (it.next()) |pat| {
-        if (hostPatternMatches(pat, hostname)) return true;
+    while (it.next()) |field| {
+        if (field.len == 0) continue;
+        const negated = field[0] == '!';
+        const pat = if (negated) field[1..] else field;
+        if (!hostPatternMatches(pat, canonical_host)) continue;
+        if (negated) return false;
+        matched = true;
     }
-    return false;
+    return matched;
 }
 
 /// Match `hostname` against a parsed hashed entry (uses stored salt/MAC when present).
 pub fn entryHostMatches(entry: KnownHostEntry, hostname: []const u8) bool {
     if (entry.hashed) {
+        var canonical_buf: [1024]u8 = undefined;
+        const canonical_host = canonicalKnownHost(hostname, &canonical_buf);
         if (entry.hash_salt.len > 0 and entry.hash_mac.len == HmacSha1.mac_length) {
-            return hmacHostMatches(hostname, entry.hash_salt, entry.hash_mac);
+            return hmacHostMatches(canonical_host, entry.hash_salt, entry.hash_mac);
         }
-        return hashedHostFieldMatches(entry.hosts, hostname);
+        return hashedHostFieldMatches(entry.hosts, canonical_host);
     }
     return hostFieldMatches(entry.hosts, hostname);
 }
@@ -299,28 +309,68 @@ fn hmacHostMatches(hostname: []const u8, salt: []const u8, expected_mac: []const
 }
 
 fn hostPatternMatches(pattern: []const u8, hostname: []const u8) bool {
-    var pat = pattern;
-    // Optional leading '!' (negation) — not treated as a positive match.
-    if (pat.len > 0 and pat[0] == '!') return false;
+    const pat = pattern;
 
     // [host]:port form
     if (pat.len >= 2 and pat[0] == '[') {
         if (std.mem.lastIndexOfScalar(u8, pat, ']')) |rb| {
-            const inner = pat[1..rb];
-            if (hostnameEquals(inner, hostname)) return true;
-            if (std.mem.eql(u8, pat, hostname)) return true;
-            pat = inner;
+            if (rb + 1 < pat.len and pat[rb + 1] == ':') {
+                return hostnameEquals(pat, hostname);
+            }
         }
     }
 
-    // Simple glob: trailing `*` only (prefix match).
-    if (std.mem.indexOfScalar(u8, pat, '*')) |star| {
-        if (star == pat.len - 1) {
-            const prefix = pat[0..star];
-            return std.mem.startsWith(u8, hostname, prefix);
+    if (std.mem.indexOfAny(u8, pat, "*?") == null) return hostnameEquals(pat, hostname);
+    const clean_pat = std.mem.trimEnd(u8, pat, ".");
+    const clean_host = std.mem.trimEnd(u8, hostname, ".");
+    return wildcardHostnameMatches(clean_pat, clean_host);
+}
+
+/// Convert callback `host:port` input to OpenSSH known_hosts form. Port 22
+/// uses the bare host. Other ports use `[host]:port`.
+fn canonicalKnownHost(input: []const u8, buf: []u8) []const u8 {
+    if (input.len == 0) return input;
+    if (input[0] == '[') {
+        const rb = std.mem.lastIndexOfScalar(u8, input, ']') orelse return input;
+        if (rb + 1 >= input.len or input[rb + 1] != ':') return input;
+        const port = std.fmt.parseInt(u16, input[rb + 2 ..], 10) catch return input;
+        if (port == 22) return input[1..rb];
+        return input;
+    }
+    const colon = std.mem.lastIndexOfScalar(u8, input, ':') orelse return input;
+    const host = input[0..colon];
+    if (host.len == 0 or std.mem.indexOfScalar(u8, host, ':') != null) return input;
+    const port = std.fmt.parseInt(u16, input[colon + 1 ..], 10) catch return input;
+    if (port == 22) return host;
+    return std.fmt.bufPrint(buf, "[{s}]:{d}", .{ host, port }) catch input;
+}
+
+/// OpenSSH host patterns support `*` and `?` at any position.
+fn wildcardHostnameMatches(pattern: []const u8, hostname: []const u8) bool {
+    var p: usize = 0;
+    var h: usize = 0;
+    var star: ?usize = null;
+    var retry_h: usize = 0;
+    while (h < hostname.len) {
+        if (p < pattern.len and
+            (pattern[p] == '?' or std.ascii.toLower(pattern[p]) == std.ascii.toLower(hostname[h])))
+        {
+            p += 1;
+            h += 1;
+        } else if (p < pattern.len and pattern[p] == '*') {
+            star = p;
+            p += 1;
+            retry_h = h;
+        } else if (star) |star_pos| {
+            p = star_pos + 1;
+            retry_h += 1;
+            h = retry_h;
+        } else {
+            return false;
         }
     }
-    return hostnameEquals(pat, hostname);
+    while (p < pattern.len and pattern[p] == '*') p += 1;
+    return p == pattern.len;
 }
 
 fn hostnameEquals(a: []const u8, b: []const u8) bool {
@@ -343,6 +393,12 @@ pub fn checkKnownHosts(
     key_blob: []const u8,
 ) HostKeyCheckError!void {
     var saw_host = false;
+    // A matching revoked key always wins over an allowed duplicate.
+    for (entries) |e| {
+        if (!e.revoked or !entryHostMatches(e, hostname)) continue;
+        if (!std.mem.eql(u8, e.key_algo, key_algo)) continue;
+        if (std.mem.eql(u8, e.key_blob, key_blob)) return error.HostKeyMismatch;
+    }
     for (entries) |e| {
         if (e.revoked) continue;
         if (!entryHostMatches(e, hostname)) continue;
@@ -408,7 +464,7 @@ pub fn loadKnownHostsDb(
     allocator: Allocator,
     io: std.Io,
     files: []const []const u8,
-) anyerror!KnownHostsDb {
+) Allocator.Error!KnownHostsDb {
     var all: std.ArrayList(KnownHostEntry) = .empty;
     errdefer {
         for (all.items) |*e| e.deinit(allocator);
@@ -523,6 +579,7 @@ test "known_hosts hashed host matches HMAC-SHA1 vector" {
 
     try testing.expect(hostFieldMatches(hosts_field, "example.com"));
     try testing.expect(entryHostMatches(entry, "example.com"));
+    try testing.expect(entryHostMatches(entry, "example.com:22"));
     try testing.expect(!hostFieldMatches(hosts_field, "other.example.com"));
     try testing.expect(!entryHostMatches(entry, "other.example.com"));
 
@@ -564,12 +621,28 @@ test "known_hosts hashed host matches bracket port form" {
 }
 
 test "known_hosts bracket host and wildcard" {
-    try testing.expect(hostFieldMatches("[git.example.com]:2222", "git.example.com"));
-    try testing.expect(hostFieldMatches("*.example.com", "git.example.com") == false); // only trailing *
+    try testing.expect(hostFieldMatches("[git.example.com]:2222", "git.example.com:2222"));
+    try testing.expect(!hostFieldMatches("[git.example.com]:2222", "git.example.com"));
+    try testing.expect(hostFieldMatches("git.example.com", "git.example.com:22"));
+    try testing.expect(hostFieldMatches("*.example.com", "git.example.com"));
     try testing.expect(hostFieldMatches("git.*", "git.example.com"));
+    try testing.expect(hostFieldMatches("git.???????.com", "git.example.com"));
     try testing.expect(hostFieldMatches("GitHub.COM", "github.com"));
     try testing.expect(hostFieldMatches("a.com,b.com", "b.com"));
     try testing.expect(!hostFieldMatches("!evil.com", "evil.com"));
+    try testing.expect(!hostFieldMatches("*.example.com,!evil.example.com", "evil.example.com"));
+}
+
+test "known_hosts revoked key overrides allowed duplicate" {
+    var allowed = (try parseKnownHostsLine(testing.allocator, "example.com ssh-ed25519 AAECAwQ=")).?;
+    defer allowed.deinit(testing.allocator);
+    var revoked = (try parseKnownHostsLine(testing.allocator, "@revoked example.com ssh-ed25519 AAECAwQ=")).?;
+    defer revoked.deinit(testing.allocator);
+
+    try testing.expectError(
+        error.HostKeyMismatch,
+        checkKnownHosts(&.{ allowed, revoked }, "example.com", "ssh-ed25519", allowed.key_blob),
+    );
 }
 
 test "known_hosts comment and empty lines" {

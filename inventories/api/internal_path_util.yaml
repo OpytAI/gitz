@@ -1,6 +1,5 @@
-# API inventory: internal/path_util (phase 9)
+# API inventory: go-git internal/path_util, implemented in the consolidated pathutil package
 package: internal/path_util
-phase: 9
 require:
   functions:
     - replaceTildeWithHome

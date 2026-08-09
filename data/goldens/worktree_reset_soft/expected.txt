@@ -1,0 +1,6 @@
+# go-git Worktree.Reset SoftReset
+# Setup: memory repo + Mem FS; commit a.txt (first), add+commit b.txt (second);
+# soft reset to first. Soft moves HEAD only; index/worktree remain at second tree.
+# Relative to HEAD=first, b.txt is in index → staging=A; file still on disk.
+b.txt_exists=true
+b.txt_staging=A

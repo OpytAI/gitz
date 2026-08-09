@@ -1,4 +1,3 @@
-# API inventory: storage/filesystem/dotgit (phase 6)
 # .git directory layout helpers over billy/fs.
 # Go New → DotGit.new / DotGit.init; Go Initialize → initialize.
 # Generic monomorphisation: DotGitFor(Fs) / ObjectWriterFor(Fs) / PackWriterFor(Fs)
@@ -6,7 +5,6 @@
 # Method names camelCase (setRef, objectPacks, …).
 # RepositoryFilesystem routes worktree vs commondir paths (gitrepository-layout).
 package: storage/filesystem/dotgit
-phase: 6
 require:
   types:
     - RepositoryFilesystem

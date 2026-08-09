@@ -420,29 +420,32 @@ pub fn readArmoredKeyRing(allocator: Allocator, armored: []const u8) (Allocator.
     // Track whether the last key-like packet was a subkey (for flag application).
     var last_was_subkey = false;
     while (pos < bin.len) {
-        const pkt = nextPacket(bin, &pos) catch break;
+        const pkt = try nextPacket(bin, &pos);
         switch (pkt.tag) {
             tag_secret_key => {
-                const km = try parseSecretKeyMaterial(allocator, pkt.body);
+                var km = try parseSecretKeyMaterial(allocator, pkt.body);
+                errdefer km.deinit(allocator);
                 try list.append(allocator, entityFromKeyMaterial(allocator, km));
                 current = list.items.len - 1;
                 last_was_subkey = false;
             },
             tag_public_key => {
-                const km = parsePublicKeyMaterial(allocator, pkt.body) catch |err| switch (err) {
+                var km = parsePublicKeyMaterial(allocator, pkt.body) catch |err| switch (err) {
                     error.OutOfMemory => return error.OutOfMemory,
                     else => continue,
                 };
+                errdefer km.deinit(allocator);
                 try list.append(allocator, entityFromKeyMaterial(allocator, km));
                 current = list.items.len - 1;
                 last_was_subkey = false;
             },
             tag_secret_subkey => {
                 if (current) |ci| {
-                    const km = parseSecretKeyMaterial(allocator, pkt.body) catch |err| switch (err) {
+                    var km = parseSecretKeyMaterial(allocator, pkt.body) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         else => continue,
                     };
+                    errdefer km.deinit(allocator);
                     const sks = list.items[ci].subkeys;
                     // Grow subkeys slice.
                     const new_sks = try allocator.alloc(Subkey, sks.len + 1);
@@ -457,10 +460,11 @@ pub fn readArmoredKeyRing(allocator: Allocator, armored: []const u8) (Allocator.
             },
             tag_public_subkey => {
                 if (current) |ci| {
-                    const km = parsePublicKeyMaterial(allocator, pkt.body) catch |err| switch (err) {
+                    var km = parsePublicKeyMaterial(allocator, pkt.body) catch |err| switch (err) {
                         error.OutOfMemory => return error.OutOfMemory,
                         else => continue,
                     };
+                    errdefer km.deinit(allocator);
                     const sks = list.items[ci].subkeys;
                     const new_sks = try allocator.alloc(Subkey, sks.len + 1);
                     if (sks.len > 0) {
@@ -474,8 +478,9 @@ pub fn readArmoredKeyRing(allocator: Allocator, armored: []const u8) (Allocator.
             },
             tag_user_id => {
                 if (current) |ci| {
+                    const replacement = try allocator.dupe(u8, pkt.body);
                     if (list.items[ci].identity.len > 0) allocator.free(list.items[ci].identity);
-                    list.items[ci].identity = try allocator.dupe(u8, pkt.body);
+                    list.items[ci].identity = replacement;
                     last_was_subkey = false; // following self-sig binds primary / UID
                 }
             },

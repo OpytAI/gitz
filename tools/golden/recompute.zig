@@ -1,4 +1,4 @@
-//! Recompute committed Class A golden `expected.txt` files from library APIs.
+//! Recompute committed golden `expected.txt` files from library APIs.
 //!
 //! Loads each suite's expected dump via Bazel runfiles (`data/goldens/...`) and
 //! rebuilds the same non-comment payload from pure Zig. A mismatch means a
@@ -720,7 +720,7 @@ test "recompute merkletrie_modify_delete" {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 10 — gitconfig + repo
+// Git configuration and repository cases.
 // ---------------------------------------------------------------------------
 
 test "recompute gitconfig_new_defaults" {
@@ -856,7 +856,7 @@ test "recompute repo_object_getters" {
 }
 
 // ---------------------------------------------------------------------------
-// Phase 11 — remote
+// Remote cases.
 // ---------------------------------------------------------------------------
 
 test "recompute remote_string" {

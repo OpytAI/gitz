@@ -31,6 +31,7 @@ const entityAttachSubkey = entity_mod.entityAttachSubkey;
 const buildEd25519PublicBody = entity_mod.buildEd25519PublicBody;
 const armoredDetachSign = sign_mod.armoredDetachSign;
 const checkArmoredDetachedSignature = verify_mod.checkArmoredDetachedSignature;
+const parseKeyring = verify_mod.parseKeyring;
 const parseDetachedSignature = verify_mod.parseDetachedSignature;
 
 const pk_eddsa = err_mod.pk_eddsa;
@@ -125,6 +126,41 @@ test "encodeArmor round-trip" {
     const back = try decodeArmor(gpa, arm);
     defer gpa.free(back);
     try std.testing.expectEqualSlices(u8, &bin, back);
+}
+
+test "decodeArmor rejects mismatched footer and corrupt CRC" {
+    const gpa = std.testing.allocator;
+    try std.testing.expectError(error.InvalidArmor, decodeArmor(
+        gpa,
+        "-----BEGIN PGP SIGNATURE-----\n\nAQIDBA==\n=A5M2\n-----END PGP PUBLIC KEY BLOCK-----\n",
+    ));
+
+    const bin = [_]u8{ 1, 2, 3, 4 };
+    const valid = try encodeArmor(gpa, "PGP SIGNATURE", &bin);
+    defer gpa.free(valid);
+    const crc_pos = std.mem.indexOf(u8, valid, "\n=") orelse unreachable;
+    const corrupt = try gpa.dupe(u8, valid);
+    defer gpa.free(corrupt);
+    corrupt[crc_pos + 2] = if (corrupt[crc_pos + 2] == 'A') 'B' else 'A';
+    try std.testing.expectError(error.InvalidArmor, decodeArmor(gpa, corrupt));
+}
+
+test "parseKeyring rejects malformed trailing packet" {
+    const gpa = std.testing.allocator;
+    var seed: [32]u8 = undefined;
+    @memset(&seed, 0x42);
+    var ent = try generateEd25519Entity(gpa, seed);
+    defer ent.deinit();
+    const armor = try ent.serializePublicArmored(gpa);
+    defer gpa.free(armor);
+    const binary = try decodeArmor(gpa, armor);
+    defer gpa.free(binary);
+
+    var malformed = try gpa.alloc(u8, binary.len + 1);
+    defer gpa.free(malformed);
+    @memcpy(malformed[0..binary.len], binary);
+    malformed[binary.len] = 0x80; // old-format packet header without length
+    try std.testing.expectError(error.InvalidPacket, parseKeyring(gpa, malformed));
 }
 
 test "Ed25519 armoredDetachSign round-trip verify" {

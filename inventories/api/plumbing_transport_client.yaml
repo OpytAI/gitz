@@ -1,6 +1,4 @@
-# API inventory: plumbing/transport/client (phase 8)
 package: plumbing/transport/client
-phase: 8
 require:
   types: []
   functions:

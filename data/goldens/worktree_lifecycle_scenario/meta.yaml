@@ -2,4 +2,4 @@ name: worktree_lifecycle_scenario
 type: file_equals
 actual: actual.txt
 expected: expected.txt
-note: "Class C lifecycle contract: clean → untracked → staged added → commit clean."
+note: "The lifecycle moves from clean to untracked to staged added and back to clean after commit."

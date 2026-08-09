@@ -1,4 +1,4 @@
-//! Repository.Fetch / Push over MapLoader (phase 11 glue).
+//! Repository.Fetch / Push over MapLoader.
 
 const std = @import("std");
 const plumbing = @import("plumbing");

@@ -4,7 +4,7 @@
 //! - Factories produce streaming digesters used by `plumbing` object hashing.
 //! - Default SHA-1 is pure-Zig collision-detecting `sha1cd` (go-git / pjbgf).
 //! - Only SHA-1 and SHA-256 may be registered (go-git restriction).
-//! - gitz supports both formats in one binary via process-wide `objectFormat`
+//! - gitz supports both formats in one binary via thread-local `objectFormat`
 //!   (go-git uses compile tags for SHA-256).
 //!
 //! Inventory tokens: `new`, `registerHash`.
@@ -41,11 +41,13 @@ pub const Algorithm = enum {
 /// Default algorithm for object IDs (go-git without `sha256` build tag).
 pub const CryptoType: Algorithm = .sha1;
 
-/// Process-wide active object format (gitz dual extension; go-git uses build tags).
-/// Tests that change this must restore `.sha1` in `defer`.
-var active_algo: Algorithm = .sha1;
+/// Thread-local active object format (gitz dual extension; go-git uses build
+/// tags). Thread-local state prevents concurrent SHA-1 and SHA-256 repository
+/// operations from racing on the wire/object-id width. Callers that switch the
+/// format on one thread must still restore it with `FormatScope`.
+threadlocal var active_algo: Algorithm = .sha1;
 
-/// Set the process-wide object format (SHA-1 or SHA-256).
+/// Set the calling thread's object format (SHA-1 or SHA-256).
 pub fn setObjectFormat(algo: Algorithm) void {
     active_algo = algo;
 }

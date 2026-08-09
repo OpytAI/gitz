@@ -1,7 +1,7 @@
 //! Optional debug tracing (port of go-git `utils/trace`).
 //!
 //! Thin bitflag targets with enable / printf-style helpers. Disabled by default.
-//! Single-threaded; no mutex (phase-1 sequential port).
+//! Single-threaded; callers synchronize concurrent access.
 
 const std = @import("std");
 

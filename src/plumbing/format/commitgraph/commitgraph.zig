@@ -22,6 +22,7 @@ pub fn hashSize() usize {
 
 /// File magic `CGPH` (go-git `commitFileSignature`).
 pub const commit_file_signature: *const [4]u8 = "CGPH";
+pub const max_chain_graphs: usize = 256;
 
 /// Parent slot empty (go-git `parentNone`).
 pub const parent_none: u32 = 0x70000000;

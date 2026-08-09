@@ -1,7 +1,5 @@
-# API inventory: plumbing/format/idxfile (phase 2)
 # Go NewMemoryIndex/NewDecoder/NewEncoder/NewWriter map to Zig *.init.
 package: plumbing/format/idxfile
-phase: 2
 require:
   types:
     - MemoryIndex

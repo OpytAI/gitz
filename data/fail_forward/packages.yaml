@@ -1,25 +1,19 @@
 # Frozen fixture for //check:*_fail_forward (not production inventory).
-# current_phase in file is g; scripts pass --current-phase 1 to force due set.
-# Keep this stable across Phase 1+ so fail-forward does not depend on live src/.
+# Keep this stable so fail-forward does not depend on live src/.
 pin: v5.19.2
-current_phase: g
 
 packages:
   - go: fixture/alpha
     zig: src/fixture/alpha
-    phase: 1
     status: required
   - go: fixture/beta
     zig: src/fixture/beta
-    phase: 1
     status: required
   - go: fixture/gamma
     zig: src/fixture/gamma
-    phase: 1
     status: required
-  - go: fixture/later
-    zig: src/fixture/later
-    phase: 9
+  - go: fixture/delta
+    zig: src/fixture/delta
     status: required
   - go: fixture/excluded
     status: excluded

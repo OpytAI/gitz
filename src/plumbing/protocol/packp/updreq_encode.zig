@@ -270,6 +270,23 @@ test "updreq_encode_test.TestPushOptions" {
     try expectEncode(allocator, &r, expected);
 }
 
+test "push options reject protocol control bytes" {
+    const allocator = testing.allocator;
+    var r = try updreq.newReferenceUpdateRequest(allocator);
+    defer r.deinit();
+    try r.capabilities.set(capability.PushOptions, &.{});
+    try r.appendCommand(.{
+        .name = ReferenceName.init("refs/heads/main"),
+        .old = ZeroHash,
+        .new = plumbing.newHash("2ecf0ef2c2dffb796033e5a02219af86ec6584e5"),
+    });
+    try r.appendOption(.{ .key = "ci", .value = "ok\nsmuggled" });
+
+    var storage: [256]u8 = undefined;
+    var w: Writer = .fixed(&storage);
+    try testing.expectError(error.InvalidPushOption, r.encode(&w));
+}
+
 test "updreq_encode_test.TestPushAtomic" {
     const allocator = testing.allocator;
     const hash1 = plumbing.newHash("1ecf0ef2c2dffb796033e5a02219af86ec6584e5");

@@ -1,6 +1,4 @@
-# API inventory: utils/merkletrie/internal/frame (phase 9)
 package: utils/merkletrie/internal/frame
-phase: 9
 require:
   types:
     - Frame

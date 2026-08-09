@@ -1,8 +1,0 @@
-# go-git Worktree.ResetSparsely / Checkout SparseCheckoutDirectories (Class C)
-# Setup: commit tree with prefix paths under dir_a/ and dir_b/; then
-# resetSparsely(hard, dirs=["dir_a"]) or checkout with sparse_checkout_directories.
-# Index.skipUnless(dirs) drops non-matching entries; only prefix remains tracked.
-sparse_dirs: dir_a
-index_keeps_prefix=dir_a
-index_drops_other_prefixes=true
-worktree_materialises_prefix_only=true

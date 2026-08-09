@@ -1,6 +1,6 @@
 load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
 
-# go-git plumbing/format/packfile — pack read + write (phase 5 encoder).
+# go-git plumbing/format/packfile — pack read and write.
 # Fixture embeds (*.pack / *.idx as .zig) are package-local for unit tests;
 # human-owned binaries live under data/fixtures/packfile/.
 _SRCS = [

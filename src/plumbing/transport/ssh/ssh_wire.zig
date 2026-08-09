@@ -192,7 +192,7 @@ pub fn appendNameList(list: *std.ArrayList(u8), allocator: Allocator, names: []c
 
 /// Read uint32 big-endian; advances `off`.
 pub fn readU32(buf: []const u8, off: *usize) Error!u32 {
-    if (off.* + 4 > buf.len) return error.SshPacketCorrupt;
+    if (off.* > buf.len or buf.len - off.* < 4) return error.SshPacketCorrupt;
     const v = std.mem.readInt(u32, buf[off.*..][0..4], .big);
     off.* += 4;
     return v;
@@ -201,7 +201,7 @@ pub fn readU32(buf: []const u8, off: *usize) Error!u32 {
 /// Read SSH string; advances `off`. Returns a slice into `buf`.
 pub fn readString(buf: []const u8, off: *usize) Error![]const u8 {
     const n = try readU32(buf, off);
-    if (off.* + n > buf.len) return error.SshPacketCorrupt;
+    if (n > buf.len - off.*) return error.SshPacketCorrupt;
     const s = buf[off.* .. off.* + n];
     off.* += n;
     return s;
@@ -608,7 +608,7 @@ pub fn parseKexInit(payload: []const u8) Error!KexInitView {
     _ = try readString(payload, &off); // lang c2s
     _ = try readString(payload, &off); // lang s2c
     _ = try readBool(payload, &off);
-    if (off + 4 > payload.len) return error.SshPacketCorrupt;
+    if (off > payload.len or payload.len - off < 4) return error.SshPacketCorrupt;
     return .{
         .raw = payload,
         .kex_algorithms = kex,

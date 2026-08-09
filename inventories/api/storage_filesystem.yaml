@@ -1,4 +1,3 @@
-# API inventory: storage/filesystem (phase 6)
 # On-disk storer over DotGit + fs. NewStorage → newStorage (heap *Storage).
 # NewStorageWithOptions → newStorageWithOptions. Init → Storage.initLayout.
 # Construction is newStorage / newStorageWithOptions (Mem-backed composite).
@@ -7,7 +6,6 @@
 # StorageOs / ObjectStorageOs are Os specialisations (Mem is default export).
 # lazyWriter ports go-git ObjectStorage.LazyWriter (header+content deferred write).
 package: storage/filesystem
-phase: 6
 require:
   types:
     - Storage

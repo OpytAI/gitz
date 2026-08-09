@@ -163,8 +163,7 @@ fn parseCommand(b: []const u8) updreq.Error!Command {
 /// Strict hash parse (go-git `parseHash` in updreq_decode.go).
 fn parseHash(s: []const u8) updreq.Error!Hash {
     if (s.len != common.hashSize()) return error.InvalidHashSize;
-    if (!plumbing.isHash(s)) return error.InvalidHash;
-    return plumbing.newHash(s);
+    return plumbing.parseHash(s) catch return error.InvalidHash;
 }
 
 // ---------------------------------------------------------------------------

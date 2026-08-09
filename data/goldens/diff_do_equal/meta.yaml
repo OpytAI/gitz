@@ -2,4 +2,4 @@ name: diff_do_equal
 type: file_equals
 actual: actual.txt
 expected: expected.txt
-note: "utils/diff Do equal + non-equal Myers ops from go-git utils/diff/diff_ext_test.go doTests (Class A file_equals inventory; behavior locked by unit tests)."
+note: "utils/diff Do equal and non-equal Myers operations from go-git utils/diff/diff_ext_test.go doTests; unit tests lock the behavior."

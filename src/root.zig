@@ -21,25 +21,25 @@ pub const sync = @import("utils/sync");
 pub const ioutil = @import("ioutil");
 pub const trace = @import("trace");
 
-// Phase 2 leaf codecs.
+// Git format codecs.
 pub const pktline = @import("pktline");
 pub const objfile = @import("objfile");
 pub const config_format = @import("config");
 pub const idxfile = @import("idxfile");
 
-// Phase 3 packfile read.
+// Packfiles and the Git index.
 pub const packfile = @import("packfile");
 /// Git index (dircache) codec (go-git plumbing/format/index).
 pub const index_format = @import("index");
 
-// Phase 4 storer + cache + storage/memory.
+// Storage contracts and implementations.
 pub const storer = @import("storer");
 pub const cache = @import("cache");
 pub const storage = @import("storage");
 /// In-memory storage backend (go-git `storage/memory`). Import name from package.
 pub const memory_storage = @import("memory");
 
-// Phase 8 protocol + transport core.
+// Protocol and transport core.
 pub const capability = @import("capability");
 pub const sideband = @import("sideband");
 pub const packp = @import("packp");
@@ -48,9 +48,8 @@ pub const transport_client = @import("client");
 pub const transport_server = @import("server");
 pub const transport_common = @import("transport_common");
 
-// Phase 9 diff / status shell.
+// Diff, attributes, revision, and tree utilities.
 pub const pathutil = @import("pathutil");
-pub const path_util = @import("path_util");
 pub const internal_url = @import("url");
 pub const internal_reference = @import("internal_reference");
 pub const revision = @import("revision");
@@ -63,19 +62,19 @@ pub const noder = @import("noder");
 pub const merkletrie_index = @import("merkletrie_index");
 pub const merkletrie_filesystem = @import("merkletrie_filesystem");
 
-// Phase 10 typed config + repository facades.
+// Typed configuration and repository APIs.
 /// High-level repository config (go-git `config`). Import name `gitconfig`.
 pub const gitconfig = @import("gitconfig");
 pub const repo = @import("repo");
 
-// Phase 11 remote engine (Fetch / List / Push).
+// Remote fetch, list, and push.
 pub const remote = @import("remote");
 
-// Phase 12 worktree + porcelain clone/plain helpers.
+// Worktree and porcelain operations.
 pub const worktree = @import("worktree");
 pub const porcelain = @import("porcelain");
 
-// Phase 13 transports + extras.
+// Concrete transports and higher-level Git operations.
 pub const transport_file = @import("transport_file");
 pub const transport_git = @import("transport_git");
 pub const transport_http = @import("transport_http");
@@ -90,7 +89,7 @@ test "identity" {
     try std.testing.expectEqualStrings("v5.19.2", go_git_pin);
 }
 
-test "phase1 foundation surface" {
+test "foundation surface" {
     try std.testing.expect(plumbing.ZeroHash.isZero());
     try std.testing.expectEqual(@as(usize, 20), hash.Size);
     try std.testing.expectEqual(@as(filemode.FileMode, 0o100644), filemode.Regular);
@@ -102,7 +101,7 @@ test "phase1 foundation surface" {
     try std.testing.expect(!trace.enabled(trace.general));
 }
 
-test "phase2 leaf codec surface" {
+test "leaf codec surface" {
     try std.testing.expectEqual(@as(usize, 65516), pktline.MaxPayloadSize);
     try std.testing.expectEqual(@as(u32, 2), idxfile.VersionSupported);
     _ = objfile.Reader.open;
@@ -110,7 +109,7 @@ test "phase2 leaf codec surface" {
     _ = config_format.Config.init;
 }
 
-test "phase3 packfile read surface" {
+test "packfile read surface" {
     try std.testing.expectEqual(@as(u32, 2), packfile.VersionSupported);
     try std.testing.expectEqualSlices(u8, "PACK", &packfile.signature);
     _ = packfile.Scanner.init;
@@ -120,7 +119,7 @@ test "phase3 packfile read surface" {
     _ = packfile.applyDelta;
 }
 
-test "phase5 index and pack encoder surface" {
+test "index and pack encoder surface" {
     try std.testing.expectEqual(@as(u32, 4), index_format.EncodeVersionSupported);
     try std.testing.expectEqualSlices(u8, "DIRC", &index_format.index_signature);
     _ = index_format.Index.init;
@@ -132,7 +131,7 @@ test "phase5 index and pack encoder surface" {
     _ = packfile.ObjectToPack;
 }
 
-test "phase4 storer memory cache surface" {
+test "storer memory cache surface" {
     try std.testing.expectEqual(@as(usize, 1024), storer.MaxResolveRecursion);
     try std.testing.expect(storer.Error.Stop == storer.Error.Stop);
     try std.testing.expect(storage.Error.ReferenceHasChanged == storage.Error.ReferenceHasChanged);
@@ -145,7 +144,7 @@ test "phase4 storer memory cache surface" {
     _ = storer.newReferenceSliceIter;
 }
 
-test "phase8 protocol transport surface" {
+test "protocol transport surface" {
     try std.testing.expectEqualStrings("multi_ack", capability.MultiACK);
     try std.testing.expectEqual(@as(usize, 1000), sideband.MaxPackedSize);
     try std.testing.expectEqualStrings("git-upload-pack", transport.UploadPackServiceName);
@@ -160,7 +159,7 @@ test "phase8 protocol transport surface" {
     _ = transport_common.newClient;
 }
 
-test "phase10 config and repository facade surface" {
+test "config and repository facade surface" {
     _ = gitconfig.Config;
     _ = gitconfig.RemoteConfig;
     _ = gitconfig.Branch;
@@ -203,7 +202,7 @@ test "phase10 config and repository facade surface" {
     _ = repo.Repository.worktreeFs;
 }
 
-test "phase11 remote surface" {
+test "remote surface" {
     _ = remote.Remote;
     _ = remote.newRemote;
     _ = remote.newRemoteEmbedded;
@@ -231,7 +230,7 @@ test "phase11 remote surface" {
     _ = repo.PushOptions;
 }
 
-test "phase12 worktree porcelain surface" {
+test "worktree porcelain surface" {
     _ = worktree.Worktree;
     _ = worktree.newWorktree;
     _ = worktree.CloneOptions;
@@ -251,7 +250,7 @@ test "phase12 worktree porcelain surface" {
     _ = repo.worktreeEmbedded;
 }
 
-test "phase13 transports extras surface" {
+test "transport and extra package surface" {
     _ = transport_file.defaultClient;
     _ = transport_git.DefaultPort;
     _ = transport_http.BasicAuth;

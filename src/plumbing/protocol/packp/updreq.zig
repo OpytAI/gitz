@@ -55,6 +55,8 @@ pub const Error = error{
     InvalidHashSize,
     /// Hash hex is not valid (go-git `errInvalidHash`).
     InvalidHash,
+    /// Push option contains a protocol delimiter or control byte.
+    InvalidPushOption,
 };
 
 // ---------------------------------------------------------------------------
@@ -96,6 +98,7 @@ pub const Command = struct {
     /// go-git `(*Command).validate`.
     pub fn validate(self: *const Command) Error!void {
         if (self.action() == .invalid) return error.MalformedCommand;
+        if (containsControl(self.name.string())) return error.MalformedCommand;
     }
 };
 
@@ -103,7 +106,23 @@ pub const Command = struct {
 pub const Option = struct {
     key: []const u8,
     value: []const u8,
+
+    pub fn validate(self: Option) Error!void {
+        if (self.key.len == 0 or std.mem.indexOfScalar(u8, self.key, '=') != null) {
+            return error.InvalidPushOption;
+        }
+        if (containsControl(self.key) or containsControl(self.value)) {
+            return error.InvalidPushOption;
+        }
+    }
 };
+
+fn containsControl(value: []const u8) bool {
+    for (value) |byte| {
+        if (byte < 0x20 or byte == 0x7f) return true;
+    }
+    return false;
+}
 
 // ---------------------------------------------------------------------------
 // ReferenceUpdateRequest
@@ -145,6 +164,7 @@ pub const ReferenceUpdateRequest = struct {
         for (self.commands.items) |*c| {
             try c.validate();
         }
+        for (self.options.items) |option| try option.validate();
     }
 
     /// Free owned capability list, command/option slices, and string storage.

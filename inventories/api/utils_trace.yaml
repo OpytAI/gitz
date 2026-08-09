@@ -1,6 +1,4 @@
-# API inventory: utils/trace (phase 1)
 package: utils/trace
-phase: 1
 require:
   types: []
   functions:

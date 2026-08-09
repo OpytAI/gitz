@@ -1,6 +1,4 @@
-# API inventory: config (phase 10) — import_name gitconfig
 package: config
-phase: 10
 require:
   types:
     - Config

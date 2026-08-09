@@ -37,6 +37,7 @@ _DEPS = [
     "//src/utils/sync",
     "//src/remote",
     "//src/config",
+    "//src/internal/pathutil",
     "//src/plumbing/transport/server",
     "//src/plumbing/transport",
 ]

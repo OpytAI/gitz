@@ -1,4 +1,4 @@
-# Empty packfile encode Class A golden (phase 5)
+# Empty packfile encode
 # go-git: plumbing/format/packfile Encoder.Encode([], packWindow)
 # Source: encoder_test.go TestCorrectPackHeader
 # Layout: PACK | version 2 | object_count 0 | SHA-1 trailer (32 bytes total)

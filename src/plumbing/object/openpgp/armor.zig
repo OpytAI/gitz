@@ -8,6 +8,9 @@ const Error = err_mod.Error;
 pub fn decodeArmor(allocator: Allocator, armored: []const u8) (Allocator.Error || Error)![]u8 {
     var it = std.mem.splitScalar(u8, armored, '\n');
     var in_body = false;
+    var block_type: []const u8 = "";
+    var saw_end = false;
+    var crc_line: ?[]const u8 = null;
     var b64: std.ArrayList(u8) = .empty;
     defer b64.deinit(allocator);
 
@@ -15,21 +18,43 @@ pub fn decodeArmor(allocator: Allocator, armored: []const u8) (Allocator.Error |
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
         if (std.mem.startsWith(u8, line, "-----BEGIN ")) {
+            if (in_body) return error.InvalidArmor;
+            if (!std.mem.endsWith(u8, line, "-----")) return error.InvalidArmor;
+            block_type = line[11 .. line.len - 5];
+            if (block_type.len == 0) return error.InvalidArmor;
             in_body = true;
             continue;
         }
-        if (std.mem.startsWith(u8, line, "-----END ")) break;
+        if (std.mem.startsWith(u8, line, "-----END ")) {
+            if (!in_body or !std.mem.endsWith(u8, line, "-----")) return error.InvalidArmor;
+            const end_type = line[9 .. line.len - 5];
+            if (!std.mem.eql(u8, block_type, end_type)) return error.InvalidArmor;
+            saw_end = true;
+            break;
+        }
         if (!in_body) continue;
         if (std.mem.indexOfScalar(u8, line, ':') != null) continue; // header
-        if (line[0] == '=') continue; // CRC24
+        if (line[0] == '=') {
+            if (crc_line != null or line.len != 5) return error.InvalidArmor;
+            crc_line = line[1..];
+            continue;
+        }
         try b64.appendSlice(allocator, line);
     }
-    if (b64.items.len == 0) return error.InvalidArmor;
+    if (!saw_end or b64.items.len == 0) return error.InvalidArmor;
 
     const dec_len = std.base64.standard.Decoder.calcSizeForSlice(b64.items) catch return error.InvalidArmor;
     const out = try allocator.alloc(u8, dec_len);
     errdefer allocator.free(out);
     std.base64.standard.Decoder.decode(out, b64.items) catch return error.InvalidArmor;
+    if (crc_line) |encoded_crc| {
+        var expected: [3]u8 = undefined;
+        std.base64.standard.Decoder.decode(&expected, encoded_crc) catch return error.InvalidArmor;
+        const actual = crc24(out);
+        const expected_int = (@as(u32, expected[0]) << 16) |
+            (@as(u32, expected[1]) << 8) | expected[2];
+        if (actual != expected_int) return error.InvalidArmor;
+    }
     return out;
 }
 

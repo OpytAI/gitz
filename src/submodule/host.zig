@@ -24,6 +24,7 @@ const fs_pkg = @import("fs");
 const gitconfig = @import("gitconfig");
 
 const error_mod = @import("error.zig");
+const owned = @import("owned.zig");
 
 const Allocator = std.mem.Allocator;
 const SubmoduleConfig = gitconfig.Submodule;
@@ -96,10 +97,10 @@ pub const Host = struct {
         errdefer self.allocator.destroy(m);
         m.* = SubmoduleConfig.init(self.allocator);
         errdefer m.deinit();
-        try setOwned(self.allocator, &m.name, src.name);
-        try setOwned(self.allocator, &m.path, src.path);
-        try setOwned(self.allocator, &m.url, src.url);
-        try setOwned(self.allocator, &m.branch, src.branch);
+        try owned.set(self.allocator, &m.name, src.name);
+        try owned.set(self.allocator, &m.path, src.path);
+        try owned.set(self.allocator, &m.url, src.url);
+        try owned.set(self.allocator, &m.branch, src.branch);
 
         // Persist first (go-git SetConfig) so a partial Host put can be retried.
         try cfg.putSubmodule(src.name, src.path, src.url, src.branch);
@@ -124,10 +125,10 @@ pub const Host = struct {
             errdefer self.allocator.destroy(m);
             m.* = SubmoduleConfig.init(self.allocator);
             errdefer m.deinit();
-            try setOwned(self.allocator, &m.name, entry.name);
-            try setOwned(self.allocator, &m.path, entry.path);
-            try setOwned(self.allocator, &m.url, entry.url);
-            try setOwned(self.allocator, &m.branch, entry.branch);
+            try owned.set(self.allocator, &m.name, entry.name);
+            try owned.set(self.allocator, &m.path, entry.path);
+            try owned.set(self.allocator, &m.url, entry.url);
+            try owned.set(self.allocator, &m.branch, entry.branch);
 
             const key = try self.allocator.dupe(u8, entry.name);
             errdefer self.allocator.free(key);
@@ -135,12 +136,3 @@ pub const Host = struct {
         }
     }
 };
-
-fn setOwned(allocator: Allocator, dest: *[]const u8, value: []const u8) Allocator.Error!void {
-    if (dest.*.len > 0) allocator.free(dest.*);
-    if (value.len == 0) {
-        dest.* = "";
-        return;
-    }
-    dest.* = try allocator.dupe(u8, value);
-}

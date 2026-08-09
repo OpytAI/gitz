@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Class A golden runner harness.
+"""Golden runner harness.
 
 Discovers goldens under a root directory. Each golden is a directory containing
 meta.yaml:

@@ -18,6 +18,7 @@ const merkletrie = @import("merkletrie");
 const mindex = @import("merkletrie_index");
 const mfs = @import("merkletrie_filesystem");
 const noder = @import("noder");
+const pathutil = @import("pathutil");
 
 const worktree_mod = @import("worktree.zig");
 const options_mod = @import("options.zig");
@@ -194,6 +195,11 @@ fn resetIndex(
             },
         }
 
+        pathutil.validTreePath(name_owned) catch |err| {
+            gpa.free(name_owned);
+            return err;
+        };
+
         if (files_map) |*fm| {
             if (!inFiles(fm, name_owned)) {
                 gpa.free(name_owned);
@@ -327,6 +333,7 @@ fn checkoutChangeRegularFile(
     idx: *Index,
 ) !void {
     const gpa = w.allocator;
+    try pathutil.validTreePath(name);
 
     if (act == .modify) {
         if (idx.remove(name)) |old| {
@@ -433,6 +440,7 @@ fn fillEntryFromFs(e: *Entry, filesystem: *fs_pkg.Mem, path: []const u8) void {
 
 /// go-git `rmFileAndDirsIfEmpty`.
 fn rmFileAndDirsIfEmpty(filesystem: *fs_pkg.Mem, path: []const u8) !void {
+    try pathutil.validTreePath(path);
     filesystem.remove(path) catch |err| {
         if (err == error.NotExist) return;
         return err;

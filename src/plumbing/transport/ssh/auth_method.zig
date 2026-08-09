@@ -15,7 +15,7 @@
 //! # Implemented
 //!
 //! - **Password / PasswordCallback / KeyboardInteractive**: full config surface
-//!   (`password`, callbacks) for the runner and future in-process dialers.
+//!   (`password`, callbacks) for the runner and native dialer.
 //! - **PEM private keys**: structure parse, encryption detection, OpenSSH key-type
 //!   detection, `identity_file` for system-`ssh -i`, and `writeIdentityTempFile`
 //!   (mode `0o600`) when only PEM bytes are available.
@@ -74,6 +74,8 @@ pub const HostKeyCheckError = error{
 /// go-git `ssh.HostKeyCallback` as a vtable.
 pub const HostKeyCallback = struct {
     ptr: *anyopaque,
+    /// `key_blob` is the full RFC 4253 public-key blob, including its
+    /// algorithm string.
     check_fn: *const fn (
         ptr: *anyopaque,
         hostname: []const u8,
@@ -596,7 +598,7 @@ pub fn detectOpensshPublicKeyType(body: []const u8) []const u8 {
     _ = skipSshString(body, &off) orelse return "";
 
     // nkeys
-    if (off + 4 > body.len) return "";
+    if (off > body.len or body.len - off < 4) return "";
     const nkeys = std.mem.readInt(u32, body[off..][0..4], .big);
     off += 4;
     if (nkeys == 0) return "";
@@ -617,10 +619,10 @@ pub fn detectOpensshPublicKeyType(body: []const u8) []const u8 {
 }
 
 fn skipSshString(buf: []const u8, off: *usize) ?[]const u8 {
-    if (off.* + 4 > buf.len) return null;
+    if (off.* > buf.len or buf.len - off.* < 4) return null;
     const n = std.mem.readInt(u32, buf[off.*..][0..4], .big);
     off.* += 4;
-    if (off.* + n > buf.len) return null;
+    if (n > buf.len - off.*) return null;
     const s = buf[off.* .. off.* + n];
     off.* += n;
     return s;

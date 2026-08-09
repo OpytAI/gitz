@@ -1,6 +1,4 @@
-# API inventory: plumbing/protocol/packp (phase 8)
 package: plumbing/protocol/packp
-phase: 8
 require:
   types:
     - AdvRefs

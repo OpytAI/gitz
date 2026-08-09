@@ -77,6 +77,12 @@ pub const Error = error{
     CommandFailed,
     /// Endpoint requested a proxy while using the system-ssh dialer.
     ProxyUnsupported,
+    /// Remote command is not a Git pack service.
+    InvalidService,
+    /// Endpoint or SSH config port is outside the TCP port range.
+    InvalidPort,
+    /// Endpoint path contains a byte that cannot be passed to a remote shell.
+    InvalidEndpoint,
 };
 
 fn singleThreadedIo() Io {
@@ -214,7 +220,7 @@ pub const CommandPlan = struct {
 /// Build full system-`ssh` argv including `"ssh"` as argv[0].
 ///
 /// Layout: `ssh -p PORT [-i path] [-o StrictHostKeyChecking=no]
-///          [-o UserKnownHostsFile=/dev/null] -l USER HOST remote_command`
+///          [-o UserKnownHostsFile=/dev/null] -l USER -- HOST remote_command`
 ///
 /// Ownership: returns a slice of owned `[]u8` strings. Free with
 /// `freeSshArgv(allocator, argv)` only (frees each element then the slice).
@@ -251,6 +257,8 @@ pub fn buildSshArgv(
 
     try list.append(allocator, try allocator.dupe(u8, "-l"));
     try list.append(allocator, try allocator.dupe(u8, plan.user));
+    // End option parsing before the endpoint-controlled hostname.
+    try list.append(allocator, try allocator.dupe(u8, "--"));
     try list.append(allocator, try allocator.dupe(u8, plan.host));
     try list.append(allocator, try allocator.dupe(u8, plan.remote_command));
 
@@ -321,7 +329,10 @@ pub fn writeShellQuote(w: *Writer, s: []const u8) anyerror!void {
 }
 
 /// go-git `endpointToCommand`.
-pub fn endpointToCommand(allocator: Allocator, cmd: []const u8, ep: *const Endpoint) Allocator.Error![]u8 {
+pub fn endpointToCommand(allocator: Allocator, cmd: []const u8, ep: *const Endpoint) (Allocator.Error || Error)![]u8 {
+    if (!std.mem.eql(u8, cmd, transport.UploadPackServiceName) and
+        !std.mem.eql(u8, cmd, transport.ReceivePackServiceName)) return Error.InvalidService;
+    if (std.mem.indexOfScalar(u8, ep.path, 0) != null) return Error.InvalidEndpoint;
     var aw: Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
     const w = &aw.writer;
@@ -945,6 +956,7 @@ pub const Runner = struct {
         if (parsePortFromHostPort(draft.host_with_port)) |p| {
             port = p;
         }
+        if (port > std.math.maxInt(u16)) return Error.InvalidPort;
         draft.port = port;
 
         // Always own user (agent path may already provide owned_user_in).
@@ -987,7 +999,7 @@ pub const Runner = struct {
             for (args_list.items) |a| self.allocator.free(a);
             args_list.deinit(self.allocator);
         }
-        // Skip "ssh" binary name for plan.ssh_args (historical layout).
+        // Store only the arguments after the binary name.
         for (full_argv[1..]) |a| {
             try args_list.append(self.allocator, try self.allocator.dupe(u8, a));
         }
@@ -1209,6 +1221,17 @@ test "endpointToCommand plain path" {
     try testing.expectEqualStrings("git-upload-pack '/repo.git'", s);
 }
 
+test "endpointToCommand rejects injected service" {
+    var ep = Endpoint{
+        .allocator = testing.allocator,
+        .path = @constCast("/repo.git"),
+    };
+    try testing.expectError(
+        Error.InvalidService,
+        endpointToCommand(testing.allocator, "git-upload-pack; touch /tmp/pwned", &ep),
+    );
+}
+
 test "endpointToCommand quote injection" {
     var ep = Endpoint{
         .allocator = testing.allocator,
@@ -1394,8 +1417,26 @@ test "buildSshArgv basic" {
     try testing.expectEqualStrings("22", argv[2]);
     try testing.expectEqualStrings("-l", argv[3]);
     try testing.expectEqualStrings("git", argv[4]);
-    try testing.expectEqualStrings("example.com", argv[5]);
-    try testing.expectEqualStrings("git-upload-pack '/r.git'", argv[6]);
+    try testing.expectEqualStrings("--", argv[5]);
+    try testing.expectEqualStrings("example.com", argv[6]);
+    try testing.expectEqualStrings("git-upload-pack '/r.git'", argv[7]);
+}
+
+test "buildSshArgv terminates options before hostile host" {
+    var plan = CommandPlan{
+        .allocator = testing.allocator,
+        .remote_command = try testing.allocator.dupe(u8, "git-upload-pack '/r.git'"),
+        .host_with_port = try testing.allocator.dupe(u8, "-oProxyCommand=evil:22"),
+        .host = "-oProxyCommand=evil",
+        .port = 22,
+        .user = "git",
+    };
+    defer plan.deinit();
+
+    const argv = try buildSshArgv(testing.allocator, &plan, null);
+    defer freeSshArgv(testing.allocator, argv);
+    try testing.expectEqualStrings("--", argv[5]);
+    try testing.expectEqualStrings("-oProxyCommand=evil", argv[6]);
 }
 
 test "buildSshArgv identity and insecure" {

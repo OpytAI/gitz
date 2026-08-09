@@ -5,8 +5,8 @@
 //! - `eql` / AutoHashMap keys compare the full 32-byte buffer so map identity
 //!   does not depend on process-global format.
 //! - `slice` / `formatHex` use process `digestSize()` for *display / wire width*
-//!   of the active repo format. Prefer one active format per process (or carefully
-//!   ordered tests) until storages own format end-to-end.
+//!   of the active repo format. Storage operations select the format for the
+//!   calling thread; use `FormatScope` around direct codec calls.
 //! - `parseHash` / `isHash` require the **active** hex width; use `parseHashAny` /
 //!   `isHashAny` for fixtures that mix widths.
 
@@ -25,7 +25,7 @@ pub const HexSize: usize = hash_algo.HexSize;
 pub const MaxSize: usize = hash_algo.MaxSize;
 pub const MaxHexSize: usize = hash_algo.MaxHexSize;
 
-/// Process-wide format helpers (see `//src/plumbing/hash`).
+/// Thread-local format helpers (see `//src/plumbing/hash`).
 pub const digestSize = hash_algo.digestSize;
 pub const hexSize = hash_algo.hexSize;
 pub const setObjectFormat = hash_algo.setObjectFormat;
@@ -33,7 +33,7 @@ pub const objectFormat = hash_algo.objectFormat;
 pub const supportsObjectFormat = hash_algo.supportsObjectFormat;
 pub const Algorithm = hash_algo.Algorithm;
 
-/// RAII: temporarily set process object format; restores previous on `deinit`.
+/// RAII: temporarily set the calling thread's object format; restores it on `deinit`.
 /// Use when switching repos on a thread before wire codecs (pack/index/tree).
 pub const FormatScope = struct {
     previous: Algorithm,

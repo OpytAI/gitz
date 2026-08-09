@@ -1,9 +1,7 @@
-# API inventory: storage/memory (phase 4)
 # NewStorage → newStorage (heap *Storage). Method names camelCase (setEncodedObject, …).
 # Encoded objects are *plumbing.MemoryObject.
 # Capabilities: Transactioner=true; PackfileWriter=false; DeltaObjectStorer=false.
 package: storage/memory
-phase: 4
 require:
   types:
     - Storage

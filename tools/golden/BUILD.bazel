@@ -47,14 +47,14 @@ _GOLDEN_SUITES = [
     "merkletrie_empty",
     "merkletrie_insert",
     "merkletrie_modify_delete",
-    # Phase 10
+    # Configuration and repository cases.
     "gitconfig_new_defaults",
     "gitconfig_marshal_core",
     "repo_init_bare",
     "repo_init_nonbare",
     "repo_open_head",
     "repo_object_getters",
-    # Phase 11
+    # Remote cases.
     "remote_string",
     "remote_fetch_options_defaults",
     "remote_default_fetch_refspec",
@@ -86,7 +86,7 @@ zig_library(
     visibility = ["//visibility:private"],
 )
 
-# Recompute expected golden dumps from library APIs (executable Class A).
+# Recompute expected golden dumps from library APIs.
 zig_test(
     name = "recompute_test",
     size = "small",
@@ -105,12 +105,12 @@ zig_test(
         "//src/utils/merkletrie/internal/fsnoder",
         "//src/plumbing",
         "//src/plumbing/filemode",
-        # Phase 10
+        # Configuration and repository cases.
         "//src/config",
         "//src/repo",
         "//src/storage/memory",
         "//src/fs",
-        # Phase 11
+        # Remote cases.
         "//src/remote",
         "//src/plumbing/transport/server",
         "//src/plumbing/transport/test:fixtures",

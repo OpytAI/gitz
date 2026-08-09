@@ -12,6 +12,7 @@ const fs_pkg = @import("fs");
 const filemode = @import("filemode");
 const index_fmt = @import("index");
 const gitignore = @import("gitignore");
+const pathutil = @import("pathutil");
 
 const worktree_mod = @import("worktree.zig");
 const options_mod = @import("options.zig");
@@ -57,6 +58,7 @@ pub fn addWithOptions(w: *Worktree, o: AddOptions) !void {
 /// go-git `Worktree.Remove` — remove `path` from the index and worktree.
 /// Returns the removed blob hash for a file, or `ZeroHash` for a directory.
 pub fn remove(w: *Worktree, path: []const u8) !Hash {
+    try pathutil.validTreePath(path);
     const idx = try w.storer.index();
     var h = ZeroHash;
 
@@ -89,10 +91,14 @@ fn doAdd(
     ignore_pattern: []const gitignore.Pattern,
     skip_status: bool,
 ) !Hash {
+    // Validate the caller-controlled form before cleaning. Cleaning `..`
+    // first can turn an escaping path into an apparently safe relative path.
+    if (!std.mem.eql(u8, path_in, ".")) try pathutil.validTreePath(path_in);
     const idx = try w.storer.index();
 
     const path = try cleanToSlash(w.allocator, path_in);
     defer w.allocator.free(path);
+    if (!std.mem.eql(u8, path, ".")) try pathutil.validTreePath(path);
 
     // Optional Status: skip unmodified worktree files (go-git). When
     // `skip_status` and the path is a regular file, go-git skips Status.
@@ -264,6 +270,7 @@ fn isPathInDirectory(path: []const u8, directory: []const u8) bool {
 
 /// go-git `copyFileToStorage` — read worktree path into a new blob object.
 pub fn copyFileToStorage(w: *Worktree, path: []const u8) !Hash {
+    try pathutil.validTreePath(path);
     const fi = try w.filesystem.lstat(path);
 
     const obj = try w.storer.newEncodedObject();
@@ -296,6 +303,7 @@ pub fn copyFileToStorage(w: *Worktree, path: []const u8) !Hash {
 
 /// go-git `addOrUpdateFileToIndex`.
 pub fn addOrUpdateFileToIndex(w: *Worktree, idx: *Index, filename: []const u8, h: Hash) !void {
+    try pathutil.validTreePath(filename);
     const e = idx.entry(filename) catch |err| {
         if (err == index_fmt.Error.EntryNotFound) {
             return doAddFileToIndex(w, idx, filename, h);
@@ -306,8 +314,7 @@ pub fn addOrUpdateFileToIndex(w: *Worktree, idx: *Index, filename: []const u8, h
 }
 
 fn doAddFileToIndex(w: *Worktree, idx: *Index, filename: []const u8, h: Hash) !void {
-    // Mirror go-git ValidTreePath gate before Index.Add (tree-side security).
-    try validTreePathLite(filename);
+    try pathutil.validTreePath(filename);
     const e = try idx.add(filename);
     return doUpdateFileToIndex(w, e, filename, h);
 }
@@ -411,6 +418,8 @@ fn deleteFromFilesystem(w: *Worktree, path: []const u8) !void {
 /// go-git `Worktree.Move` — rename a file in the worktree and the index.
 /// Directories are not supported.
 pub fn move(w: *Worktree, from: []const u8, to: []const u8) !Hash {
+    try pathutil.validTreePath(from);
+    try pathutil.validTreePath(to);
     _ = try w.filesystem.lstat(from);
 
     // Destination must not already exist (go-git ErrDestinationExists).
@@ -448,6 +457,7 @@ pub fn removeGlob(w: *Worktree, pattern: []const u8) !void {
     }
 
     for (names.items) |file| {
+        try pathutil.validTreePath(file);
         // go-git: Lstat only to surface unexpected FS errors; NotExist is fine.
         _ = w.filesystem.lstat(file) catch |err| {
             if (err != error.NotExist) return err;
@@ -564,28 +574,6 @@ fn collectFiles(w: *Worktree, dir: []const u8, out: *std.ArrayList([]const u8)) 
             try out.append(w.allocator, child);
         }
     }
-}
-
-/// Minimal ValidTreePath (go-git pathutil gate) without pulling pathutil dep.
-fn validTreePathLite(p: []const u8) error{InvalidPath}!void {
-    if (p.len == 0) return error.InvalidPath;
-    for (p) |c| {
-        if (c < 0x20 or c == 0x7f) return error.InvalidPath;
-    }
-    var start: usize = 0;
-    var i: usize = 0;
-    var any = false;
-    while (i <= p.len) : (i += 1) {
-        const at_sep = i == p.len or p[i] == '/' or p[i] == '\\';
-        if (!at_sep) continue;
-        const part = p[start..i];
-        start = i + 1;
-        if (part.len == 0) continue;
-        any = true;
-        if (std.mem.eql(u8, part, ".") or std.mem.eql(u8, part, "..")) return error.InvalidPath;
-        if (std.mem.eql(u8, part, ".git")) return error.InvalidPath;
-    }
-    if (!any) return error.InvalidPath;
 }
 
 /// Load worktree Status for Add skip-unmodified (go-git always Status unless SkipStatus).

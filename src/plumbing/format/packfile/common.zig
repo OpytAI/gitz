@@ -35,7 +35,7 @@ pub const max_delta_chain_depth: usize = 4095;
 /// go-git `WritePackfileToObjectStorage` — copy a pack image into a raw writer.
 ///
 /// go-git obtains the writer from `storer.PackfileWriter` (filesystem storage,
-/// phase 6). This helper is the copy + empty check once a writer is available.
+/// filesystem storage). This helper performs the copy and empty check.
 /// Returns `Error.EmptyPackfile` when `pack_bytes` is empty (go-git `n == 0`).
 pub fn writePackfileToObjectStorage(w: *std.Io.Writer, pack_bytes: []const u8) (pack_error.Error || std.Io.Writer.Error)!void {
     if (pack_bytes.len == 0) return pack_error.Error.EmptyPackfile;

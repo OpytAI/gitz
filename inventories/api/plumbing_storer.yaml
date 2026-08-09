@@ -1,8 +1,6 @@
-# API inventory: plumbing/storer (phase 4)
 # Go interfaces are method-set docs on backends; helpers are concrete types.
 # Constructors New* → Type.init + new* free aliases.
 package: plumbing/storer
-phase: 4
 require:
   types:
     - EncodedObjectStorer
