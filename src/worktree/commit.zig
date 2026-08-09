@@ -118,7 +118,16 @@ pub fn commit(w: *Worktree, msg: []const u8, o: CommitOptions) !Hash {
         return error_mod.Error.EmptyCommit;
     }
 
-    const commit_hash = try buildCommitObject(w, msg, author, committer, parents, tree_hash, o.sign_key);
+    const commit_hash = try buildCommitObject(
+        w,
+        msg,
+        author,
+        committer,
+        parents,
+        tree_hash,
+        o.signer,
+        o.sign_key,
+    );
     try updateHEAD(w, commit_hash);
     return commit_hash;
 }
@@ -252,6 +261,7 @@ fn buildCommitObject(
     committer: Signature,
     parents: []const Hash,
     tree_hash: Hash,
+    signer: ?options_mod.Signer,
     sign_key: ?*objpkg.Entity,
 ) !Hash {
     const allocator = w.allocator;
@@ -293,7 +303,14 @@ fn buildCommitObject(
     var pgp_owned: ?[]u8 = null;
     defer if (pgp_owned) |p| allocator.free(p);
 
-    if (sign_key) |key| {
+    if (signer) |custom| {
+        var unsigned = MemoryObject.init(allocator);
+        defer unsigned.deinit();
+        try c.encodeWithoutSignature(&unsigned);
+        const sig = try custom.sign(allocator, unsigned.readerBytes());
+        pgp_owned = sig;
+        c.pgp_signature = sig;
+    } else if (sign_key) |key| {
         var unsigned = MemoryObject.init(allocator);
         defer unsigned.deinit();
         try c.encodeWithoutSignature(&unsigned);
@@ -681,6 +698,43 @@ test "commit sanitizes invalid characters in signature" {
     }
     try std.testing.expectEqualStrings("foo bad", c.author.name);
     try std.testing.expectEqualStrings("badfoo@foo.foo", c.author.email);
+}
+
+test "generic signer signs unsigned commit" {
+    const gpa = std.testing.allocator;
+    var sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+    var mem_fs = try fs_pkg.Mem.init(gpa);
+    defer mem_fs.deinit();
+    try sto.setReference(Reference.newSymbolicReference(plumbing.HEAD, plumbing.master));
+
+    const Callback = struct {
+        fn sign(_: ?*anyopaque, allocator: Allocator, message: []const u8) anyerror![]u8 {
+            try std.testing.expect(std.mem.indexOf(u8, message, "tree ") != null);
+            try std.testing.expect(std.mem.indexOf(u8, message, "gpgsig ") == null);
+            return allocator.dupe(u8, "custom-signature");
+        }
+    };
+
+    var w = worktree_mod.newWorktree(gpa, sto, &mem_fs);
+    try stageFile(&w, "signed.txt", "payload", filemode.Regular);
+    const h = try commit(&w, "signed\n", .{
+        .author = defaultSignature(),
+        .signer = .{ .sign_fn = Callback.sign },
+    });
+
+    const c = try objpkg.getCommit(gpa, sto, h);
+    defer {
+        c.deinit();
+        gpa.destroy(c);
+    }
+    // go-git's commit scanner appends a newline to each decoded gpgsig line.
+    // The encoder trims one trailing newline before writing, so this is the
+    // canonical decode result even when Signer returned no newline.
+    try std.testing.expectEqualStrings("custom-signature\n", c.pgp_signature);
 }
 
 test "buildTreeFromIndex empty index is empty tree" {

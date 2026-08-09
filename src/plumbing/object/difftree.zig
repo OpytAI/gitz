@@ -20,6 +20,7 @@ const Changes = change_mod.Changes;
 const Error = error_mod.Error;
 
 pub const DiffTreeOptions = change_mod.DiffTreeOptions;
+pub const DiffTreeContext = merkletrie.Context;
 
 /// Closed DiffTree error set (no bare `anyerror` at the public boundary).
 /// Noder/storer backends may surface other errors; those are mapped to
@@ -31,9 +32,29 @@ pub fn diffTree(allocator: Allocator, a: ?*Tree, b: ?*Tree) DiffError!Changes {
     return diffTreeWithOptions(allocator, a, b, .{});
 }
 
+/// go-git `DiffTreeContext`: the public cancellation-aware tree diff shape.
+pub fn diffTreeContext(
+    allocator: Allocator,
+    ctx: DiffTreeContext,
+    a: ?*Tree,
+    b: ?*Tree,
+) DiffError!Changes {
+    return diffTreeContextWithOptions(allocator, ctx, a, b, .{});
+}
+
 /// go-git `DiffTreeWithOptions`.
 pub fn diffTreeWithOptions(
     allocator: Allocator,
+    a: ?*Tree,
+    b: ?*Tree,
+    opts: DiffTreeOptions,
+) DiffError!Changes {
+    return diffTreeContextWithOptions(allocator, .{}, a, b, opts);
+}
+
+pub fn diffTreeContextWithOptions(
+    allocator: Allocator,
+    ctx: DiffTreeContext,
     a: ?*Tree,
     b: ?*Tree,
     opts: DiffTreeOptions,
@@ -46,7 +67,7 @@ pub fn diffTreeWithOptions(
 
     var mt_changes = merkletrie.diffTreeContext(
         allocator,
-        .{},
+        ctx,
         from.asNoder(),
         to.asNoder(),
         hashEqual,
@@ -148,6 +169,15 @@ test "diffTree empty trees" {
     var changes = try diffTree(gpa, null, null);
     defer changes.deinit();
     try std.testing.expectEqual(@as(usize, 0), changes.items.len);
+}
+
+test "diffTreeContext returns Canceled at the public boundary" {
+    const gpa = std.testing.allocator;
+    var cancelled = true;
+    try std.testing.expectError(
+        error.Canceled,
+        diffTreeContext(gpa, .{ .cancelled = &cancelled }, null, null),
+    );
 }
 
 // go-git: empty → tree (insert README-style single file)

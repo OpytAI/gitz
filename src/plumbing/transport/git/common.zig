@@ -26,7 +26,7 @@ const AuthMethod = transport.AuthMethod;
 const Commander = transport_common.Commander;
 const Command = transport_common.Command;
 const WriteCloser = transport_common.WriteCloser;
-const Client = transport_common.Client;
+pub const Client = transport_common.Client;
 
 const IpAddress = std.Io.net.IpAddress;
 const HostName = std.Io.net.HostName;

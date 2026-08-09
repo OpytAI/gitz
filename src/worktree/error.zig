@@ -12,6 +12,8 @@ pub const Error = error{
     GitModulesSymlink,
     /// go-git `ErrNonFastForwardUpdate` (pull).
     NonFastForwardUpdate,
+    /// RecurseSubmodules was requested without binding the submodule package.
+    SubmoduleUpdateNotConfigured,
     /// go-git `ErrRestoreWorktreeOnlyNotSupported`.
     RestoreWorktreeOnlyNotSupported,
     /// go-git `ErrDestinationExists` (Move).

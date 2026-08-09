@@ -378,8 +378,8 @@ pub const Commit = struct {
         try o.setContent(aw.written());
     }
 
-    /// go-git `(*Commit).Verify` — armored OpenPGP detached signature check.
-    pub fn verify(self: *const Commit, armored_keyring: []const u8) (Allocator.Error || Error || error{WriteFailed})!void {
+    /// Verifies the detached signature and returns the owned signing entity.
+    pub fn verify(self: *const Commit, armored_keyring: []const u8) anyerror!openpgp_mod.Entity {
         if (signature_mod.countSignatureBlocks(self.pgp_signature) > 1) return error.MultipleSignatures;
         if (self.pgp_signature.len == 0) return error.InvalidSignature;
 
@@ -388,7 +388,7 @@ pub const Commit = struct {
         try self.encodeWithoutSignature(&encoded);
         const message = encoded.readerBytes();
 
-        openpgp_mod.checkArmoredDetachedSignature(
+        const identity = openpgp_mod.checkArmoredDetachedSignature(
             self.allocator,
             armored_keyring,
             message,
@@ -398,6 +398,7 @@ pub const Commit = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidSignature,
         };
+        return openpgp_mod.entityForFingerprint(self.allocator, armored_keyring, identity.fingerprint);
     }
 
     /// go-git `Commit.Less`.
@@ -1377,5 +1378,7 @@ test "commit Verify go-git TestVerify fixture" {
         \\
     ;
 
-    try commit.verify(armored_keyring);
+    var entity = try commit.verify(armored_keyring);
+    defer entity.deinit();
+    try std.testing.expect(!std.mem.allEqual(u8, &entity.primary.fingerprint, 0));
 }

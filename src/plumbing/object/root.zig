@@ -31,10 +31,12 @@ pub const KeyMaterial = openpgp_mod.KeyMaterial;
 pub const Subkey = openpgp_mod.Subkey;
 pub const readArmoredKeyRing = openpgp_mod.readArmoredKeyRing;
 pub const freeEntities = openpgp_mod.freeEntities;
+pub const entityForFingerprint = openpgp_mod.entityForFingerprint;
 pub const armoredDetachSign = openpgp_mod.armoredDetachSign;
 pub const encodeArmor = openpgp_mod.encodeArmor;
 pub const decodeArmor = openpgp_mod.decodeArmor;
 pub const checkArmoredDetachedSignature = openpgp_mod.checkArmoredDetachedSignature;
+pub const VerifiedKey = openpgp_mod.VerifiedKey;
 pub const generateEd25519Entity = openpgp_mod.generateEd25519Entity;
 pub const generateEd25519Subkey = openpgp_mod.generateEd25519Subkey;
 pub const entityAttachSubkey = openpgp_mod.entityAttachSubkey;
@@ -58,11 +60,14 @@ pub const newFile = file_mod.newFile;
 pub const Tree = tree_mod.Tree;
 pub const TreeEntry = tree_mod.TreeEntry;
 pub const TreeIter = tree_mod.TreeIter;
+pub const TreeWalker = tree_mod.TreeWalker;
 pub const getTree = tree_mod.getTree;
 pub const decodeTree = tree_mod.decodeTree;
 pub const decodeTreeNoStore = tree_mod.decodeTreeNoStore;
 pub const freeTree = tree_mod.freeTree;
 pub const newTreeIter = tree_mod.newTreeIter;
+/// go-git `NewTreeWalker`.
+pub const newTreeWalker = tree_mod.TreeWalker.init;
 
 pub const Commit = commit_mod.Commit;
 pub const getCommit = commit_mod.getCommit;
@@ -122,10 +127,13 @@ pub const Changes = change_mod.Changes;
 pub const Action = change_mod.Action;
 pub const DiffTreeOptions = change_mod.DiffTreeOptions;
 pub const DiffError = difftree_mod.DiffError;
+pub const DiffTreeContext = difftree_mod.DiffTreeContext;
 /// go-git `DiffTree` (Zig name: `diffTree`).
 pub const DiffTree = difftree_mod.diffTree;
 pub const diffTree = difftree_mod.diffTree;
+pub const diffTreeContext = difftree_mod.diffTreeContext;
 pub const diffTreeWithOptions = difftree_mod.diffTreeWithOptions;
+pub const diffTreeContextWithOptions = difftree_mod.diffTreeContextWithOptions;
 pub const detectRenames = rename_mod.detectRenames;
 
 pub const TreeNoder = tree_noder_mod.TreeNoder;

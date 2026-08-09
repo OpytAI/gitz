@@ -55,6 +55,8 @@ pub const FileIndex = file_mod.FileIndex;
 
 // --- Chain file ---
 pub const openChainFile = chain_mod.openChainFile;
+pub const openChainIndexFor = chain_mod.openChainIndexFor;
+pub const openChainOrFileIndexFor = chain_mod.openChainOrFileIndexFor;
 
 // --- Encoder ---
 pub const Encoder = encoder_mod.Encoder;

@@ -191,6 +191,12 @@ pub const Client = struct {
         return self.newSession(receivePackServiceName(), ep, auth);
     }
 
+    /// Expose command-backed file/git/ssh clients through the shared transport
+    /// registry. Each returned interface owns one heap session.
+    pub fn asTransport(self: *Client) transport.Transport {
+        return .{ .ptr = self, .vtable = &client_transport_vtable };
+    }
+
     fn newSession(
         self: *Client,
         service: []const u8,
@@ -212,6 +218,93 @@ pub const Client = struct {
             .is_receive_pack = std.mem.eql(u8, service, receivePackServiceName()),
         };
     }
+};
+
+const OwnedSession = struct {
+    allocator: Allocator,
+    session: Session,
+};
+
+fn cloneAdvRefs(allocator: Allocator, src: *const packp.AdvRefs) !*packp.AdvRefs {
+    const dst = try packp.allocAdvRefs(allocator);
+    errdefer packp.freeAdvRefs(allocator, dst);
+    dst.head = src.head;
+    const caps = try src.capabilities.clone(allocator);
+    dst.capabilities.deinit();
+    dst.capabilities = caps;
+    for (src.prefix.items) |p| try dst.appendPrefix(p);
+    var refs = src.references.iterator();
+    while (refs.next()) |entry| try dst.putReference(entry.key_ptr.*, entry.value_ptr.*);
+    var peeled = src.peeled.iterator();
+    while (peeled.next()) |entry| try dst.putPeeled(entry.key_ptr.*, entry.value_ptr.*);
+    for (src.shallows.items) |hash| try dst.appendShallow(hash);
+    return dst;
+}
+
+fn ownedClose(ptr: *anyopaque) void {
+    const owned: *OwnedSession = @ptrCast(@alignCast(ptr));
+    const allocator = owned.allocator;
+    owned.session.close() catch {};
+    allocator.destroy(owned);
+}
+
+fn ownedAdvertised(ptr: *anyopaque, ctx: transport.OperationContext) anyerror!*packp.AdvRefs {
+    const owned: *OwnedSession = @ptrCast(@alignCast(ptr));
+    try ctx.check();
+    const refs = try owned.session.advertisedReferencesContext();
+    return cloneAdvRefs(owned.allocator, refs);
+}
+
+fn ownedUpload(ptr: *anyopaque, ctx: transport.OperationContext, req: *const packp.UploadPackRequest) anyerror!*packp.UploadPackResponse {
+    const owned: *OwnedSession = @ptrCast(@alignCast(ptr));
+    try ctx.check();
+    return owned.session.uploadPack(@constCast(req));
+}
+
+fn ownedReceive(ptr: *anyopaque, ctx: transport.OperationContext, req: *const packp.ReferenceUpdateRequest) anyerror!transport.ReceivePackOutcome {
+    const owned: *OwnedSession = @ptrCast(@alignCast(ptr));
+    try ctx.check();
+    const report = try owned.session.receivePack(@constCast(req));
+    return .{ .report = report, .err = null };
+}
+
+fn ownedSetAuth(_: *anyopaque, auth: ?transport.AuthMethod) anyerror!void {
+    if (auth != null) return transport.Error.AlreadyConnected;
+}
+
+const upload_session_vtable = transport.UploadPackSession.VTable{
+    .close = ownedClose,
+    .advertised_references = ownedAdvertised,
+    .upload_pack = ownedUpload,
+    .set_auth = ownedSetAuth,
+};
+
+const receive_session_vtable = transport.ReceivePackSession.VTable{
+    .close = ownedClose,
+    .advertised_references = ownedAdvertised,
+    .receive_pack = ownedReceive,
+    .set_auth = ownedSetAuth,
+};
+
+fn clientNewUpload(ptr: *anyopaque, ep: *const Endpoint, auth: ?transport.AuthMethod) anyerror!transport.UploadPackSession {
+    const client: *Client = @ptrCast(@alignCast(ptr));
+    const owned = try client.allocator.create(OwnedSession);
+    errdefer client.allocator.destroy(owned);
+    owned.* = .{ .allocator = client.allocator, .session = try client.newUploadPackSession(ep, auth) };
+    return .{ .ptr = owned, .vtable = &upload_session_vtable };
+}
+
+fn clientNewReceive(ptr: *anyopaque, ep: *const Endpoint, auth: ?transport.AuthMethod) anyerror!transport.ReceivePackSession {
+    const client: *Client = @ptrCast(@alignCast(ptr));
+    const owned = try client.allocator.create(OwnedSession);
+    errdefer client.allocator.destroy(owned);
+    owned.* = .{ .allocator = client.allocator, .session = try client.newReceivePackSession(ep, auth) };
+    return .{ .ptr = owned, .vtable = &receive_session_vtable };
+}
+
+const client_transport_vtable = transport.Transport.VTable{
+    .newUploadPackSession = clientNewUpload,
+    .newReceivePackSession = clientNewReceive,
 };
 
 /// go-git `NewClient`.
@@ -534,5 +627,3 @@ pub fn isRepoNotFoundError(s: []const u8) bool {
     }
     return false;
 }
-
-

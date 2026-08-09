@@ -44,6 +44,9 @@ pub const putByteSlice = bytes_mod.putByteSlice;
 
 // --- zlib ---
 pub const ZlibWriter = zlib_mod.ZlibWriter;
+pub const ZlibReader = zlib_mod.ZlibReader;
+pub const getZlibReader = zlib_mod.getZlibReader;
+pub const putZlibReader = zlib_mod.putZlibReader;
 pub const getZlibWriter = zlib_mod.getZlibWriter;
 pub const putZlibWriter = zlib_mod.putZlibWriter;
 

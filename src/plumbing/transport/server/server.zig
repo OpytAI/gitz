@@ -73,6 +73,106 @@ pub const Server = struct {
         const sto = try self.loader.load(ep);
         return ReceivePackSession.init(self.allocator, sto, self.as_client);
     }
+
+    /// Expose the embedded server through the same transport interface as
+    /// file/git/http/ssh clients.
+    pub fn asTransport(self: *Server) transport.Transport {
+        return .{ .ptr = self, .vtable = &server_transport_vtable };
+    }
+};
+
+const OwnedUploadSession = struct {
+    allocator: Allocator,
+    session: UploadPackSession,
+};
+
+const OwnedReceiveSession = struct {
+    allocator: Allocator,
+    session: ReceivePackSession,
+};
+
+fn serverNewUpload(ptr: *anyopaque, ep: *const Endpoint, auth: ?transport.AuthMethod) anyerror!transport.UploadPackSession {
+    const srv: *Server = @ptrCast(@alignCast(ptr));
+    const owned = try srv.allocator.create(OwnedUploadSession);
+    errdefer srv.allocator.destroy(owned);
+    owned.* = .{ .allocator = srv.allocator, .session = try srv.newUploadPackSession(ep, auth) };
+    return .{ .ptr = owned, .vtable = &owned_upload_vtable };
+}
+
+fn serverNewReceive(ptr: *anyopaque, ep: *const Endpoint, auth: ?transport.AuthMethod) anyerror!transport.ReceivePackSession {
+    const srv: *Server = @ptrCast(@alignCast(ptr));
+    const owned = try srv.allocator.create(OwnedReceiveSession);
+    errdefer srv.allocator.destroy(owned);
+    owned.* = .{ .allocator = srv.allocator, .session = try srv.newReceivePackSession(ep, auth) };
+    return .{ .ptr = owned, .vtable = &owned_receive_vtable };
+}
+
+fn ownedUploadClose(ptr: *anyopaque) void {
+    const owned: *OwnedUploadSession = @ptrCast(@alignCast(ptr));
+    const allocator = owned.allocator;
+    owned.session.close();
+    allocator.destroy(owned);
+}
+
+fn ownedUploadAdvertised(ptr: *anyopaque, ctx: transport.OperationContext) anyerror!*packp.AdvRefs {
+    const owned: *OwnedUploadSession = @ptrCast(@alignCast(ptr));
+    try ctx.check();
+    return owned.session.advertisedReferencesContext();
+}
+
+fn ownedUploadPack(ptr: *anyopaque, ctx: transport.OperationContext, req: *const packp.UploadPackRequest) anyerror!*packp.UploadPackResponse {
+    const owned: *OwnedUploadSession = @ptrCast(@alignCast(ptr));
+    try ctx.check();
+    return owned.session.uploadPack(req);
+}
+
+fn ownedUploadSetAuth(ptr: *anyopaque, auth: ?transport.AuthMethod) anyerror!void {
+    const owned: *OwnedUploadSession = @ptrCast(@alignCast(ptr));
+    return owned.session.setAuth(auth);
+}
+
+fn ownedReceiveClose(ptr: *anyopaque) void {
+    const owned: *OwnedReceiveSession = @ptrCast(@alignCast(ptr));
+    const allocator = owned.allocator;
+    owned.session.close();
+    allocator.destroy(owned);
+}
+
+fn ownedReceiveAdvertised(ptr: *anyopaque, ctx: transport.OperationContext) anyerror!*packp.AdvRefs {
+    const owned: *OwnedReceiveSession = @ptrCast(@alignCast(ptr));
+    try ctx.check();
+    return owned.session.advertisedReferencesContext();
+}
+
+fn ownedReceivePack(ptr: *anyopaque, ctx: transport.OperationContext, req: *const packp.ReferenceUpdateRequest) anyerror!transport.ReceivePackOutcome {
+    const owned: *OwnedReceiveSession = @ptrCast(@alignCast(ptr));
+    try ctx.check();
+    const outcome = try owned.session.receivePackOutcome(req);
+    return .{ .report = outcome.report, .err = outcome.err };
+}
+
+fn ownedReceiveSetAuth(ptr: *anyopaque, auth: ?transport.AuthMethod) anyerror!void {
+    const owned: *OwnedReceiveSession = @ptrCast(@alignCast(ptr));
+    return owned.session.setAuth(auth);
+}
+
+const owned_upload_vtable = transport.UploadPackSession.VTable{
+    .close = ownedUploadClose,
+    .advertised_references = ownedUploadAdvertised,
+    .upload_pack = ownedUploadPack,
+    .set_auth = ownedUploadSetAuth,
+};
+
+const owned_receive_vtable = transport.ReceivePackSession.VTable{
+    .close = ownedReceiveClose,
+    .advertised_references = ownedReceiveAdvertised,
+    .receive_pack = ownedReceivePack,
+    .set_auth = ownedReceiveSetAuth,
+};
+
+const server_transport_vtable = transport.Transport.VTable{
+    .newUploadPackSession = serverNewUpload,
+    .newReceivePackSession = serverNewReceive,
 };
 
 /// go-git `NewServer`.

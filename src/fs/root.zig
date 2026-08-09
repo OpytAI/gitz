@@ -60,10 +60,40 @@ pub const Mode = struct {
     pub const symlink_flag: u32 = 0o120000;
 };
 
+/// go-billy `Capability` bit flags.
+pub const Capability = u64;
+pub const WriteCapability: Capability = 1 << 0;
+pub const ReadCapability: Capability = 1 << 1;
+pub const ReadAndWriteCapability: Capability = 1 << 2;
+pub const SeekCapability: Capability = 1 << 3;
+pub const TruncateCapability: Capability = 1 << 4;
+pub const LockCapability: Capability = 1 << 5;
+pub const DefaultCapabilities: Capability = WriteCapability | ReadCapability |
+    ReadAndWriteCapability | SeekCapability | TruncateCapability | LockCapability;
+pub const AllCapabilities = DefaultCapabilities;
+
+/// go-billy `CapabilityCheck`; concrete gitz backends expose `capabilities`.
+pub fn capabilityCheck(backend: anytype, wanted: Capability) bool {
+    const have = backend.capabilities();
+    return have & wanted == wanted;
+}
+
 pub const Mem = mem_mod.Mem;
 pub const MemFile = mem_mod.MemFile;
 pub const Os = os_mod.Os;
 pub const OsFile = os_mod.OsFile;
+
+test "capabilityCheck requires every requested bit" {
+    const Fake = struct {
+        fn capabilities(_: *@This()) Capability {
+            return ReadCapability | SeekCapability;
+        }
+    };
+    var fake = Fake{};
+    try @import("std").testing.expect(capabilityCheck(&fake, ReadCapability));
+    try @import("std").testing.expect(capabilityCheck(&fake, ReadCapability | SeekCapability));
+    try @import("std").testing.expect(!capabilityCheck(&fake, WriteCapability));
+}
 
 test {
     _ = @import("error.zig");

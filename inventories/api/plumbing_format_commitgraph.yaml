@@ -9,6 +9,8 @@ require:
     - Encoder
   functions:
     - openChainFile
+    - openChainIndexFor
+    - openChainOrFileIndexFor
   semantic:
     - CommitData
     - MemoryIndex
@@ -16,6 +18,8 @@ require:
     - Encoder
     - ChunkType
     - OpenChainFile
+    - openChainIndexFor
+    - openChainOrFileIndexFor
 zig_map:
   CommitData: CommitData
   MemoryIndex: MemoryIndex
@@ -23,3 +27,5 @@ zig_map:
   Encoder: Encoder
   ChunkType: ChunkType
   OpenChainFile: openChainFile
+  OpenChainIndexFor: openChainIndexFor
+  OpenChainOrFileIndexFor: openChainOrFileIndexFor

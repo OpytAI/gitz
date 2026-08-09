@@ -35,6 +35,11 @@ pub fn writeUint32(w: *Writer, value: u32) Writer.Error!void {
     try w.writeInt(u32, value, .big);
 }
 
+/// Writes `value` as 2 big-endian bytes (go-git `WriteUint16`).
+pub fn writeUint16(w: *Writer, value: u16) Writer.Error!void {
+    try w.writeInt(u16, value, .big);
+}
+
 /// Writes `value` as 8 big-endian bytes.
 pub fn writeUint64(w: *Writer, value: u64) Writer.Error!void {
     try w.writeInt(u64, value, .big);
@@ -95,4 +100,11 @@ test "writeUint64 big-endian" {
         &[_]u8{ 0x01, 0x23, 0x45, 0x67, 0x89, 0xab, 0xcd, 0xef },
         w.buffered(),
     );
+}
+
+test "writeUint16 big-endian" {
+    var storage: [2]u8 = undefined;
+    var w: Writer = .fixed(&storage);
+    try writeUint16(&w, 0x1234);
+    try std.testing.expectEqualSlices(u8, &.{ 0x12, 0x34 }, w.buffered());
 }

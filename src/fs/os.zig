@@ -16,6 +16,7 @@ const Allocator = std.mem.Allocator;
 const Error = error_mod.Error;
 const FileInfo = fileinfo_mod.FileInfo;
 const O = root_mod.O;
+const Capability = root_mod.Capability;
 const Io = std.Io;
 const Dir = std.Io.Dir;
 const IoFile = std.Io.File;
@@ -153,6 +154,39 @@ pub const Os = struct {
 
     pub fn root(self: *const Os) []const u8 {
         return self.root_path;
+    }
+
+    pub fn capabilities(_: *const Os) Capability {
+        return root_mod.AllCapabilities;
+    }
+
+    pub fn chmod(self: *Os, filename: []const u8, mode: u32) (Allocator.Error || Error)!void {
+        var file = try self.openFile(filename, O.RDONLY, 0);
+        defer file.close() catch {};
+        file.file.setPermissions(self.io, IoFile.Permissions.fromMode(@intCast(mode & 0o7777))) catch |e| return mapHostErr(e);
+    }
+
+    pub fn chown(self: *Os, filename: []const u8, uid: i64, gid: i64) (Allocator.Error || Error)!void {
+        var file = try self.openFile(filename, O.RDONLY, 0);
+        defer file.close() catch {};
+        const owner: ?IoFile.Uid = if (uid < 0) null else @intCast(uid);
+        const group: ?IoFile.Gid = if (gid < 0) null else @intCast(gid);
+        file.file.setOwner(self.io, owner, group) catch |e| return mapHostErr(e);
+    }
+
+    pub fn lchown(_: *Os, _: []const u8, _: i64, _: i64) Error!void {
+        // std.Io has no path-level no-follow owner operation. Report the
+        // unsupported distinction instead of silently following the link.
+        return error.NotSupported;
+    }
+
+    pub fn chtimes(self: *Os, filename: []const u8, atime_sec: i64, mtime_sec: i64) (Allocator.Error || Error)!void {
+        var file = try self.openFile(filename, O.RDONLY, 0);
+        defer file.close() catch {};
+        file.file.setTimestamps(self.io, .{
+            .access_timestamp = .{ .new = Io.Timestamp.fromNanoseconds(@as(i96, atime_sec) * std.time.ns_per_s) },
+            .modify_timestamp = .{ .new = Io.Timestamp.fromNanoseconds(@as(i96, mtime_sec) * std.time.ns_per_s) },
+        }) catch |e| return mapHostErr(e);
     }
 
     pub fn joinPath(self: *const Os, parts: []const []const u8) Allocator.Error![]u8 {
@@ -467,8 +501,15 @@ pub const OsFile = struct {
         self.file.setLength(self.os.io, @intCast(size)) catch |e| return mapHostErr(e);
     }
 
-    pub fn lock(_: *OsFile) Error!void {}
-    pub fn unlock(_: *OsFile) Error!void {}
+    pub fn lock(self: *OsFile) Error!void {
+        if (self.closed) return error.Closed;
+        self.file.lock(self.os.io, .exclusive) catch |e| return mapHostErr(e);
+    }
+
+    pub fn unlock(self: *OsFile) Error!void {
+        if (self.closed) return error.Closed;
+        self.file.unlock(self.os.io);
+    }
 
     pub fn close(self: *OsFile) Error!void {
         if (self.closed) return error.Closed;
@@ -492,6 +533,7 @@ fn mapHostErr(err: anyerror) Error {
         error.AccessDenied, error.PermissionDenied, error.ReadOnlyFileSystem => error.ReadOnly,
         error.NoSpaceLeft, error.DiskQuota => error.NoSpace,
         error.SystemResources, error.ProcessFdQuotaExceeded, error.SystemFdQuotaExceeded => error.SystemResources,
+        error.FileLocksUnsupported => error.NotSupported,
         error.Canceled => error.Unexpected,
         else => error.Unexpected,
     };
@@ -509,6 +551,7 @@ fn fileInfoFromStat(st: IoFile.Stat, name: []const u8) FileInfo {
         .size = @intCast(st.size),
         .mode = mode,
         .mtime_sec = st.mtime.toSeconds(),
+        .atime_sec = if (st.atime) |atime| atime.toSeconds() else 0,
     };
 }
 

@@ -12,9 +12,20 @@ require:
     - ServerResponse
     - ShallowUpdate
     - GitProtoRequest
+    - Depth
+    - Command
+    - Option
   functions:
     - AdvRefs.init
     - isFlush
+    - allocAdvRefs
+    - newReportStatus
+    - newUploadPackRequest
+    - newUploadPackRequestFromCapabilities
+    - newUploadPackResponse
+    - newUploadPackResponseWithPackfile
+    - newReferenceUpdateRequest
+    - newReferenceUpdateRequestFromCapabilities
   constants: []
   semantic:
     - AdvRefs
@@ -32,6 +43,9 @@ require:
     - GitProtoRequest
     - isFlush
     - Filter
+    - Depth
+    - Command
+    - Option
 zig_map:
   AdvRefs: AdvRefs
   NewAdvRefs: AdvRefs.init
@@ -43,4 +57,15 @@ zig_map:
   ServerResponse: ServerResponse
   ShallowUpdate: ShallowUpdate
   GitProtoRequest: GitProtoRequest
+  Depth: Depth
+  Command: Command
+  Option: Option
+  NewAdvRefs: allocAdvRefs
+  NewReportStatus: newReportStatus
+  NewUploadPackRequest: newUploadPackRequest
+  NewUploadPackRequestFromCapabilities: newUploadPackRequestFromCapabilities
+  NewUploadPackResponse: newUploadPackResponse
+  NewUploadPackResponseWithPackfile: newUploadPackResponseWithPackfile
+  NewReferenceUpdateRequest: newReferenceUpdateRequest
+  NewReferenceUpdateRequestFromCapabilities: newReferenceUpdateRequestFromCapabilities
   isFlush: isFlush

@@ -554,6 +554,18 @@ pub const Error = error{
     NoRoundTripper,
     /// Endpoint protocol is not http/https.
     InvalidScheme,
+    /// Proxy URL failed to parse or uses an unsupported scheme.
+    InvalidProxyURL,
+    /// Custom CA PEM could not be loaded into the trust store.
+    CertificateBundleLoadFailure,
+    /// Client cert set without key (or vice versa), or PEM markers missing.
+    ClientCertificateConfigInvalid,
+    /// Client certificate requested but Zig 0.16 std TLS has no mTLS option.
+    ClientCertificateUnsupported,
+    /// HTTP CONNECT to proxy failed or returned a non-200 status.
+    HttpConnectFailed,
+    /// Proxy does not support CONNECT tunneling.
+    TunnelNotSupported,
 };
 
 // ---------------------------------------------------------------------------
@@ -623,7 +635,9 @@ pub fn applyHeaders(
 // Client options + Client (go-git `ClientOptions`, `client`, `NewClient*`)
 // ---------------------------------------------------------------------------
 
-/// User-configurable client options (go-git `ClientOptions` + TLS skip flag).
+/// User-configurable client options (go-git `ClientOptions` + TLS/proxy).
+///
+/// Endpoint fields override matching ClientOptions when non-empty / true.
 pub const ClientOptions = struct {
     /// Max cached transport configs (0 = disabled). Parity field for go-git
     /// transport cache; no cache is implemented yet.
@@ -633,6 +647,14 @@ pub const ClientOptions = struct {
     /// When true, HTTPS uses the insecure TLS path (`tls.Client` with
     /// host/CA `no_verification`). See `os_round_tripper.zig`.
     insecure_skip_tls: bool = false,
+    /// Client certificate PEM bytes (borrowed).
+    client_cert: []const u8 = "",
+    /// Client private key PEM bytes (borrowed).
+    client_key: []const u8 = "",
+    /// Extra CA PEM bytes appended to the system trust store (borrowed).
+    ca_bundle: []const u8 = "",
+    /// HTTP(S) proxy applied on the live OS client.
+    proxy: transport.ProxyOptions = .{},
 };
 
 /// HTTP transport client (go-git `client`).
@@ -707,11 +729,22 @@ pub const Client = struct {
             owned_basic = ba;
         }
 
-        // Endpoint flag or client option — applied on owned OsRoundTripper.
+        // Endpoint wins when set (non-empty / true); else ClientOptions.
         const insecure = ep.insecure_skip_tls or self.options.insecure_skip_tls;
+        const proxy = if (ep.proxy.url.len != 0) ep.proxy else self.options.proxy;
+        const ca_bundle = if (ep.ca_bundle.len != 0) ep.ca_bundle else self.options.ca_bundle;
+        const client_cert = if (ep.client_cert.len != 0) ep.client_cert else self.options.client_cert;
+        const client_key = if (ep.client_key.len != 0) ep.client_key else self.options.client_key;
+
         if (self.owned_os_rt) |os_rt| {
-            os_rt.insecure_skip_tls = insecure;
-            os_rt.redirect_policy = self.follow;
+            try os_rt.configure(.{
+                .redirect_policy = self.follow,
+                .insecure_skip_tls = insecure,
+                .proxy = proxy,
+                .ca_bundle = ca_bundle,
+                .client_cert = client_cert,
+                .client_key = client_key,
+            });
         }
 
         return Session{
@@ -1119,7 +1152,85 @@ test "isHttpScheme and invalid schemes" {
     try testing.expect(!isHttpScheme("file"));
 }
 
+test "newSession applies ClientOptions proxy onto OsRoundTripper" {
+    const gpa = testing.allocator;
+    var cl = try newClientWithOptions(gpa, null, .{
+        .proxy = .{ .url = "http://proxy.local:8888" },
+    });
+    defer cl.deinit();
+
+    var ep = try transport.newEndpoint(gpa, testing.io, "https://example.com/repo.git");
+    defer ep.deinit();
+    var sess = try cl.newSession(&ep, null);
+    defer sess.close();
+
+    const os_rt = cl.owned_os_rt.?;
+    try testing.expect(os_rt.client.http_proxy != null);
+    try testing.expectEqualStrings("proxy.local", os_rt.client.http_proxy.?.host.bytes);
+    try testing.expectEqual(@as(u16, 8888), os_rt.client.http_proxy.?.port);
+}
+
+test "newSession Endpoint proxy wins over ClientOptions" {
+    const gpa = testing.allocator;
+    var cl = try newClientWithOptions(gpa, null, .{
+        .proxy = .{ .url = "http://from-opts:1" },
+    });
+    defer cl.deinit();
+
+    var ep = try transport.newEndpoint(gpa, testing.io, "https://example.com/repo.git");
+    defer ep.deinit();
+    ep.proxy = .{ .url = "http://from-endpoint:9" };
+    var sess = try cl.newSession(&ep, null);
+    defer sess.close();
+
+    try testing.expectEqualStrings("from-endpoint", cl.owned_os_rt.?.client.http_proxy.?.host.bytes);
+    try testing.expectEqual(@as(u16, 9), cl.owned_os_rt.?.client.http_proxy.?.port);
+}
+
+test "newSession CA load failure surfaces" {
+    const gpa = testing.allocator;
+    var cl = try newClient(gpa);
+    defer cl.deinit();
+    var ep = try transport.newEndpoint(gpa, testing.io, "https://example.com/repo.git");
+    defer ep.deinit();
+    ep.ca_bundle = "not-a-certificate";
+    try testing.expectError(error.CertificateBundleLoadFailure, cl.newSession(&ep, null));
+}
+
+test "mock RoundTripper still works with proxy ClientOptions" {
+    const gpa = testing.allocator;
+    var mock = MockRoundTripper.init(gpa);
+    defer mock.deinit();
+    try mock.push(.{
+        .status_code = 200,
+        .body = "ok",
+    });
+    var cl = try newClientWithOptions(gpa, mock.asRoundTripper(), .{
+        .proxy = .{ .url = "http://unused-proxy:1" },
+        .ca_bundle = "ignored-for-mock",
+    });
+    defer cl.deinit();
+    try testing.expect(cl.owned_os_rt == null);
+
+    var ep = try transport.newEndpoint(gpa, testing.io, "https://example.com/r.git");
+    defer ep.deinit();
+    var sess = try cl.newSession(&ep, null);
+    defer sess.close();
+
+    var req = Request{
+        .allocator = gpa,
+        .method = "GET",
+        .url = try gpa.dupe(u8, "https://example.com/r.git/info/refs"),
+        .headers = HeaderMap.init(gpa),
+    };
+    defer req.deinit();
+    var res = try cl.round_tripper.?.roundTrip(&req);
+    defer res.deinit();
+    try testing.expectEqual(@as(u16, 200), res.status_code);
+}
+
 test "DefaultClient / NewClient skeleton" {
+
     const gpa = testing.allocator;
     var c = try defaultClient(gpa);
     defer c.deinit();

@@ -54,6 +54,8 @@ pub const SubmoduleUpdateOptions = struct {
     recurse_submodules: SubmoduleRecursivity = no_recurse_submodules,
     /// Auth for remote fetch (go-git `Auth`) → `FetchOptions.transport.auth`.
     auth: ?transport.AuthMethod = null,
+    /// Cooperative cancellation/deadline hook for UpdateContext.
+    operation_context: transport.OperationContext = .{},
     /// Fetch depth limit (go-git `Depth`) → `FetchOptions.depth`.
     depth: i32 = 0,
     /// In-process server for hermetic fetch (tests / MapLoader). When null,

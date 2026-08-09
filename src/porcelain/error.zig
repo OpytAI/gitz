@@ -10,4 +10,10 @@ pub const Error = error{
     UnableToResolveCommit,
     /// Worktree FS is null when a non-bare operation needs it.
     IsBareRepository,
+    /// Shared clone was requested through a non-shared-only entry point.
+    SharedCloneRequired,
+    /// Filesystem shared clone cannot yet feed the memory-only checkout engine.
+    SharedCheckoutNotSupported,
+    /// The storage-only shared path cannot preserve this clone option exactly.
+    SharedCloneOptionNotSupported,
 };

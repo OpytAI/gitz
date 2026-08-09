@@ -31,6 +31,7 @@ const std = @import("std");
 const plumbing = @import("plumbing");
 const cache_pkg = @import("cache");
 const fs_pkg = @import("fs");
+const gitconfig = @import("gitconfig");
 
 const storage_mod = @import("storage.zig");
 const object_mod = @import("object.zig");
@@ -54,6 +55,8 @@ pub const StorageOs = storage_mod.StorageOs;
 pub const Storage = StorageMem;
 
 pub const Options = storage_mod.Options;
+pub const OptionsOs = storage_mod.OptionsOs;
+pub const OptionsFor = storage_mod.OptionsFor;
 pub const newStorage = storage_mod.newStorage;
 pub const newStorageWithOptions = storage_mod.newStorageWithOptions;
 pub const newStorageOs = storage_mod.newStorageOs;
@@ -116,6 +119,11 @@ pub const ConfigStorageMem = config_mod.ConfigStorageMem;
 pub const ConfigStorageOs = config_mod.ConfigStorageOs;
 pub const ConfigStorage = ConfigStorageMem;
 pub const Config = config_mod.Config;
+pub const ConfigStorer = gitconfig.ConfigStorer(Config);
+
+pub fn configStorerFor(comptime Fs: type, storage: *StorageFor(Fs)) ConfigStorer {
+    return ConfigStorer.from(StorageFor(Fs), storage);
+}
 
 // --- Shallow storage ---
 

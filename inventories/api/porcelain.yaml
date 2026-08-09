@@ -12,20 +12,33 @@ require:
     - CloneOptions
   functions:
     - clone
+    - cloneContext
     - cloneEmbedded
+    - cloneEmbeddedContext
     - plainClone
+    - plainCloneContext
     - plainCloneEmbedded
+    - plainCloneSharedFilesystem
     - cloneInto
+    - cloneIntoContext
   constants: []
   semantic:
     - OwnedRepository
     - OwnedRepository.deinit
     - CloneOptions
     - clone
+    - cloneContext
     - cloneEmbedded
+    - cloneEmbeddedContext
     - plainClone
+    - plainCloneContext
     - plainCloneEmbedded
+    - plainCloneSharedFilesystem
+    - SharedCloneRequired
+    - SharedCloneOptionNotSupported
+    - SharedCheckoutNotSupported
     - cloneInto
+    - cloneIntoContext
     - MissingURL
     - Fetching
     - UnableToResolveCommit
@@ -34,10 +47,15 @@ zig_map:
   OwnedRepository: OwnedRepository
   CloneOptions: CloneOptions
   Clone: clone
+  CloneContext: cloneContext
   CloneEmbedded: cloneEmbedded
+  CloneEmbeddedContext: cloneEmbeddedContext
   PlainClone: plainClone
+  PlainCloneContext: plainCloneContext
   PlainCloneEmbedded: plainCloneEmbedded
+  PlainCloneSharedFilesystem: plainCloneSharedFilesystem
   cloneInto: cloneInto
+  cloneIntoContext: cloneIntoContext
   ErrMissingURL: MissingURL
   ErrFetching: Fetching
   ErrUnableToResolveCommit: UnableToResolveCommit

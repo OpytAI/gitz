@@ -172,8 +172,8 @@ pub const Tag = struct {
         return self.encodeInner(o, false);
     }
 
-    /// go-git `(*Tag).Verify` — armored OpenPGP detached signature check.
-    pub fn verify(self: *const Tag, armored_keyring: []const u8) (Allocator.Error || error_mod.Error || error{WriteFailed})!void {
+    /// Verifies the detached signature and returns the owned signing entity.
+    pub fn verify(self: *const Tag, armored_keyring: []const u8) anyerror!openpgp_mod.Entity {
         if (signature_mod.countSignatureBlocks(self.pgp_signature) > 1) return error.MultipleSignatures;
         if (self.pgp_signature.len == 0) return error.InvalidSignature;
 
@@ -182,7 +182,7 @@ pub const Tag = struct {
         try self.encodeWithoutSignature(&encoded);
         const message = encoded.readerBytes();
 
-        openpgp_mod.checkArmoredDetachedSignature(
+        const identity = openpgp_mod.checkArmoredDetachedSignature(
             self.allocator,
             armored_keyring,
             message,
@@ -192,6 +192,7 @@ pub const Tag = struct {
             error.OutOfMemory => return error.OutOfMemory,
             else => return error.InvalidSignature,
         };
+        return openpgp_mod.entityForFingerprint(self.allocator, armored_keyring, identity.fingerprint);
     }
 
     fn matchesSource(self: *const Tag) bool {

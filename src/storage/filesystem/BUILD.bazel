@@ -34,6 +34,7 @@ zig_library(
         "//src/storage/memory",
         "//src/storage/filesystem/dotgit",
         "//src/utils/sync",
+        "//src/config",
     ],
 )
 
@@ -57,6 +58,7 @@ zig_test(
         "//src/storage/filesystem/dotgit",
         "//src/storage:storage_suite",
         "//src/utils/sync",
+        "//src/config",
     ],
 )
 

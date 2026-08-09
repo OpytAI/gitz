@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const plumbing = @import("plumbing");
+const gitconfig = @import("gitconfig");
 
 const error_mod = @import("error.zig");
 const storage_mod = @import("storage.zig");
@@ -50,6 +51,11 @@ pub const RemoteConfig = config_mod.RemoteConfig;
 pub const BranchConfig = config_mod.BranchConfig;
 pub const SubmoduleEntry = config_mod.SubmoduleEntry;
 pub const ConfigError = config_mod.Error;
+pub const ConfigStorer = gitconfig.ConfigStorer(Config);
+
+pub fn configStorer(storage: *Storage) ConfigStorer {
+    return ConfigStorer.from(Storage, storage);
+}
 
 pub const IndexStorage = index_mod.IndexStorage;
 pub const Index = index_mod.Index;
@@ -85,6 +91,18 @@ test "newStorage empty object round-trip" {
 
     const got = try s.encodedObject(.blob, h);
     try std.testing.expect(got.hash().eql(h));
+}
+
+test "type-erased ConfigStorer adapts memory storage" {
+    const allocator = std.testing.allocator;
+    const storage = try newStorage(allocator);
+    defer {
+        storage.deinit();
+        allocator.destroy(storage);
+    }
+    const erased = configStorer(storage);
+    const cfg = try erased.config();
+    try std.testing.expect(!cfg.is_bare);
 }
 
 test "two storages independent hash algorithms" {

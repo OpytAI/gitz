@@ -7,7 +7,6 @@ const memory = @import("memory");
 const fs_pkg = @import("fs");
 const gitconfig = @import("gitconfig");
 const index_format = @import("index");
-const worktree = @import("worktree");
 
 const submodule = @import("root.zig");
 
@@ -131,6 +130,26 @@ test "getSubmodule by name and not found" {
     try std.testing.expectError(error.SubmoduleNotFound, submodule.getSubmodule(&fx.host, "missing"));
 }
 
+test "Worktree submodule glue owns Host lifetime" {
+    const worktree_pkg = @import("worktree");
+    const gpa = std.testing.allocator;
+    var fx = try Fixture.create(gpa);
+    defer fx.deinit();
+    var w = worktree_pkg.newWorktree(gpa, fx.sto, fx.fs);
+
+    var all = try submodule.submodulesForWorktree(&w);
+    defer all.deinit();
+    try std.testing.expectEqual(@as(usize, 2), all.items.items.len);
+
+    var one = try submodule.submoduleForWorktree(&w, "basic");
+    defer one.deinit();
+    try std.testing.expectEqualStrings("basic", one.item.config().name);
+
+    var pull_options: worktree_pkg.PullOptions = .{ .recurse_submodules = 1 };
+    submodule.bindPullOptions(&pull_options);
+    try std.testing.expect(pull_options.submodule_updater != null);
+}
+
 test "Init records initialized; second Init errors" {
     const gpa = std.testing.allocator;
     var fx = try Fixture.create(gpa);
@@ -159,6 +178,30 @@ test "Init records initialized; second Init errors" {
             try std.testing.expect(!m.initialized);
         }
     }
+}
+
+test "Submodule.repository opens initialized module with worktree and origin" {
+    const gpa = std.testing.allocator;
+    var fx = try Fixture.create(gpa);
+    defer fx.deinit();
+    try fx.fs.mkdirAll("basic", fs_pkg.Mode.dir);
+
+    const sm = try submodule.getSubmodule(&fx.host, "basic");
+    defer {
+        sm.deinit();
+        gpa.destroy(sm);
+    }
+    try std.testing.expectError(error.SubmoduleNotInitialized, sm.repository());
+    try sm.init();
+
+    var owned = try sm.repository();
+    defer owned.deinit();
+    try std.testing.expect(!owned.repo.isBare());
+    const head = try owned.repo.reference(plumbing.HEAD, false);
+    try std.testing.expect(head.type == .symbolic);
+    const cfg = try owned.repo.config();
+    const origin = cfg.remotes.get("origin") orelse return error.TestUnexpectedResult;
+    try std.testing.expectEqualStrings(sm.config().url, origin.urls[0]);
 }
 
 test "Submodules.Init initializes all" {
@@ -598,14 +641,23 @@ test "Host.fromWorktree shares storer and filesystem" {
     var fx = try Fixture.create(gpa);
     defer fx.deinit();
 
-    var w = worktree.newWorktree(gpa, fx.sto, fx.fs);
-    var host = Host.fromWorktree(&w);
+    // anytype handle — no worktree package import (avoids BUILD cycles).
+    const handle = struct {
+        allocator: Allocator,
+        storer: *memory.Storage,
+        filesystem: *fs_pkg.Mem,
+    }{
+        .allocator = gpa,
+        .storer = fx.sto,
+        .filesystem = fx.fs,
+    };
+    var host = Host.fromWorktree(&handle);
     defer host.deinit();
 
     try std.testing.expect(host.storer == fx.sto);
     try std.testing.expect(host.filesystem == fx.fs);
 
-    var list = try submodule.listFromWorktree(&host, &w);
+    var list = try submodule.listSubmodules(&host, null);
     defer list.free(gpa);
     try std.testing.expectEqual(@as(usize, 2), list.items.len);
 }

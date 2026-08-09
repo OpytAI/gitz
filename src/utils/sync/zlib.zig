@@ -1,4 +1,4 @@
-//! Zlib writer free list.
+//! Zlib reader and writer free lists.
 //!
 //! Port of go-git `utils/sync` zlib helpers (`GetZlibWriter`, `PutZlibWriter`).
 //!
@@ -31,7 +31,41 @@ pub const ZlibWriter = struct {
     }
 };
 
+/// Pooled zlib decompressor. The decompressor itself is reset on every get;
+/// the costly 32 KiB history window is retained between uses.
+pub const ZlibReader = struct {
+    window: []u8,
+    decompress: flate.Decompress,
+    next: ?*ZlibReader = null,
+
+    pub fn reader(self: *ZlibReader) *std.Io.Reader {
+        return &self.decompress.reader;
+    }
+};
+
 var free_zlib_writers: FreeList(ZlibWriter) = .{};
+// Reader pools are thread-local. Zig's test runner executes tests concurrently,
+// and each test allocator must only reclaim nodes allocated on its own thread.
+threadlocal var free_zlib_readers: FreeList(ZlibReader) = .{};
+
+/// go-git `GetZlibReader`: reset a pooled inflater onto `input`.
+pub fn getZlibReader(allocator: Allocator, input: *std.Io.Reader) Allocator.Error!*ZlibReader {
+    const zr = if (free_zlib_readers.get()) |node| node else blk: {
+        const node = try allocator.create(ZlibReader);
+        errdefer allocator.destroy(node);
+        const window = try allocator.alloc(u8, flate.max_window_len);
+        errdefer allocator.free(window);
+        node.* = .{ .window = window, .decompress = undefined };
+        break :blk node;
+    };
+    zr.decompress = flate.Decompress.init(input, .zlib, zr.window);
+    return zr;
+}
+
+pub fn putZlibReader(zr: *ZlibReader) void {
+    zr.decompress = undefined;
+    free_zlib_readers.put(zr);
+}
 
 /// Returns a zlib compressor that writes a zlib-framed deflate stream to `output`.
 /// `output` must remain valid until `finish` / `putZlibWriter` and have buffer
@@ -65,12 +99,44 @@ pub fn putZlibWriter(zw: *ZlibWriter) void {
 
 /// Frees all pooled zlib writers and their windows.
 pub fn deinitZlibPools(allocator: Allocator) void {
+    free_zlib_readers.drain(allocator, struct {
+        fn destroy(a: Allocator, node: *ZlibReader) void {
+            a.free(node.window);
+            a.destroy(node);
+        }
+    }.destroy);
     free_zlib_writers.drain(allocator, struct {
         fn destroy(a: Allocator, node: *ZlibWriter) void {
             a.free(node.window);
             a.destroy(node);
         }
     }.destroy);
+}
+
+test "getZlibReader inflates and reuses window" {
+    const gpa = std.testing.allocator;
+    defer deinitZlibPools(gpa);
+
+    var compressed_buf: [4096]u8 = undefined;
+    var output: Writer = .fixed(&compressed_buf);
+    const zw = try getZlibWriter(gpa, &output);
+    try zw.writer().writeAll("pooled inflate");
+    try zw.finish();
+    putZlibWriter(zw);
+
+    var input = std.Io.Reader.fixed(output.buffered());
+    const zr = try getZlibReader(gpa, &input);
+    const window_ptr = zr.window.ptr;
+    var plain: [32]u8 = undefined;
+    const n = try zr.reader().readSliceShort(&plain);
+    try std.testing.expectEqualStrings("pooled inflate", plain[0..n]);
+    putZlibReader(zr);
+
+    var input2 = std.Io.Reader.fixed(output.buffered());
+    const again = try getZlibReader(gpa, &input2);
+    try std.testing.expect(again == zr);
+    try std.testing.expect(again.window.ptr == window_ptr);
+    putZlibReader(again);
 }
 
 test "getZlibWriter put reuses window" {

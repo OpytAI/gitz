@@ -8,8 +8,10 @@ require:
     - prune
     - deleteObject
     - newObjectWalker
+    - ObjectWalkerFor
   semantic:
     - ObjectWalker
+    - ObjectWalkerFor
     - prune
     - deleteObject
     - LooseObjectsNotSupported
@@ -18,3 +20,4 @@ zig_map:
   Prune: prune
   DeleteObject: deleteObject
   PruneOptions: PruneOptions
+  ObjectWalkerFor: ObjectWalkerFor

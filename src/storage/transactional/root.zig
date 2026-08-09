@@ -34,10 +34,13 @@ const reference_mod = @import("reference.zig");
 const index_mod = @import("index.zig");
 const shallow_mod = @import("shallow.zig");
 const config_mod = @import("config.zig");
+const filesystem_storage_mod = @import("filesystem_storage.zig");
 
 pub const Storage = storage_mod.Storage;
 pub const newStorage = storage_mod.newStorage;
 pub const implements_packfile_writer = storage_mod.implements_packfile_writer;
+/// Generic filesystem-backed transaction (`fs.Mem` or `fs.Os`).
+pub const FilesystemStorageFor = filesystem_storage_mod.StorageFor;
 
 pub const ObjectStorage = object_mod.ObjectStorage;
 pub const MultiObjectIter = object_mod.MultiObjectIter;
@@ -63,6 +66,7 @@ test {
     _ = index_mod;
     _ = shallow_mod;
     _ = config_mod;
+    _ = filesystem_storage_mod;
 }
 
 test "newStorage surface" {

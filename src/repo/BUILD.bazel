@@ -10,6 +10,7 @@ _SRCS = [
     "crud.zig",
     "plain.zig",
     "worktree_api.zig",
+    "repack.zig",
 ]
 
 _DEPS = [
@@ -19,13 +20,17 @@ _DEPS = [
     "//src/plumbing/storer",
     "//src/plumbing/revlist",
     "//src/plumbing/format/config",
+    "//src/plumbing/format/packfile",
     "//src/storage/memory",
     "//src/storage/filesystem",
     "//src/storage/filesystem/dotgit",
     "//src/config",
     "//src/remote",
     "//src/worktree",
+    "//src/prune",
+    "//src/blame",
     "//src/plumbing/transport/server",
+    "//src/plumbing/transport",
     "//src/internal/revision",
     "//src/fs",
     "//src/utils/sync",

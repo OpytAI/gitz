@@ -114,7 +114,7 @@ test "armoredDetachSign hello world round-trip verify" {
 
     const pub_armor = try ents[0].serializePublicArmored(gpa);
     defer gpa.free(pub_armor);
-    try checkArmoredDetachedSignature(gpa, pub_armor, "hello world", sig);
+    _ = try checkArmoredDetachedSignature(gpa, pub_armor, "hello world", sig);
 }
 
 test "encodeArmor round-trip" {
@@ -141,7 +141,7 @@ test "Ed25519 armoredDetachSign round-trip verify" {
     defer gpa.free(sig);
     const pub_armor = try ent.serializePublicArmored(gpa);
     defer gpa.free(pub_armor);
-    try checkArmoredDetachedSignature(gpa, pub_armor, msg, sig);
+    _ = try checkArmoredDetachedSignature(gpa, pub_armor, msg, sig);
 }
 
 test "s2kDerive simple salted iterated SHA-1 and SHA-256 goldens" {
@@ -305,7 +305,7 @@ test "Entity.decrypt AES-256 S2K type3 SHA-256 usage 254" {
     defer gpa.free(sig);
     const pub_armor = try ent.serializePublicArmored(gpa);
     defer gpa.free(pub_armor);
-    try checkArmoredDetachedSignature(gpa, pub_armor, msg, sig);
+    _ = try checkArmoredDetachedSignature(gpa, pub_armor, msg, sig);
 }
 
 test "subkey preferred for armoredDetachSign issuer" {
@@ -338,7 +338,7 @@ test "subkey preferred for armoredDetachSign issuer" {
     // Public ring with subkey verifies the signature.
     const pub_armor = try ent.serializePublicArmored(gpa);
     defer gpa.free(pub_armor);
-    try checkArmoredDetachedSignature(gpa, pub_armor, msg, sig);
+    _ = try checkArmoredDetachedSignature(gpa, pub_armor, msg, sig);
 }
 
 test "primary-only entity still signs with primary" {

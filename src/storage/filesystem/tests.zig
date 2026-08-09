@@ -64,6 +64,38 @@ test "Init scaffolding creates layout dirs" {
     try std.testing.expect(s.filesystem() == &mem);
 }
 
+test "Storage Options wires AlternatesFS into DotGit" {
+    const gpa = std.testing.allocator;
+    var primary = try fs_pkg.Mem.init(gpa);
+    defer primary.deinit();
+    var alternates = try fs_pkg.Mem.init(gpa);
+    defer alternates.deinit();
+
+    const s = try newStorageWithOptions(gpa, &primary, null, .{
+        .alternates_fs = &alternates,
+    });
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+
+    try std.testing.expect(s.dir.options.alternates_fs == &alternates);
+}
+
+test "type-erased ConfigStorer adapts filesystem storage" {
+    const gpa = std.testing.allocator;
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+    const storage = try newStorage(gpa, &mem, null);
+    defer {
+        storage.deinit();
+        gpa.destroy(storage);
+    }
+    const erased = filesystem.configStorerFor(fs_pkg.Mem, storage);
+    const cfg = try erased.config();
+    try std.testing.expect(!cfg.is_bare);
+}
+
 test "setEncodedObject empty blob round-trip" {
     const gpa = std.testing.allocator;
     const sync = @import("utils/sync");

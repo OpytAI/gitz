@@ -45,16 +45,28 @@
 //!
 //! Plain `http://` with the flag set still uses `std.http.Client` (no TLS).
 //!
-//! Equivalent of go-git `InsecureSkipVerify`. Prefer a custom RoundTripper for
-//! custom trust stores when possible.
+//! # Proxy / CA / client certificate
+//!
+//! `configure` applies `TransportConfig` (ClientOptions + Endpoint; Endpoint
+//! wins when set) onto the live OS client:
+//! - **Proxy** — `std.http.Client.Proxy` on `http_proxy` / `https_proxy`.
+//!   Insecure HTTPS uses HTTP CONNECT through the same proxy.
+//! - **CA bundle** — PEM bytes into `client.ca_bundle` (system roots + custom).
+//! - **Client cert/key** — validated; Zig 0.16 std TLS has no client-cert
+//!   option, so HTTPS returns `error.ClientCertificateUnsupported`.
+//!
+//! Equivalent of go-git `InsecureSkipVerify` / `configureTransport`.
 
 const std = @import("std");
 const common = @import("common.zig");
+const transport = @import("transport");
 
 const Allocator = std.mem.Allocator;
 const http = std.http;
 const HostName = std.Io.net.HostName;
 const TlsClient = std.crypto.tls.Client;
+const Certificate = std.crypto.Certificate;
+const ProxyOptions = transport.ProxyOptions;
 
 const Request = common.Request;
 const Response = common.Response;
@@ -62,6 +74,26 @@ const HeaderMap = common.HeaderMap;
 const RoundTripper = common.RoundTripper;
 const RedirectPolicy = common.RedirectPolicy;
 const Error = common.Error;
+
+/// Zig 0.16's std TLS client has no client-certificate/private-key inputs.
+/// Keep this public so callers can reject mTLS before attempting a request.
+pub const ClientCertificateCapability = enum {
+    unsupported_zig_0_16_std_tls,
+};
+
+pub fn clientCertificateCapability() ClientCertificateCapability {
+    return .unsupported_zig_0_16_std_tls;
+}
+
+/// Effective transport knobs applied to a live `OsRoundTripper`.
+pub const TransportConfig = struct {
+    redirect_policy: RedirectPolicy = .initial,
+    insecure_skip_tls: bool = false,
+    proxy: ProxyOptions = .{},
+    ca_bundle: []const u8 = "",
+    client_cert: []const u8 = "",
+    client_key: []const u8 = "",
+};
 
 /// Max redirect hops (go-git `len(via) >= 10`).
 const max_redirect_hops: usize = 10;
@@ -84,6 +116,14 @@ pub const OsRoundTripper = struct {
     /// When true, HTTPS uses `tls.Client` with no host/CA verification.
     insecure_skip_tls: bool = false,
 
+    proxy_opts: ProxyOptions = .{},
+    ca_bundle_pem: []const u8 = "",
+    client_cert: []const u8 = "",
+    client_key: []const u8 = "",
+    owned_proxy: ?http.Client.Proxy = null,
+    proxy_host_owned: []u8 = &.{},
+    proxy_auth_owned: ?[]u8 = null,
+
     pub fn init(allocator: Allocator, io: std.Io) OsRoundTripper {
         return .{
             .allocator = allocator,
@@ -96,6 +136,7 @@ pub const OsRoundTripper = struct {
     }
 
     pub fn deinit(self: *OsRoundTripper) void {
+        self.clearProxyStorage();
         self.client.deinit();
         self.* = undefined;
     }
@@ -104,12 +145,79 @@ pub const OsRoundTripper = struct {
         return RoundTripper.from(OsRoundTripper, self);
     }
 
+    /// Apply proxy / CA / client-cert onto the live `std.http.Client`.
+    pub fn configure(self: *OsRoundTripper, cfg: TransportConfig) !void {
+        try validateClientCertConfig(cfg.client_cert, cfg.client_key);
+
+        self.clearProxyStorage();
+        self.client.deinit();
+        self.client = .{
+            .allocator = self.allocator,
+            .io = self.io,
+        };
+
+        self.redirect_policy = cfg.redirect_policy;
+        self.insecure_skip_tls = cfg.insecure_skip_tls;
+        self.proxy_opts = cfg.proxy;
+        self.ca_bundle_pem = cfg.ca_bundle;
+        self.client_cert = cfg.client_cert;
+        self.client_key = cfg.client_key;
+
+        if (cfg.proxy.url.len != 0) {
+            try self.installProxy(cfg.proxy);
+        }
+        if (cfg.ca_bundle.len != 0) {
+            try self.loadCaBundle(cfg.ca_bundle);
+        }
+    }
+
     /// Perform one HTTP request. Returns an owned `Response` (caller deinits).
     pub fn roundTrip(self: *OsRoundTripper, req: *const Request) anyerror!Response {
+        if (self.client_cert.len != 0 and isHttpsUrl(req.url)) {
+            return error.ClientCertificateUnsupported;
+        }
         if (usesInsecureTlsPath(self.insecure_skip_tls, req.url)) {
             return self.roundTripInsecure(req);
         }
         return self.roundTripVerified(req);
+    }
+
+    fn clearProxyStorage(self: *OsRoundTripper) void {
+        self.client.http_proxy = null;
+        self.client.https_proxy = null;
+        self.owned_proxy = null;
+        if (self.proxy_host_owned.len != 0) {
+            self.allocator.free(self.proxy_host_owned);
+            self.proxy_host_owned = &.{};
+        }
+        if (self.proxy_auth_owned) |auth| {
+            self.allocator.free(auth);
+            self.proxy_auth_owned = null;
+        }
+    }
+
+    fn installProxy(self: *OsRoundTripper, opts: ProxyOptions) !void {
+        const built = try buildHttpProxy(self.allocator, opts);
+        self.proxy_host_owned = built.host_owned;
+        self.proxy_auth_owned = built.auth_owned;
+        self.owned_proxy = built.proxy;
+        self.client.http_proxy = &self.owned_proxy.?;
+        self.client.https_proxy = &self.owned_proxy.?;
+    }
+
+    fn loadCaBundle(self: *OsRoundTripper, pem: []const u8) !void {
+        const now = std.Io.Clock.real.now(self.io);
+        var bundle: Certificate.Bundle = .empty;
+        errdefer bundle.deinit(self.allocator);
+
+        bundle.rescan(self.allocator, self.io, now) catch {
+            bundle.deinit(self.allocator);
+            bundle = .empty;
+        };
+        try addCertsFromPemBytes(&bundle, self.allocator, pem, now.toSeconds());
+        self.client.ca_bundle.deinit(self.allocator);
+        self.client.ca_bundle = bundle;
+        self.client.now = now;
     }
 
     // -----------------------------------------------------------------------
@@ -345,7 +453,7 @@ pub const OsRoundTripper = struct {
         const host = try uri.getHost(&host_name_buffer);
         const port: u16 = uri.port orelse if (use_tls) @as(u16, 443) else @as(u16, 80);
 
-        var stream = try host.connect(self.io, port, .{ .mode = .stream });
+        var stream = try self.connectInsecureStream(host, port, use_tls);
         defer stream.close(self.io);
 
         // Scratch buffers live for the hop only.
@@ -409,6 +517,46 @@ pub const OsRoundTripper = struct {
             .max_head_len = insecure_http_read_cap,
         };
         return try readInsecureResponse(self.allocator, &http_reader);
+    }
+
+    fn connectInsecureStream(
+        self: *OsRoundTripper,
+        target_host: HostName,
+        target_port: u16,
+        use_tls: bool,
+    ) !std.Io.net.Stream {
+        const proxy = self.owned_proxy orelse {
+            return target_host.connect(self.io, target_port, .{ .mode = .stream });
+        };
+        _ = use_tls;
+        if (!proxy.supports_connect) return error.TunnelNotSupported;
+
+        var stream = try proxy.host.connect(self.io, proxy.port, .{ .mode = .stream });
+        errdefer stream.close(self.io);
+
+        var read_buf: [1024]u8 = undefined;
+        var write_buf: [1024]u8 = undefined;
+        var reader = stream.reader(self.io, &read_buf);
+        var writer = stream.writer(self.io, &write_buf);
+
+        try writer.interface.print("CONNECT {s}:{d} HTTP/1.1\r\n", .{ target_host.bytes, target_port });
+        try writer.interface.print("host: {s}:{d}\r\n", .{ target_host.bytes, target_port });
+        if (proxy.authorization) |auth| {
+            try writer.interface.print("proxy-authorization: {s}\r\n", .{auth});
+        }
+        try writer.interface.writeAll("\r\n");
+        try writer.interface.flush();
+
+        const status_line = try reader.interface.takeDelimiterExclusive('\n');
+        const status = std.mem.trimEnd(u8, status_line, "\r");
+        if (!connectStatusOk(status)) return error.HttpConnectFailed;
+
+        while (true) {
+            const line = try reader.interface.takeDelimiterExclusive('\n');
+            const trimmed = std.mem.trimEnd(u8, line, "\r");
+            if (trimmed.len == 0) break;
+        }
+        return stream;
     }
 };
 
@@ -509,8 +657,122 @@ pub fn headerMapFromHeadBytes(allocator: Allocator, head_bytes: []const u8) (htt
 /// True when the OS tripper should use the insecure TLS path (https + skip).
 pub fn usesInsecureTlsPath(insecure_skip_tls: bool, url: []const u8) bool {
     if (!insecure_skip_tls) return false;
+    return isHttpsUrl(url);
+}
+
+pub fn isHttpsUrl(url: []const u8) bool {
     const uri = std.Uri.parse(url) catch return false;
     return std.ascii.eqlIgnoreCase(uri.scheme, "https");
+}
+
+pub fn validateClientCertConfig(cert: []const u8, key: []const u8) error{ClientCertificateConfigInvalid}!void {
+    if (cert.len == 0 and key.len == 0) return;
+    if (cert.len == 0 or key.len == 0) return error.ClientCertificateConfigInvalid;
+    if (std.mem.indexOf(u8, cert, "-----BEGIN") == null) return error.ClientCertificateConfigInvalid;
+    if (std.mem.indexOf(u8, key, "-----BEGIN") == null) return error.ClientCertificateConfigInvalid;
+}
+
+const BuiltProxy = struct {
+    proxy: http.Client.Proxy,
+    host_owned: []u8,
+    auth_owned: ?[]u8,
+};
+
+pub fn buildHttpProxy(allocator: Allocator, opts: ProxyOptions) !BuiltProxy {
+    if (opts.url.len == 0) return error.InvalidProxyURL;
+    try opts.validate();
+
+    var uri = std.Uri.parse(opts.url) catch return error.InvalidProxyURL;
+    if (opts.username.len != 0) {
+        uri.user = .{ .raw = opts.username };
+        if (opts.password.len != 0) {
+            uri.password = .{ .raw = opts.password };
+        } else {
+            uri.password = null;
+        }
+    }
+
+    const protocol: http.Client.Protocol = blk: {
+        if (std.ascii.eqlIgnoreCase(uri.scheme, "http") or std.ascii.eqlIgnoreCase(uri.scheme, "ws"))
+            break :blk .plain;
+        if (std.ascii.eqlIgnoreCase(uri.scheme, "https") or std.ascii.eqlIgnoreCase(uri.scheme, "wss"))
+            break :blk .tls;
+        return error.InvalidProxyURL;
+    };
+
+    var host_buf: [HostName.max_len]u8 = undefined;
+    const host_tmp = uri.getHost(&host_buf) catch return error.InvalidProxyURL;
+    const host_owned = try allocator.dupe(u8, host_tmp.bytes);
+    errdefer allocator.free(host_owned);
+
+    var auth_owned: ?[]u8 = null;
+    errdefer if (auth_owned) |a| allocator.free(a);
+    if (uri.user != null or uri.password != null) {
+        const auth = try allocator.alloc(u8, http.Client.basic_authorization.valueLengthFromUri(uri));
+        _ = http.Client.basic_authorization.value(uri, auth);
+        auth_owned = auth;
+    }
+
+    const port: u16 = uri.port orelse switch (protocol) {
+        .plain => @as(u16, 80),
+        .tls => @as(u16, 443),
+    };
+    return .{
+        .proxy = .{
+            .protocol = protocol,
+            .host = .{ .bytes = host_owned },
+            .authorization = auth_owned,
+            .port = port,
+            .supports_connect = true,
+        },
+        .host_owned = host_owned,
+        .auth_owned = auth_owned,
+    };
+}
+
+pub fn addCertsFromPemBytes(
+    bundle: *Certificate.Bundle,
+    gpa: Allocator,
+    pem: []const u8,
+    now_sec: i64,
+) error{ CertificateBundleLoadFailure, OutOfMemory }!void {
+    if (pem.len == 0) return;
+
+    const begin_marker = "-----BEGIN CERTIFICATE-----";
+    const end_marker = "-----END CERTIFICATE-----";
+    const base64 = std.base64.standard.decoderWithIgnore(" \t\r\n");
+
+    var start_index: usize = 0;
+    var found: usize = 0;
+    while (std.mem.indexOfPos(u8, pem, start_index, begin_marker)) |begin_marker_start| {
+        const cert_start = begin_marker_start + begin_marker.len;
+        const cert_end = std.mem.indexOfPos(u8, pem, cert_start, end_marker) orelse
+            return error.CertificateBundleLoadFailure;
+        start_index = cert_end + end_marker.len;
+        const encoded_cert = std.mem.trim(u8, pem[cert_start..cert_end], " \t\r\n");
+
+        const decoded_size_upper = encoded_cert.len / 4 * 3 + 3;
+        const decoded_start: u32 = @intCast(bundle.bytes.items.len);
+        try bundle.bytes.ensureUnusedCapacity(gpa, decoded_size_upper);
+        const dest_buf = bundle.bytes.allocatedSlice()[decoded_start..];
+        const written = base64.decode(dest_buf, encoded_cert) catch
+            return error.CertificateBundleLoadFailure;
+        bundle.bytes.items.len = decoded_start + written;
+
+        bundle.parseCert(gpa, decoded_start, now_sec) catch {
+            bundle.bytes.items.len = decoded_start;
+            continue;
+        };
+        found += 1;
+    }
+    if (found == 0) return error.CertificateBundleLoadFailure;
+}
+
+fn connectStatusOk(status_line: []const u8) bool {
+    var it = std.mem.tokenizeAny(u8, status_line, " \t");
+    _ = it.next() orelse return false;
+    const code = it.next() orelse return false;
+    return std.mem.eql(u8, code, "200");
 }
 
 fn requestHasPayload(method: []const u8, body: []const u8) bool {
@@ -979,4 +1241,111 @@ test "InsecureHop transfers headers ownership" {
     // Leftover hop state is empty after take*; deinit must not free transferred data.
     hop.deinit(gpa);
     try std.testing.expectEqualStrings("https://example.com/b", headers.get("Location").?);
+}
+
+test "configure applies proxy to std.http.Client fields" {
+    const gpa = std.testing.allocator;
+    var os_rt = OsRoundTripper.init(gpa, std.testing.io);
+    defer os_rt.deinit();
+    try os_rt.configure(.{
+        .proxy = .{
+            .url = "http://proxy.example.com:8080",
+            .username = "user",
+            .password = "pass",
+        },
+    });
+    try std.testing.expect(os_rt.client.http_proxy != null);
+    try std.testing.expect(os_rt.client.https_proxy != null);
+    try std.testing.expect(os_rt.client.http_proxy == os_rt.client.https_proxy);
+    try std.testing.expectEqualStrings("proxy.example.com", os_rt.client.http_proxy.?.host.bytes);
+    try std.testing.expectEqual(@as(u16, 8080), os_rt.client.http_proxy.?.port);
+    try std.testing.expect(os_rt.client.http_proxy.?.protocol == .plain);
+    try std.testing.expect(os_rt.client.http_proxy.?.supports_connect);
+    try std.testing.expect(os_rt.client.http_proxy.?.authorization != null);
+    try std.testing.expect(std.mem.startsWith(u8, os_rt.client.http_proxy.?.authorization.?, "Basic "));
+}
+
+test "configure invalid proxy URL fails" {
+    const gpa = std.testing.allocator;
+    var os_rt = OsRoundTripper.init(gpa, std.testing.io);
+    defer os_rt.deinit();
+    try std.testing.expectError(error.InvalidProxyURL, os_rt.configure(.{
+        .proxy = .{ .url = "://not-a-url" },
+    }));
+}
+
+test "buildHttpProxy parses host port scheme" {
+    const gpa = std.testing.allocator;
+    const built = try buildHttpProxy(gpa, .{ .url = "http://127.0.0.1:3128" });
+    defer {
+        gpa.free(built.host_owned);
+        if (built.auth_owned) |a| gpa.free(a);
+    }
+    try std.testing.expectEqualStrings("127.0.0.1", built.proxy.host.bytes);
+    try std.testing.expectEqual(@as(u16, 3128), built.proxy.port);
+    try std.testing.expect(built.proxy.authorization == null);
+}
+
+test "addCertsFromPemBytes rejects garbage" {
+    const gpa = std.testing.allocator;
+    var bundle: Certificate.Bundle = .empty;
+    defer bundle.deinit(gpa);
+    try std.testing.expectError(
+        error.CertificateBundleLoadFailure,
+        addCertsFromPemBytes(&bundle, gpa, "not-a-pem", 0),
+    );
+}
+
+test "configure CA load failure surfaces" {
+    const gpa = std.testing.allocator;
+    var os_rt = OsRoundTripper.init(gpa, std.testing.io);
+    defer os_rt.deinit();
+    try std.testing.expectError(error.CertificateBundleLoadFailure, os_rt.configure(.{
+        .ca_bundle = "not-pem-data",
+    }));
+}
+
+test "validateClientCertConfig pairing" {
+    try validateClientCertConfig("", "");
+    try std.testing.expectError(error.ClientCertificateConfigInvalid, validateClientCertConfig("x", ""));
+    try std.testing.expectError(error.ClientCertificateConfigInvalid, validateClientCertConfig("", "y"));
+    try std.testing.expectError(error.ClientCertificateConfigInvalid, validateClientCertConfig("nocerts", "nokeys"));
+    try validateClientCertConfig(
+        "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n",
+        "-----BEGIN PRIVATE KEY-----\nMIIE\n-----END PRIVATE KEY-----\n",
+    );
+}
+
+test "client cert blocks HTTPS roundTrip with clear error" {
+    const gpa = std.testing.allocator;
+    var os_rt = OsRoundTripper.init(gpa, std.testing.io);
+    defer os_rt.deinit();
+    try os_rt.configure(.{
+        .client_cert = "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----\n",
+        .client_key = "-----BEGIN PRIVATE KEY-----\ny\n-----END PRIVATE KEY-----\n",
+    });
+    var req = Request{
+        .allocator = gpa,
+        .method = "GET",
+        .url = try gpa.dupe(u8, "https://127.0.0.1:1/"),
+        .headers = HeaderMap.init(gpa),
+    };
+    defer req.deinit();
+    try std.testing.expectError(error.ClientCertificateUnsupported, os_rt.roundTrip(&req));
+}
+
+test "client certificate capability names the Zig 0.16 TLS limitation" {
+    try std.testing.expectEqual(
+        ClientCertificateCapability.unsupported_zig_0_16_std_tls,
+        clientCertificateCapability(),
+    );
+    try std.testing.expect(!@hasField(std.crypto.tls.Client.Options, "client_certificate"));
+    try std.testing.expect(!@hasField(std.crypto.tls.Client.Options, "client_private_key"));
+}
+
+test "connectStatusOk accepts 200" {
+    try std.testing.expect(connectStatusOk("HTTP/1.1 200 Connection Established"));
+    try std.testing.expect(connectStatusOk("HTTP/1.0 200 OK"));
+    try std.testing.expect(!connectStatusOk("HTTP/1.1 403 Forbidden"));
+    try std.testing.expect(!connectStatusOk(""));
 }

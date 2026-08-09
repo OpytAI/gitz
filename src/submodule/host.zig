@@ -22,7 +22,6 @@ const std = @import("std");
 const memory = @import("memory");
 const fs_pkg = @import("fs");
 const gitconfig = @import("gitconfig");
-const worktree = @import("worktree");
 
 const error_mod = @import("error.zig");
 
@@ -54,8 +53,9 @@ pub const Host = struct {
         return h;
     }
 
-    /// Build a Host from a worktree package Worktree (does not take ownership).
-    pub fn fromWorktree(w: *worktree.Worktree) Host {
+    /// Build a Host from any handle with `.allocator`, `.storer`, `.filesystem`
+    /// (e.g. `worktree.Worktree`). Avoids a package dependency cycle on worktree.
+    pub fn fromWorktree(w: anytype) Host {
         return init(w.allocator, w.storer, w.filesystem);
     }
 

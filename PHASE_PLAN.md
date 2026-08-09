@@ -1,6 +1,6 @@
 # gitz phase plan
 
-**Status:** active — Phase 11 (`remote`) on feature branch; develop through Phase 10.  
+**Status:** Phases G and 1–13 are implemented. Phase 13 package inventory is active. Residual go-git parity work continues on `feature/gap-close`.
 **Pin:** go-git **v5.19.2** (`GO_GIT_PIN.md`)  
 **Strategy:** `PORT_STRATEGY.md` (how). **This file:** what lands when.  
 **Process:** `AGENTS.md` (worktrees, merge, sequential phases).  
@@ -587,8 +587,8 @@ packages:
 | Bazel + rules_zig 0.16 + `//src:gitz` smoke | done |
 | Apache-2.0 `LICENSE` | done |
 
-**Phase G (guardrails):** implemented — use `bazel test //check:phase_g`.  
-**Next phase to execute:** **Phase 1 (foundation).**
+**Phases G and 1–13:** implemented. Use `bazel test //check:all` for the full acceptance gate.
+**Residual gap closure:** complete. The temporary workspace coverage report is retired after the full gate passed.
 
 ---
 
@@ -614,5 +614,6 @@ Inside a phase, split agents only along the **Parallel** table for that phase.
 | Version | Date | Note |
 |---------|------|------|
 | 1 | 2026-08 | Initial plan; Phase G + 1–13; full v5.19.2 |
+| 2 | 2026-08-08 | Mark Phases G and 1–13 implemented; route residual parity work to the coverage report |
 
 When the pin changes, revise package lists and re-baseline inventories in a dedicated chore phase or extend phase 13.

@@ -7,6 +7,10 @@ require:
     - ProxyOptions
     - Transport
     - AuthMethod
+    - OperationContext
+    - UploadPackSession
+    - ReceivePackSession
+    - ReceivePackOutcome
   functions:
     - newEndpoint
     - filterUnsupportedCapabilities
@@ -24,6 +28,17 @@ require:
     - ReceivePackServiceName
     - Transport
     - AuthMethod
+    - OperationContext
+    - OperationContext.check
+    - UploadPackSession
+    - UploadPackSession.advertisedReferences
+    - UploadPackSession.uploadPack
+    - UploadPackSession.close
+    - ReceivePackSession
+    - ReceivePackSession.advertisedReferences
+    - ReceivePackSession.receivePack
+    - ReceivePackSession.close
+    - ReceivePackOutcome
 zig_map:
   Endpoint: Endpoint
   NewEndpoint: newEndpoint
@@ -33,3 +48,7 @@ zig_map:
   ReceivePackServiceName: ReceivePackServiceName
   Transport: Transport
   AuthMethod: AuthMethod
+  OperationContext: OperationContext
+  UploadPackSession: UploadPackSession
+  ReceivePackSession: ReceivePackSession
+  ReceivePackOutcome: ReceivePackOutcome

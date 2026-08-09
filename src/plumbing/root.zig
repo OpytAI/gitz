@@ -13,9 +13,15 @@ const reference_mod = @import("reference.zig");
 
 // --- Errors ---
 pub const Error = error_mod.Error;
+pub const PermanentError = error_mod.PermanentError;
+pub const UnexpectedError = error_mod.UnexpectedError;
+pub const newPermanentError = error_mod.newPermanentError;
+pub const newUnexpectedError = error_mod.newUnexpectedError;
 
 // --- Hash ---
 pub const Hash = hash_mod.Hash;
+pub const HashSlice = hash_mod.HashSlice;
+pub const hashesSort = hash_mod.hashesSort;
 pub const Size = hash_mod.Size;
 pub const HexSize = hash_mod.HexSize;
 pub const MaxSize = hash_mod.MaxSize;
@@ -36,6 +42,20 @@ pub const Algorithm = hash_mod.Algorithm;
 pub const parseHashAny = hash_mod.parseHashAny;
 pub const isHashAny = hash_mod.isHashAny;
 pub const FormatScope = hash_mod.FormatScope;
+
+/// go-git `Revision`. A wrapper keeps the distinct API type while borrowing
+/// the caller's revision text; no allocation is needed for `String` parity.
+pub const Revision = struct {
+    value: []const u8,
+
+    pub fn init(value: []const u8) Revision {
+        return .{ .value = value };
+    }
+
+    pub fn string(self: Revision) []const u8 {
+        return self.value;
+    }
+};
 
 // --- ObjectType ---
 pub const ObjectType = object_mod.ObjectType;
@@ -81,6 +101,11 @@ test "Hash zero and parse/string" {
 
     // Invalid hex → zero (go-git NewHash ignores decode error).
     try std.testing.expect(newHash("not-hex").isZero());
+}
+
+test "Revision retains its distinct plumbing type" {
+    const revision = Revision.init("main~2");
+    try std.testing.expectEqualStrings("main~2", revision.string());
 }
 
 test "ObjectType string parse valid delta" {

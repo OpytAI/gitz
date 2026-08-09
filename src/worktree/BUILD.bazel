@@ -38,6 +38,7 @@ _DEPS = [
     "//src/remote",
     "//src/config",
     "//src/plumbing/transport/server",
+    "//src/plumbing/transport",
 ]
 
 zig_library(

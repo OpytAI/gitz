@@ -37,6 +37,10 @@ pub const msg_userauth_failure: u8 = 51;
 pub const msg_userauth_success: u8 = 52;
 pub const msg_userauth_banner: u8 = 53;
 pub const msg_userauth_pk_ok: u8 = 60;
+/// Method-specific keyboard-interactive messages (RFC 4256). Message 60 is
+/// shared with public-key PK_OK and is disambiguated by the active method.
+pub const msg_userauth_info_request: u8 = 60;
+pub const msg_userauth_info_response: u8 = 61;
 pub const msg_global_request: u8 = 80;
 pub const msg_request_success: u8 = 81;
 pub const msg_request_failure: u8 = 82;

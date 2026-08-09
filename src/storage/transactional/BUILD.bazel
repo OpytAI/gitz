@@ -8,6 +8,7 @@ _SRCS = [
     "index.zig",
     "shallow.zig",
     "config.zig",
+    "filesystem_storage.zig",
 ]
 
 zig_library(
@@ -18,8 +19,11 @@ zig_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/storage/memory",
+        "//src/storage/filesystem",
+        "//src/fs",
         "//src/plumbing",
         "//src/plumbing/format/index",
+        "//src/utils/sync",
     ],
 )
 
@@ -30,8 +34,11 @@ zig_test(
     srcs = _SRCS,
     deps = [
         "//src/storage/memory",
+        "//src/storage/filesystem",
+        "//src/fs",
         "//src/plumbing",
         "//src/plumbing/format/index",
+        "//src/utils/sync",
     ],
 )
 

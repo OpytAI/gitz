@@ -21,7 +21,9 @@ require:
     - ResetOptions
     - AddOptions
     - CommitOptions
+    - Signer
     - PullOptions
+    - SubmoduleUpdater
     - CloneOptions
     - CleanOptions
     - RestoreOptions
@@ -55,9 +57,12 @@ require:
     - Worktree.reset
     - Worktree.resetSparsely
     - Worktree.pull
+    - Worktree.pullContext
     - Worktree.clean
     - Worktree.restore
     - Worktree.grep
+    - Worktree.submodule
+    - Worktree.submodules
     - newWorktree
     - newWorktreeEmbedded
     - Status
@@ -73,11 +78,14 @@ require:
     - CheckoutOptions.validate
     - ResetMode
     - ResetOptions
+    - ResetOptions.validate
     - AddOptions
     - AddOptions.validate
     - CommitOptions
+    - Signer
     - CommitOptions.validate
     - PullOptions
+    - SubmoduleUpdater
     - PullOptions.validate
     - CloneOptions
     - CloneOptions.validate
@@ -114,7 +122,9 @@ zig_map:
   ResetOptions: ResetOptions
   AddOptions: AddOptions
   CommitOptions: CommitOptions
+  Signer: Signer
   PullOptions: PullOptions
+  SubmoduleUpdater: SubmoduleUpdater
   CloneOptions: CloneOptions
   CleanOptions: CleanOptions
   RestoreOptions: RestoreOptions

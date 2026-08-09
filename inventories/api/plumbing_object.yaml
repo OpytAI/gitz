@@ -11,6 +11,9 @@ require:
     - Signature
     - File
     - Change
+    - TreeWalker
+    - DiffTreeContext
+    - VerifiedKey
   functions:
     - getBlob
     - getTree
@@ -38,6 +41,9 @@ require:
     - detectRenames
     - getPatch
     - newTagIter
+    - newTreeWalker
+    - diffTreeContext
+    - diffTreeContextWithOptions
   semantic:
     - Blob
     - Tree
@@ -49,6 +55,14 @@ require:
     - CommitIter
     - DiffTree
     - MergeBase
+    - TreeWalker
+    - TreeWalker.next
+    - TreeWalker.close
+    - DiffTreeContext
+    - Commit.verify
+    - Tag.verify
+    - VerifiedKey
+    - entityForFingerprint
 zig_map:
   Blob: Blob
   Tree: Tree
@@ -57,6 +71,12 @@ zig_map:
   Tag: Tag
   Signature: Signature
   File: File
+  TreeWalker: TreeWalker
+  NewTreeWalker: newTreeWalker
+  DiffTreeContext: DiffTreeContext
+  VerifiedKey: VerifiedKey
+  EntityForFingerprint: entityForFingerprint
+  DiffTreeContextWithOptions: diffTreeContextWithOptions
   GetBlob: getBlob
   GetTree: getTree
   GetCommit: getCommit

@@ -8,6 +8,7 @@ const server = @import("server");
 const memory = @import("memory");
 const capability = @import("capability");
 const plumbing = @import("plumbing");
+const packp = @import("packp");
 const sync = @import("utils/sync");
 
 const file = @import("client.zig");
@@ -61,7 +62,7 @@ test "NewClient builds FileClient" {
     try testing.expectEqualStrings("git-receive-pack", client.runner.receive_pack_bin);
     const t = client.asTransport();
     try testing.expect(@intFromPtr(t.vtable) != 0);
-    try testing.expect(t.ptr == @as(*anyopaque, @ptrCast(&client)));
+    try testing.expect(t.ptr == @as(*anyopaque, @ptrCast(&client.client)));
 }
 
 test "runner Command valid receive-pack service" {
@@ -481,6 +482,35 @@ test "hermetic MapLoader advertise via DefaultClient" {
     try testing.expect(ar.capabilities.supports(capability.OFSDelta) or
         ar.capabilities.supports(capability.Sideband64k) or
         ar.capabilities.supports(capability.Sideband));
+}
+
+test "transport vtable opens a real owned file upload session" {
+    const gpa = testing.allocator;
+    defer sync.deinitPools(gpa);
+
+    var loader = server.MapLoader.init(gpa);
+    defer loader.deinit();
+    const sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+    const head = try populateRepo(sto, gpa);
+
+    var ep = try makeEp(gpa, "file://registry-file-up");
+    defer ep.deinit();
+    try loader.put(&ep, sto);
+
+    var client = try file.defaultClient(gpa);
+    defer client.deinit();
+    client.setLoader(loader.asLoader());
+
+    const backend = client.asTransport();
+    var sess = try backend.newUploadPackSession(&ep, null);
+    defer sess.close();
+    const ar = try sess.advertisedReferences();
+    defer packp.freeAdvRefs(gpa, ar);
+    try testing.expect(ar.head.?.eql(head));
 }
 
 test "hermetic MapLoader missing repo maps to RepositoryNotFound" {

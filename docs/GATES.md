@@ -26,8 +26,8 @@ bazel test //check:phase_g
 | `//check:file_inventory_fail_forward` | Fixture inventory (`data/fail_forward/`) + hollow fixture src must fail at `current_phase=1` |
 | `//check:api_inventory_fail_forward` | Fixture API seeds + hollow fixture src must fail at `current_phase=1` |
 | `//check:phase_g` | Bundle of the above + `//src:gitz_test` |
-| `//check:phase_1` … `//check:phase_13` | Phase gates (stubs chain through `phase_g` until each phase expands them) |
-| `//check:all` | All completed phases so far |
+| `//check:phase_1` … `//check:phase_13` | Expanded phase gates. Each suite chains through its predecessor and adds its package tests. |
+| `//check:all` | Full Phase G through Phase 13 acceptance suite |
 
 Merge rule: phase N work merges to `develop` only when `//check:phase_N` is green **and** `current_phase` is bumped to N so inventories enforce due packages. A green stub suite alone is not merge-complete.
 
@@ -139,12 +139,11 @@ When implementing phase N:
 3. Optionally add dedicated tests under `//src/...` and register them in `//check:phase_N`.
 4. On merge to develop, set `current_phase: N`.
 
-`//check:phase_N` currently chains to prior phases and `phase_g`. Expand `check/BUILD.bazel` as suites grow.
+`//check:phase_N` chains to prior phases and `phase_g`. All Phase 1–13 suites are expanded in `check/BUILD.bazel`.
 
-**Phase 12:** `//check:phase_12` includes `:phase_11` plus `:phase_12_packages`
-(`//src/worktree:worktree_test`, `//src/porcelain:porcelain_test`,
-`//src/repo:repo_test`, `//tools/golden:recompute_test`). API seeds:
-`worktree.yaml`, `porcelain.yaml`.
+**Phase 13:** `//check:phase_13` includes `:phase_12` plus transport,
+serverinfo, submodule, blame, prune, and executable golden tests. `//check:all`
+is an alias suite for the complete Phase 13 gate.
 
 ---
 

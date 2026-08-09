@@ -18,6 +18,8 @@
 //!   (verified `std.http.Client`; insecure HTTPS via `tls.Client`
 //!   `no_verification` when `insecure_skip_tls` is set). Call `Client.deinit`
 //!   once when finished.
+//! - `newSession` applies proxy / CA PEM / client-cert from ClientOptions and
+//!   Endpoint (Endpoint wins when set) onto the live OS client.
 //! - Inject `MockRoundTripper` (or any `RoundTripper`) for hermetic tests;
 //!   inject path does not own the RoundTripper.
 //! - Single request path: `Session.doRequest` → `RoundTripper.roundTrip`.
@@ -69,7 +71,13 @@ pub const Response = common.Response;
 pub const RoundTripper = common.RoundTripper;
 pub const MockRoundTripper = common.MockRoundTripper;
 pub const OsRoundTripper = os_round_tripper.OsRoundTripper;
+pub const TransportConfig = os_round_tripper.TransportConfig;
 pub const headerMapFromHeadBytes = os_round_tripper.headerMapFromHeadBytes;
+pub const buildHttpProxy = os_round_tripper.buildHttpProxy;
+pub const addCertsFromPemBytes = os_round_tripper.addCertsFromPemBytes;
+pub const validateClientCertConfig = os_round_tripper.validateClientCertConfig;
+pub const ClientCertificateCapability = os_round_tripper.ClientCertificateCapability;
+pub const clientCertificateCapability = os_round_tripper.clientCertificateCapability;
 
 pub const AuthMethod = common.AuthMethod;
 pub const BasicAuth = common.BasicAuth;
@@ -143,28 +151,103 @@ fn newUploadPackSessionV(
     ptr: *anyopaque,
     endpoint: *const Endpoint,
     auth: ?transport.AuthMethod,
-) anyerror!?transport.SessionHandle {
+) anyerror!transport.UploadPackSession {
     const self: *Client = @ptrCast(@alignCast(ptr));
     // go-git mutates endpoint on redirect; callers pass owned mutable endpoints.
     const ep: *Endpoint = @constCast(endpoint);
     const session = try newUploadPackSession(self, ep, auth);
     const heap = try self.allocator.create(UploadPackSession);
     heap.* = session;
-    return @ptrCast(heap);
+    return .{ .ptr = heap, .vtable = &upload_session_vtable };
 }
 
 fn newReceivePackSessionV(
     ptr: *anyopaque,
     endpoint: *const Endpoint,
     auth: ?transport.AuthMethod,
-) anyerror!?transport.SessionHandle {
+) anyerror!transport.ReceivePackSession {
     const self: *Client = @ptrCast(@alignCast(ptr));
     const ep: *Endpoint = @constCast(endpoint);
     const session = try newReceivePackSession(self, ep, auth);
     const heap = try self.allocator.create(ReceivePackSession);
     heap.* = session;
-    return @ptrCast(heap);
+    return .{ .ptr = heap, .vtable = &receive_session_vtable };
 }
+
+fn uploadClose(ptr: *anyopaque) void {
+    const sess: *UploadPackSession = @ptrCast(@alignCast(ptr));
+    const allocator = sess.session.allocator;
+    sess.close();
+    allocator.destroy(sess);
+}
+
+fn uploadAdvertised(ptr: *anyopaque, ctx: transport.OperationContext) anyerror!*packp.AdvRefs {
+    const sess: *UploadPackSession = @ptrCast(@alignCast(ptr));
+    try ctx.check();
+    const cached = try sess.advertisedReferencesContext();
+    return cloneAdvRefs(sess.session.allocator, cached);
+}
+
+fn uploadPackV(ptr: *anyopaque, ctx: transport.OperationContext, req: *const packp.UploadPackRequest) anyerror!*packp.UploadPackResponse {
+    const sess: *UploadPackSession = @ptrCast(@alignCast(ptr));
+    try ctx.check();
+    return sess.uploadPack(req);
+}
+
+fn receiveClose(ptr: *anyopaque) void {
+    const sess: *ReceivePackSession = @ptrCast(@alignCast(ptr));
+    const allocator = sess.session.allocator;
+    sess.close();
+    allocator.destroy(sess);
+}
+
+fn receiveAdvertised(ptr: *anyopaque, ctx: transport.OperationContext) anyerror!*packp.AdvRefs {
+    const sess: *ReceivePackSession = @ptrCast(@alignCast(ptr));
+    try ctx.check();
+    const cached = try sess.advertisedReferencesContext();
+    return cloneAdvRefs(sess.session.allocator, cached);
+}
+
+fn cloneAdvRefs(allocator: Allocator, src: *const packp.AdvRefs) !*packp.AdvRefs {
+    const dst = try packp.allocAdvRefs(allocator);
+    errdefer packp.freeAdvRefs(allocator, dst);
+    dst.head = src.head;
+    const caps = try src.capabilities.clone(allocator);
+    dst.capabilities.deinit();
+    dst.capabilities = caps;
+    for (src.prefix.items) |p| try dst.appendPrefix(p);
+    var refs = src.references.iterator();
+    while (refs.next()) |entry| try dst.putReference(entry.key_ptr.*, entry.value_ptr.*);
+    var peeled = src.peeled.iterator();
+    while (peeled.next()) |entry| try dst.putPeeled(entry.key_ptr.*, entry.value_ptr.*);
+    for (src.shallows.items) |hash| try dst.appendShallow(hash);
+    return dst;
+}
+
+fn receivePackV(ptr: *anyopaque, ctx: transport.OperationContext, req: *const packp.ReferenceUpdateRequest) anyerror!transport.ReceivePackOutcome {
+    const sess: *ReceivePackSession = @ptrCast(@alignCast(ptr));
+    try ctx.check();
+    const report = try sess.receivePack(@constCast(req));
+    return .{ .report = report, .err = null };
+}
+
+fn connectedSetAuth(_: *anyopaque, auth: ?transport.AuthMethod) anyerror!void {
+    if (auth != null) return transport.Error.AlreadyConnected;
+}
+
+const upload_session_vtable = transport.UploadPackSession.VTable{
+    .close = uploadClose,
+    .advertised_references = uploadAdvertised,
+    .upload_pack = uploadPackV,
+    .set_auth = connectedSetAuth,
+};
+
+const receive_session_vtable = transport.ReceivePackSession.VTable{
+    .close = receiveClose,
+    .advertised_references = receiveAdvertised,
+    .receive_pack = receivePackV,
+    .set_auth = connectedSetAuth,
+};
 
 // Free heap session from Transport vtable (caller responsibility).
 pub fn freeUploadPackSession(allocator: Allocator, s: *UploadPackSession) void {
@@ -208,10 +291,8 @@ test "Client asTransport and session factory" {
     var ep = try transport.newEndpoint(gpa, std.testing.io, "https://example.com/x.git");
     defer ep.deinit();
 
-    const handle = try t.newUploadPackSession(&ep, null);
-    try std.testing.expect(handle != null);
-    const sess: *UploadPackSession = @ptrCast(@alignCast(handle.?));
-    defer freeUploadPackSession(gpa, sess);
+    var sess = try t.newUploadPackSession(&ep, null);
+    defer sess.close();
     try std.testing.expectError(transport.Error.AuthenticationRequired, sess.advertisedReferences());
 }
 

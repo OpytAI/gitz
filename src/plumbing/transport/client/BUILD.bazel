@@ -8,6 +8,10 @@ zig_library(
     visibility = ["//visibility:public"],
     deps = [
         "//src/plumbing/transport",
+        "//src/plumbing/transport/http",
+        "//src/plumbing/transport/ssh",
+        "//src/plumbing/transport/file",
+        "//src/plumbing/transport/git",
     ],
 )
 
@@ -17,6 +21,10 @@ zig_test(
     main = "root.zig",
     deps = [
         "//src/plumbing/transport",
+        "//src/plumbing/transport/http",
+        "//src/plumbing/transport/ssh",
+        "//src/plumbing/transport/file",
+        "//src/plumbing/transport/git",
     ],
 )
 

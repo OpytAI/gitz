@@ -55,6 +55,7 @@
 const std = @import("std");
 const testing = std.testing;
 const capability = @import("capability");
+const packp = @import("packp");
 
 const error_mod = @import("error.zig");
 const endpoint_mod = @import("endpoint.zig");
@@ -110,6 +111,9 @@ pub const AuthMethod = struct {
         name: *const fn (ptr: *anyopaque) []const u8,
         /// go-git `fmt.Stringer` / `String`.
         format: *const fn (ptr: *anyopaque, allocator: std.mem.Allocator) std.mem.Allocator.Error![]u8,
+        /// Optional protocol-specific credential view. Implementations return
+        /// their original typed object only for a matching protocol name.
+        protocol_credentials: ?*const fn (ptr: *anyopaque, protocol: []const u8) ?*anyopaque = null,
     };
 
     pub fn name(self: AuthMethod) []const u8 {
@@ -119,15 +123,126 @@ pub const AuthMethod = struct {
     pub fn format(self: AuthMethod, allocator: std.mem.Allocator) std.mem.Allocator.Error![]u8 {
         return self.vtable.format(self.ptr, allocator);
     }
+
+    pub fn protocolCredentials(self: AuthMethod, protocol: []const u8) ?*anyopaque {
+        const get = self.vtable.protocol_credentials orelse return null;
+        return get(self.ptr, protocol);
+    }
 };
 
 // ---------------------------------------------------------------------------
 // Transport vtable (client protocol map)
 // ---------------------------------------------------------------------------
 
-/// Opaque session handle returned by transport backends until typed sessions
-/// are needed by callers. Concrete backends may cast to their session type.
-pub const SessionHandle = *anyopaque;
+/// Cooperative operation control for synchronous transports.
+///
+/// Backends check this value before each advertised-refs or pack operation. It
+/// can stop work between protocol operations. It cannot preempt an
+/// operating-system call that is already blocked; callers that need that
+/// guarantee must also configure an I/O deadline on their dialer/client.
+pub const OperationContext = struct {
+    ptr: ?*anyopaque = null,
+    cancelled_fn: ?*const fn (?*anyopaque) bool = null,
+    deadline_exceeded_fn: ?*const fn (?*anyopaque) bool = null,
+
+    pub fn check(self: OperationContext) error{ Cancelled, DeadlineExceeded }!void {
+        if (self.cancelled_fn) |f| {
+            if (f(self.ptr)) return error.Cancelled;
+        }
+        if (self.deadline_exceeded_fn) |f| {
+            if (f(self.ptr)) return error.DeadlineExceeded;
+        }
+    }
+};
+
+pub const ReceivePackOutcome = struct {
+    report: ?*packp.ReportStatus,
+    err: ?anyerror,
+};
+
+/// Type-erased, owned upload-pack session.
+///
+/// `close` closes the concrete session and frees the allocation that stores it.
+pub const UploadPackSession = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        close: *const fn (*anyopaque) void,
+        advertised_references: *const fn (*anyopaque, OperationContext) anyerror!*packp.AdvRefs,
+        upload_pack: *const fn (*anyopaque, OperationContext, *const packp.UploadPackRequest) anyerror!*packp.UploadPackResponse,
+        set_auth: *const fn (*anyopaque, ?AuthMethod) anyerror!void,
+    };
+
+    pub fn close(self: *UploadPackSession) void {
+        self.vtable.close(self.ptr);
+        self.* = undefined;
+    }
+
+    /// Caller owns the returned refs and frees them with `packp.freeAdvRefs`.
+    pub fn advertisedReferences(self: UploadPackSession) !*packp.AdvRefs {
+        return self.advertisedReferencesContext(.{});
+    }
+
+    pub fn advertisedReferencesContext(self: UploadPackSession, ctx: OperationContext) !*packp.AdvRefs {
+        try ctx.check();
+        return self.vtable.advertised_references(self.ptr, ctx);
+    }
+
+    pub fn uploadPack(self: UploadPackSession, req: *const packp.UploadPackRequest) !*packp.UploadPackResponse {
+        return self.uploadPackContext(.{}, req);
+    }
+
+    pub fn uploadPackContext(self: UploadPackSession, ctx: OperationContext, req: *const packp.UploadPackRequest) !*packp.UploadPackResponse {
+        try ctx.check();
+        return self.vtable.upload_pack(self.ptr, ctx, req);
+    }
+
+    pub fn setAuth(self: UploadPackSession, auth: ?AuthMethod) !void {
+        return self.vtable.set_auth(self.ptr, auth);
+    }
+};
+
+/// Type-erased, owned receive-pack session.
+pub const ReceivePackSession = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        close: *const fn (*anyopaque) void,
+        advertised_references: *const fn (*anyopaque, OperationContext) anyerror!*packp.AdvRefs,
+        receive_pack: *const fn (*anyopaque, OperationContext, *const packp.ReferenceUpdateRequest) anyerror!ReceivePackOutcome,
+        set_auth: *const fn (*anyopaque, ?AuthMethod) anyerror!void,
+    };
+
+    pub fn close(self: *ReceivePackSession) void {
+        self.vtable.close(self.ptr);
+        self.* = undefined;
+    }
+
+    /// Caller owns the returned refs and frees them with `packp.freeAdvRefs`.
+    pub fn advertisedReferences(self: ReceivePackSession) !*packp.AdvRefs {
+        return self.advertisedReferencesContext(.{});
+    }
+
+    pub fn advertisedReferencesContext(self: ReceivePackSession, ctx: OperationContext) !*packp.AdvRefs {
+        try ctx.check();
+        return self.vtable.advertised_references(self.ptr, ctx);
+    }
+
+    pub fn receivePack(self: ReceivePackSession, req: *const packp.ReferenceUpdateRequest) !ReceivePackOutcome {
+        return self.receivePackContext(.{}, req);
+    }
+
+    pub fn receivePackContext(self: ReceivePackSession, ctx: OperationContext, req: *const packp.ReferenceUpdateRequest) !ReceivePackOutcome {
+        try ctx.check();
+        return self.vtable.receive_pack(self.ptr, ctx, req);
+    }
+
+    pub fn setAuth(self: ReceivePackSession, auth: ?AuthMethod) !void {
+        return self.vtable.set_auth(self.ptr, auth);
+    }
+};
 
 /// go-git `Transport` as a typed function-pointer interface for the client map.
 pub const Transport = struct {
@@ -140,21 +255,21 @@ pub const Transport = struct {
             ptr: *anyopaque,
             endpoint: *const Endpoint,
             auth: ?AuthMethod,
-        ) anyerror!?SessionHandle,
+        ) anyerror!UploadPackSession,
 
         /// go-git `Transport.NewReceivePackSession`.
         newReceivePackSession: *const fn (
             ptr: *anyopaque,
             endpoint: *const Endpoint,
             auth: ?AuthMethod,
-        ) anyerror!?SessionHandle,
+        ) anyerror!ReceivePackSession,
     };
 
     pub fn newUploadPackSession(
         self: Transport,
         endpoint: *const Endpoint,
         auth: ?AuthMethod,
-    ) anyerror!?SessionHandle {
+    ) anyerror!UploadPackSession {
         return self.vtable.newUploadPackSession(self.ptr, endpoint, auth);
     }
 
@@ -162,7 +277,7 @@ pub const Transport = struct {
         self: Transport,
         endpoint: *const Endpoint,
         auth: ?AuthMethod,
-    ) anyerror!?SessionHandle {
+    ) anyerror!ReceivePackSession {
         return self.vtable.newReceivePackSession(self.ptr, endpoint, auth);
     }
 };
@@ -237,4 +352,34 @@ test "package surface errors and constructors" {
     _ = Transport;
     _ = AuthMethod;
     _ = method_sets.Transport;
+}
+
+test "OperationContext reports cancellation and deadline independently" {
+    const State = struct {
+        cancelled: bool = false,
+        expired: bool = false,
+
+        fn isCancelled(ptr: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(ptr.?));
+            return self.cancelled;
+        }
+
+        fn isExpired(ptr: ?*anyopaque) bool {
+            const self: *@This() = @ptrCast(@alignCast(ptr.?));
+            return self.expired;
+        }
+    };
+
+    var state: State = .{};
+    const ctx = OperationContext{
+        .ptr = &state,
+        .cancelled_fn = State.isCancelled,
+        .deadline_exceeded_fn = State.isExpired,
+    };
+    try ctx.check();
+    state.cancelled = true;
+    try testing.expectError(error.Cancelled, ctx.check());
+    state.cancelled = false;
+    state.expired = true;
+    try testing.expectError(error.DeadlineExceeded, ctx.check());
 }

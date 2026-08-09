@@ -19,6 +19,8 @@ pub const Error = error{
     RemoteNameMismatch,
     /// Invalid ListOptions.Timeout (< 0).
     InvalidTimeout,
+    /// The List session open or advertised-reference read exceeded Timeout.
+    ListTimeout,
     /// Force-with-lease check failed.
     ForceWithLeaseRejected,
     /// Required remote ref does not match (RequireRemoteRefs).

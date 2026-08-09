@@ -1,8 +1,12 @@
 //! objectWalker — mark every object reachable from refs (go-git `object_walker.go`).
 //!
-//! Used by prune instead of revlist so memory stays tight on huge repos: a
-//! simple hash set of seen OIDs, with a blob-mode shortcut that avoids decoding
-//! plain file objects.
+//! Used by prune and repack instead of revlist so memory stays tight on huge
+//! repos: a simple hash set of seen OIDs, with a blob-mode shortcut that avoids
+//! decoding plain file objects.
+//!
+//! `ObjectWalkerFor(Storer)` monomorphises over any storer with `iterReferences`
+//! and `encodedObject` (memory + filesystem). `ObjectWalker` is the memory
+//! specialisation used by prune.
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -18,96 +22,107 @@ const FileMode = filemode.FileMode;
 /// Set of object hashes already visited (go-git `map[plumbing.Hash]struct{}`).
 pub const SeenSet = std.AutoHashMapUnmanaged(Hash, void);
 
-/// go-git `objectWalker`.
+/// go-git `objectWalker` monomorphised over a storer type.
+///
+/// `Storer` must provide:
+/// - `iterReferences()` → iterator with `next() !Reference` / `deinit()`
+/// - `encodedObject(ObjectType, Hash)` (via `object.getObject`)
 ///
 /// Walks hash refs and their object graphs, recording every reachable OID in
 /// `seen`. Caller must `deinit`.
-pub const ObjectWalker = struct {
-    allocator: Allocator,
-    storer: *Storage,
-    seen: SeenSet = .empty,
+pub fn ObjectWalkerFor(comptime Storer: type) type {
+    return struct {
+        const Self = @This();
 
-    /// go-git `newObjectWalker`.
-    pub fn init(allocator: Allocator, storer: *Storage) ObjectWalker {
-        return .{
-            .allocator = allocator,
-            .storer = storer,
-        };
-    }
+        allocator: Allocator,
+        storer: *Storer,
+        seen: SeenSet = .empty,
 
-    pub fn deinit(self: *ObjectWalker) void {
-        self.seen.deinit(self.allocator);
-        self.* = undefined;
-    }
-
-    /// go-git `objectWalker.isSeen`.
-    pub fn isSeen(self: *const ObjectWalker, hash: Hash) bool {
-        return self.seen.contains(hash);
-    }
-
-    /// go-git `objectWalker.add`.
-    pub fn add(self: *ObjectWalker, hash: Hash) Allocator.Error!void {
-        try self.seen.put(self.allocator, hash, {});
-    }
-
-    /// Walk all hash references in the storer (go-git `walkAllRefs`).
-    /// Symbolic refs are skipped (same as go-git).
-    pub fn walkAllRefs(self: *ObjectWalker) anyerror!void {
-        var it = try self.storer.iterReferences();
-        defer it.deinit();
-        while (true) {
-            const ref = it.next() catch |err| switch (err) {
-                error.EndOfStream => return,
+        /// go-git `newObjectWalker`.
+        pub fn init(allocator: Allocator, storer: *Storer) Self {
+            return .{
+                .allocator = allocator,
+                .storer = storer,
             };
-            if (ref.type != .hash) continue;
-            try self.walkObjectTree(ref.hash);
         }
-    }
 
-    /// Walk the object graph rooted at `hash` (go-git `walkObjectTree`).
-    ///
-    /// - commit → tree + parents
-    /// - tree → entries (blob modes shortcut-mark without decode)
-    /// - tag → target
-    /// - blob / other decoded as object type without a case → `error.UnknownObjectType`
-    pub fn walkObjectTree(self: *ObjectWalker, hash: Hash) anyerror!void {
-        if (self.isSeen(hash)) return;
-        try self.add(hash);
+        pub fn deinit(self: *Self) void {
+            self.seen.deinit(self.allocator);
+            self.* = undefined;
+        }
 
-        var obj = object.getObject(self.allocator, self.storer, hash) catch |err| {
-            // go-git wraps: "getting object %s failed: %v"
-            return err;
-        };
-        defer obj.deinit(self.allocator);
+        /// go-git `objectWalker.isSeen`.
+        pub fn isSeen(self: *const Self, hash: Hash) bool {
+            return self.seen.contains(hash);
+        }
 
-        switch (obj) {
-            .commit => |c| {
-                try self.walkObjectTree(c.tree_hash);
-                for (c.parent_hashes) |ph| {
-                    try self.walkObjectTree(ph);
-                }
-            },
-            .tree => |t| {
-                for (t.entries.items) |entry| {
-                    // Blob shortcut (go-git): mode|0755 == Executable marks
-                    // regular / executable files without decoding the blob.
-                    if (isBlobModeShortcut(entry.mode)) {
-                        try self.add(entry.hash);
-                        continue;
+        /// go-git `objectWalker.add`.
+        pub fn add(self: *Self, hash: Hash) Allocator.Error!void {
+            try self.seen.put(self.allocator, hash, {});
+        }
+
+        /// Walk all hash references in the storer (go-git `walkAllRefs`).
+        /// Symbolic refs are skipped (same as go-git).
+        pub fn walkAllRefs(self: *Self) anyerror!void {
+            var it = try self.storer.iterReferences();
+            defer it.deinit();
+            while (true) {
+                const ref = it.next() catch |err| switch (err) {
+                    error.EndOfStream => return,
+                };
+                if (ref.type != .hash) continue;
+                try self.walkObjectTree(ref.hash);
+            }
+        }
+
+        /// Walk the object graph rooted at `hash` (go-git `walkObjectTree`).
+        ///
+        /// - commit → tree + parents
+        /// - tree → entries (blob modes shortcut-mark without decode)
+        /// - tag → target
+        /// - blob / other decoded as object type without a case → `error.UnknownObjectType`
+        pub fn walkObjectTree(self: *Self, hash: Hash) anyerror!void {
+            if (self.isSeen(hash)) return;
+            try self.add(hash);
+
+            var obj = object.getObject(self.allocator, self.storer, hash) catch |err| {
+                // go-git wraps: "getting object %s failed: %v"
+                return err;
+            };
+            defer obj.deinit(self.allocator);
+
+            switch (obj) {
+                .commit => |c| {
+                    try self.walkObjectTree(c.tree_hash);
+                    for (c.parent_hashes) |ph| {
+                        try self.walkObjectTree(ph);
                     }
-                    try self.walkObjectTree(entry.hash);
-                }
-            },
-            .tag => |tag| {
-                try self.walkObjectTree(tag.target);
-            },
-            .blob => {
-                // go-git default branch: unknown object type for *object.Blob.
-                return error.UnknownObjectType;
-            },
+                },
+                .tree => |t| {
+                    for (t.entries.items) |entry| {
+                        // Blob shortcut (go-git): mode|0755 == Executable marks
+                        // regular / executable files without decoding the blob.
+                        if (isBlobModeShortcut(entry.mode)) {
+                            try self.add(entry.hash);
+                            continue;
+                        }
+                        try self.walkObjectTree(entry.hash);
+                    }
+                },
+                .tag => |tag| {
+                    try self.walkObjectTree(tag.target);
+                },
+                .blob => {
+                    // go-git default branch: unknown object type for *object.Blob.
+                    return error.UnknownObjectType;
+                },
+            }
         }
-    }
-};
+    };
+}
+
+/// Memory specialisation (go-git prune path; default `ObjectWalker`).
+pub const ObjectWalker = ObjectWalkerFor(Storage);
 
 /// go-git `newObjectWalker`.
 pub fn newObjectWalker(allocator: Allocator, storer: *Storage) ObjectWalker {

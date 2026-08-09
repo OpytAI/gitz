@@ -44,6 +44,17 @@ pub const PublicKey = struct {
     }
 };
 
+/// Stable identity of the key that verified a signature.
+///
+/// go-crypto returns `*openpgp.Entity`. The pure-Zig verifier does not build a
+/// web-of-trust entity graph, so it returns the cryptographic identity needed
+/// by Git callers: primary/subkey fingerprint, key id, and algorithm.
+pub const VerifiedKey = struct {
+    fingerprint: [20]u8,
+    key_id: [8]u8,
+    algorithm: u8,
+};
+
 pub fn parsePublicKey(allocator: Allocator, body: []const u8) (Allocator.Error || Error)!PublicKey {
     if (body.len < 6 or body[0] != 4) return error.UnsupportedAlgorithm;
     const algo = body[5];
@@ -317,7 +328,7 @@ pub fn checkArmoredDetachedSignature(
     armored_keyring: []const u8,
     message: []const u8,
     armored_signature: []const u8,
-) (Allocator.Error || Error)!void {
+) (Allocator.Error || Error)!VerifiedKey {
     const key_bin = try decodeArmor(allocator, armored_keyring);
     defer allocator.free(key_bin);
     const sig_bin = try decodeArmor(allocator, armored_signature);
@@ -352,4 +363,9 @@ pub fn checkArmoredDetachedSignature(
         },
         else => return error.UnsupportedAlgorithm,
     }
+    return .{
+        .fingerprint = pk.fingerprint,
+        .key_id = pk.fingerprint[12..20].*,
+        .algorithm = pk.algo,
+    };
 }

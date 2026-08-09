@@ -9,6 +9,7 @@ pub const Remote = remote_pkg.Remote;
 pub const newRemote = remote_pkg.newRemote;
 pub const newRemoteEmbedded = remote_pkg.newRemoteEmbedded;
 pub const freeReferences = remote_pkg.freeReferences;
+pub const isFastForward = remote_pkg.isFastForward;
 
 pub const Error = remote_pkg.Error;
 pub const default_remote_name = remote_pkg.default_remote_name;

@@ -241,10 +241,17 @@ Work runs in **phases**. Phase order is **sequential**. Detail for each phase li
 
 ### Parallel work inside a phase
 
-- Inside one phase, agents may work in parallel on split packages or modules.
-- Parallel agents must not fight over the same files without a clear ownership split.
-- Parallel agents still share the same phase branch and the same Bazel checks.
+- Inside one phase, agents may work in parallel **only** on **disjoint file ownership** (separate packages/modules with no shared files).
+- If two tasks touch the same file (or one edits while another might `git restore`), they are **sequential**. Do not parallelize them.
+- Prefer **isolated worktrees** when fanning out; never share one dirty working tree among write agents.
+- Parallel agents still share the same phase branch and the same Bazel checks after integration.
 - Do not open the next phase in parallel with an unfinished phase.
+
+### Git operations (orchestrator only)
+
+- **Subagents / worker agents must not run git.** No `git add`, `commit`, `checkout`, `restore`, `reset`, `switch`, `merge`, `rebase`, `push`, `pull`, `clean`, or `worktree` from a worker.
+- Only the **orchestrator** (main agent, with the human’s request) may run git, and only for the requested operation.
+- Workers that “clean up” with `git restore` / `git checkout --` destroy other agents’ uncommitted work. That is forbidden.
 
 ### After a phase merge
 

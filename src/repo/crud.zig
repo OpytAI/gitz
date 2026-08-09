@@ -626,7 +626,8 @@ test "createTag sign_key produces verifiable pgp_signature" {
 
     const pub_armor = try ents[0].serializePublicArmored(gpa);
     defer gpa.free(pub_armor);
-    try tag_obj.verify(pub_armor);
+    var verified = try tag_obj.verify(pub_armor);
+    defer verified.deinit();
 }
 
 test "createTag encrypted sign_key fails" {

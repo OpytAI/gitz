@@ -14,6 +14,11 @@ pub const ErrIntegerOverflow = read_mod.ErrIntegerOverflow;
 
 pub const readVariableWidthInt = read_mod.readVariableWidthInt;
 pub const writeVariableWidthInt = write_mod.writeVariableWidthInt;
+pub const readUntil = read_mod.readUntil;
+pub const readHash = read_mod.readHash;
+pub const isBinary = read_mod.isBinary;
+pub const readUint16 = read_mod.readUint16;
+pub const writeUint16 = write_mod.writeUint16;
 pub const readUint32 = read_mod.readUint32;
 pub const writeUint32 = write_mod.writeUint32;
 pub const readUint64 = read_mod.readUint64;

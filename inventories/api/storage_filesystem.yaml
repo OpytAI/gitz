@@ -24,12 +24,14 @@ require:
     - Config
     - DotGit
     - LazyWriter
+    - ConfigStorer
   functions:
     - NewStorage
     - NewStorageWithOptions
     - NewObjectStorage
     - NewObjectStorageWithOptions
     - NewDeltaObject
+    - configStorerFor
   constants: []
   semantic:
     - Storage
@@ -44,6 +46,8 @@ require:
     - ReferenceSliceIter
     - Index
     - Config
+    - ConfigStorer
+    - configStorerFor
     - DotGit
     - LazyWriter
     - Storage.deinit
@@ -110,6 +114,8 @@ zig_map:
   ReferenceSliceIter: ReferenceSliceIter
   Index: Index
   Config: Config
+  ConfigStorer: ConfigStorer
+  configStorerFor: configStorerFor
   DotGit: DotGit
   LazyWriter: LazyWriter
   NewStorage: newStorage

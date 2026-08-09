@@ -9,6 +9,7 @@ const memory = @import("memory");
 const fs_pkg = @import("fs");
 const gitignore = @import("gitignore");
 const server = @import("server");
+const transport = @import("transport");
 
 const status_types = @import("status_types.zig");
 const options_mod = @import("options.zig");
@@ -88,6 +89,18 @@ pub const Worktree = struct {
 
     pub fn pull(self: *Worktree, o: *options_mod.PullOptions) !void {
         return pull_mod.pull(self, o);
+    }
+
+    /// go-git `Worktree.PullContext` using the synchronous transport's
+    /// cooperative cancellation/deadline hook.
+    pub fn pullContext(
+        self: *Worktree,
+        context: transport.OperationContext,
+        o: *const options_mod.PullOptions,
+    ) !void {
+        var opts = o.*;
+        opts.transport.operation_context = context;
+        return pull_mod.pull(self, &opts);
     }
 
     pub fn clean(self: *Worktree, o: options_mod.CleanOptions) !void {
