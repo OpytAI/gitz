@@ -15,6 +15,7 @@ const fs_pkg = @import("fs");
 const error_mod = @import("error.zig");
 const options_mod = @import("options.zig");
 const worktree_mod = @import("worktree.zig");
+const util = @import("util.zig");
 const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
 const ZeroHash = plumbing.ZeroHash;
@@ -23,7 +24,6 @@ const Signature = objpkg.Signature;
 const Commit = objpkg.Commit;
 const Tree = objpkg.Tree;
 const MemoryObject = plumbing.MemoryObject;
-const Worktree = worktree_mod.Worktree;
 const CommitOptions = options_mod.CommitOptions;
 const Index = index_fmt.Index;
 const Entry = index_fmt.Entry;
@@ -41,14 +41,8 @@ fn sanitizeIdentityPart(allocator: Allocator, s: []const u8) Allocator.Error![]u
     return try out.toOwnedSlice(allocator);
 }
 
-fn nowUnixSeconds() i64 {
-    var ts: std.posix.timespec = .{ .sec = 0, .nsec = 0 };
-    _ = std.posix.system.clock_gettime(.REALTIME, &ts);
-    return @intCast(ts.sec);
-}
-
 /// go-git `Worktree.Commit`.
-pub fn commit(w: *Worktree, msg: []const u8, o: CommitOptions) !Hash {
+pub fn commit(w: anytype, msg: []const u8, o: CommitOptions) !Hash {
     try o.validate();
 
     var author_opt = o.author;
@@ -69,7 +63,8 @@ pub fn commit(w: *Worktree, msg: []const u8, o: CommitOptions) !Hash {
     var parents: []const Hash = o.parents;
 
     if (o.amend) {
-        const head_ref = try storer.resolveReference(w.storer, plumbing.HEAD);
+        const head_ref = try util.resolveReference(w.storer, plumbing.HEAD);
+        defer w.storer.freeReference(head_ref);
         const head_commit = try objpkg.getCommit(w.allocator, w.storer, head_ref.hash);
         defer {
             head_commit.deinit();
@@ -82,7 +77,8 @@ pub fn commit(w: *Worktree, msg: []const u8, o: CommitOptions) !Hash {
             parents = &.{};
         }
     } else if (parents.len == 0) {
-        if (storer.resolveReference(w.storer, plumbing.HEAD)) |head_ref| {
+        if (util.resolveReference(w.storer, plumbing.HEAD)) |head_ref| {
+            defer w.storer.freeReference(head_ref);
             parent_buf[0] = head_ref.hash;
             parents = parent_buf[0..1];
         } else |err| switch (err) {
@@ -135,12 +131,16 @@ pub fn commit(w: *Worktree, msg: []const u8, o: CommitOptions) !Hash {
 /// Load Author / Committer / User identity from memory config (go-git
 /// `CommitOptions.loadConfigAuthorAndCommitter` + Author-then-User order).
 fn loadConfigAuthorAndCommitter(
-    w: *Worktree,
+    w: anytype,
     author: *?Signature,
     committer: *?Signature,
 ) !void {
     const cfg = try w.storer.config();
-    const when = nowUnixSeconds();
+    const Storage = @TypeOf(w.storer.*);
+    const when = if (comptime @hasDecl(Storage, "now"))
+        w.storer.now().sec
+    else
+        return error_mod.Error.MissingAuthor;
 
     if (author.* == null and cfg.author_email.len != 0 and cfg.author_name.len != 0) {
         author.* = .{
@@ -176,7 +176,7 @@ fn loadConfigAuthorAndCommitter(
 ///
 /// Re-stats each index entry against the worktree (same effect as status + doAddFile
 /// for Modified/Deleted). Untracked files are not added (`CommitOptions.All`).
-fn autoAddModifiedAndDeleted(w: *Worktree) !void {
+fn autoAddModifiedAndDeleted(w: anytype) !void {
     const idx = try w.storer.index();
 
     var remove_paths: std.ArrayList([]const u8) = .empty;
@@ -213,17 +213,24 @@ fn autoAddModifiedAndDeleted(w: *Worktree) !void {
     }
 
     // Stamp mod_time like go-git SetIndex after auto-add.
-    w.storer.setIndex(idx);
+    try util.setIndex(w.storer, idx);
 }
 
-fn readWorktreePath(w: *Worktree, path: []const u8, info: fs_pkg.FileInfo) ![]u8 {
+fn readWorktreePath(w: anytype, path: []const u8, info: fs_pkg.FileInfo) ![]u8 {
     if (info.isSymlink()) {
         return try w.filesystem.readlink(path);
     }
     var f = try w.filesystem.open(path);
     defer f.close() catch {};
-    const n = f.node.data.items.len;
-    return try w.allocator.dupe(u8, f.node.data.items[0..n]);
+    var content: std.ArrayList(u8) = .empty;
+    errdefer content.deinit(w.allocator);
+    var buf: [8192]u8 = undefined;
+    while (true) {
+        const n = try f.read(buf[0..]);
+        if (n == 0) break;
+        try content.appendSlice(w.allocator, buf[0..n]);
+    }
+    return try content.toOwnedSlice(w.allocator);
 }
 
 fn modeFromFileInfo(info: fs_pkg.FileInfo) FileMode {
@@ -234,7 +241,7 @@ fn modeFromFileInfo(info: fs_pkg.FileInfo) FileMode {
     return filemode.Regular;
 }
 
-fn storeBlob(s: *memory.Storage, content: []const u8) !Hash {
+fn storeBlob(s: anytype, content: []const u8) !Hash {
     const obj = try s.newEncodedObject();
     errdefer {
         obj.deinit();
@@ -246,8 +253,9 @@ fn storeBlob(s: *memory.Storage, content: []const u8) !Hash {
 }
 
 /// go-git `Worktree.updateHEAD`.
-fn updateHEAD(w: *Worktree, commit_hash: Hash) !void {
+fn updateHEAD(w: anytype, commit_hash: Hash) !void {
     const head = try w.storer.reference(plumbing.HEAD);
+    defer w.storer.freeReference(head);
     const name = if (head.type != .hash) head.target else plumbing.HEAD;
     const ref = Reference.newHashReference(name, commit_hash);
     try w.storer.setReference(ref);
@@ -255,7 +263,7 @@ fn updateHEAD(w: *Worktree, commit_hash: Hash) !void {
 
 /// go-git `Worktree.buildCommitObject` (+ sanitize + optional OpenPGP sign).
 fn buildCommitObject(
-    w: *Worktree,
+    w: anytype,
     msg: []const u8,
     author: Signature,
     committer: Signature,
@@ -314,7 +322,8 @@ fn buildCommitObject(
         var unsigned = MemoryObject.init(allocator);
         defer unsigned.deinit();
         try c.encodeWithoutSignature(&unsigned);
-        const sig = try objpkg.armoredDetachSign(allocator, key, unsigned.readerBytes());
+        const signing_time = std.math.cast(u32, committer.when) orelse return error.InvalidTimestamp;
+        const sig = try objpkg.armoredDetachSignAt(allocator, key, unsigned.readerBytes(), signing_time);
         pgp_owned = sig;
         c.pgp_signature = sig;
     }
@@ -340,8 +349,9 @@ fn buildCommitObject(
 
 /// Build tree object(s) from index entries and store them. Returns root tree hash.
 /// go-git `buildTreeHelper.BuildTree`.
-pub fn buildTreeFromIndex(allocator: Allocator, s: *memory.Storage, idx: *const Index) !Hash {
-    var h = BuildTreeHelper{
+pub fn buildTreeFromIndex(allocator: Allocator, s: anytype, idx: *const Index) !Hash {
+    const Storage = @TypeOf(s.*);
+    var h = BuildTreeHelper(Storage){
         .allocator = allocator,
         .s = s,
     };
@@ -357,116 +367,120 @@ pub fn buildTreeFromIndex(allocator: Allocator, s: *memory.Storage, idx: *const 
     return try h.copyTreeToStorageRecursive("", root);
 }
 
-const BuildTreeHelper = struct {
-    allocator: Allocator,
-    s: *memory.Storage,
-    /// Path → tree being built (owned keys and trees).
-    trees: std.StringHashMapUnmanaged(*Tree) = .empty,
-    /// Paths already registered as entries (owned keys).
-    entry_seen: std.StringHashMapUnmanaged(void) = .empty,
+fn BuildTreeHelper(comptime Storage: type) type {
+    return struct {
+        const Self = @This();
 
-    fn deinit(self: *BuildTreeHelper) void {
-        var tit = self.trees.iterator();
-        while (tit.next()) |e| {
-            e.value_ptr.*.deinit();
-            self.allocator.destroy(e.value_ptr.*);
-            self.allocator.free(e.key_ptr.*);
+        allocator: Allocator,
+        s: *Storage,
+        /// Path → tree being built (owned keys and trees).
+        trees: std.StringHashMapUnmanaged(*Tree) = .empty,
+        /// Paths already registered as entries (owned keys).
+        entry_seen: std.StringHashMapUnmanaged(void) = .empty,
+
+        fn deinit(self: *Self) void {
+            var tit = self.trees.iterator();
+            while (tit.next()) |e| {
+                e.value_ptr.*.deinit();
+                self.allocator.destroy(e.value_ptr.*);
+                self.allocator.free(e.key_ptr.*);
+            }
+            self.trees.deinit(self.allocator);
+
+            var eit = self.entry_seen.iterator();
+            while (eit.next()) |e| {
+                self.allocator.free(e.key_ptr.*);
+            }
+            self.entry_seen.deinit(self.allocator);
+            self.* = undefined;
         }
-        self.trees.deinit(self.allocator);
 
-        var eit = self.entry_seen.iterator();
-        while (eit.next()) |e| {
-            self.allocator.free(e.key_ptr.*);
+        fn commitIndexEntry(self: *Self, e: *const Entry) !void {
+            // Walk path components: parent/fullpath like go-git path.Join chain.
+            var fullpath: std.ArrayList(u8) = .empty;
+            defer fullpath.deinit(self.allocator);
+
+            var it = std.mem.splitScalar(u8, e.name, '/');
+            while (it.next()) |part| {
+                if (part.len == 0) continue;
+
+                const parent = try self.allocator.dupe(u8, fullpath.items);
+                defer self.allocator.free(parent);
+
+                if (fullpath.items.len > 0) try fullpath.append(self.allocator, '/');
+                try fullpath.appendSlice(self.allocator, part);
+
+                try self.doBuildTree(e, parent, fullpath.items);
+            }
         }
-        self.entry_seen.deinit(self.allocator);
-        self.* = undefined;
-    }
 
-    fn commitIndexEntry(self: *BuildTreeHelper, e: *const Entry) !void {
-        // Walk path components: parent/fullpath like go-git path.Join chain.
-        var fullpath: std.ArrayList(u8) = .empty;
-        defer fullpath.deinit(self.allocator);
+        fn doBuildTree(self: *Self, e: *const Entry, parent: []const u8, fullpath: []const u8) !void {
+            if (self.trees.contains(fullpath)) return;
+            if (self.entry_seen.contains(fullpath)) return;
 
-        var it = std.mem.splitScalar(u8, e.name, '/');
-        while (it.next()) |part| {
-            if (part.len == 0) continue;
+            const base = pathBase(fullpath);
+            const is_leaf = std.mem.eql(u8, fullpath, e.name);
 
-            const parent = try self.allocator.dupe(u8, fullpath.items);
-            defer self.allocator.free(parent);
+            const parent_tree = self.trees.get(parent).?;
 
-            if (fullpath.items.len > 0) try fullpath.append(self.allocator, '/');
-            try fullpath.appendSlice(self.allocator, part);
-
-            try self.doBuildTree(e, parent, fullpath.items);
+            if (is_leaf) {
+                try parent_tree.appendEntry(base, e.mode, e.hash);
+                const key = try self.allocator.dupe(u8, fullpath);
+                errdefer self.allocator.free(key);
+                try self.entry_seen.put(self.allocator, key, {});
+            } else {
+                try parent_tree.appendEntry(base, filemode.Dir, ZeroHash);
+                const key = try self.allocator.dupe(u8, fullpath);
+                errdefer self.allocator.free(key);
+                const t = try createEmptyTree(self.allocator);
+                errdefer {
+                    t.deinit();
+                    self.allocator.destroy(t);
+                }
+                try self.trees.put(self.allocator, key, t);
+            }
         }
-    }
 
-    fn doBuildTree(self: *BuildTreeHelper, e: *const Entry, parent: []const u8, fullpath: []const u8) !void {
-        if (self.trees.contains(fullpath)) return;
-        if (self.entry_seen.contains(fullpath)) return;
+        fn copyTreeToStorageRecursive(self: *Self, parent: []const u8, t: *Tree) !Hash {
+            t.sortEntries();
+            for (t.entries.items) |*ent| {
+                // Skip non-dir entries that already have a blob/submodule hash.
+                if (ent.mode != filemode.Dir and !ent.hash.isZero()) continue;
 
-        const base = pathBase(fullpath);
-        const is_leaf = std.mem.eql(u8, fullpath, e.name);
+                var child_path_buf: std.ArrayList(u8) = .empty;
+                defer child_path_buf.deinit(self.allocator);
+                if (parent.len > 0) {
+                    try child_path_buf.appendSlice(self.allocator, parent);
+                    try child_path_buf.append(self.allocator, '/');
+                }
+                try child_path_buf.appendSlice(self.allocator, ent.name);
+                const child_path = child_path_buf.items;
 
-        const parent_tree = self.trees.get(parent).?;
+                const child_tree = self.trees.get(child_path).?;
+                ent.hash = try self.copyTreeToStorageRecursive(child_path, child_tree);
+            }
 
-        if (is_leaf) {
-            try parent_tree.appendEntry(base, e.mode, e.hash);
-            const key = try self.allocator.dupe(u8, fullpath);
-            errdefer self.allocator.free(key);
-            try self.entry_seen.put(self.allocator, key, {});
-        } else {
-            try parent_tree.appendEntry(base, filemode.Dir, ZeroHash);
-            const key = try self.allocator.dupe(u8, fullpath);
-            errdefer self.allocator.free(key);
-            const t = try createEmptyTree(self.allocator);
+            // Re-sort after hash fills (order unchanged, but ensure flag).
+            t.sortEntries();
+
+            const o = try self.s.newEncodedObject();
             errdefer {
-                t.deinit();
-                self.allocator.destroy(t);
+                o.deinit();
+                self.s.allocator.destroy(o);
             }
-            try self.trees.put(self.allocator, key, t);
-        }
-    }
+            try t.encode(o);
 
-    fn copyTreeToStorageRecursive(self: *BuildTreeHelper, parent: []const u8, t: *Tree) !Hash {
-        t.sortEntries();
-        for (t.entries.items) |*ent| {
-            // Skip non-dir entries that already have a blob/submodule hash.
-            if (ent.mode != filemode.Dir and !ent.hash.isZero()) continue;
-
-            var child_path_buf: std.ArrayList(u8) = .empty;
-            defer child_path_buf.deinit(self.allocator);
-            if (parent.len > 0) {
-                try child_path_buf.appendSlice(self.allocator, parent);
-                try child_path_buf.append(self.allocator, '/');
+            const hash = o.hash();
+            if (self.s.hasEncodedObject(hash)) |_| {
+                o.deinit();
+                self.s.allocator.destroy(o);
+                return hash;
+            } else |_| {
+                return try self.s.setEncodedObject(o);
             }
-            try child_path_buf.appendSlice(self.allocator, ent.name);
-            const child_path = child_path_buf.items;
-
-            const child_tree = self.trees.get(child_path).?;
-            ent.hash = try self.copyTreeToStorageRecursive(child_path, child_tree);
         }
-
-        // Re-sort after hash fills (order unchanged, but ensure flag).
-        t.sortEntries();
-
-        const o = try self.s.newEncodedObject();
-        errdefer {
-            o.deinit();
-            self.s.allocator.destroy(o);
-        }
-        try t.encode(o);
-
-        const hash = o.hash();
-        if (self.s.hasEncodedObject(hash)) |_| {
-            o.deinit();
-            self.s.allocator.destroy(o);
-            return hash;
-        } else |_| {
-            return try self.s.setEncodedObject(o);
-        }
-    }
-};
+    };
+}
 
 fn createEmptyTree(allocator: Allocator) Allocator.Error!*Tree {
     const t = try allocator.create(Tree);
@@ -495,7 +509,7 @@ fn defaultSignature() Signature {
     };
 }
 
-fn stageFile(w: *Worktree, path: []const u8, content: []const u8, mode: FileMode) !void {
+fn stageFile(w: anytype, path: []const u8, content: []const u8, mode: FileMode) !void {
     // Write worktree file.
     var f = try w.filesystem.create(path);
     _ = try f.write(content);
@@ -514,7 +528,7 @@ fn stageFile(w: *Worktree, path: []const u8, content: []const u8, mode: FileMode
         e.mode = mode;
         e.size = @intCast(content.len);
     }
-    w.storer.setIndex(idx);
+    try util.setIndex(w.storer, idx);
 }
 
 test "commit initial: object fields and HEAD branch" {

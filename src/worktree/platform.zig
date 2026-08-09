@@ -32,7 +32,7 @@ pub fn isSymlinkWindowsNonAdmin(err: anyerror) bool {
 ///
 /// go-git: `fillSystemInfo(e, fi.Sys())` — only ctime/dev/ino/uid/gid (or
 /// windows creation time). Callers set size, mtime, mode, and hash first.
-pub fn fillSystemInfo(e: *Entry, filesystem: *fs_pkg.Mem, path: []const u8) void {
+pub fn fillSystemInfo(e: *Entry, filesystem: anytype, path: []const u8) void {
     if (builtin.os.tag == .windows) {
         windows_mod.fillSystemInfoWindows(e, filesystem, path);
     } else {

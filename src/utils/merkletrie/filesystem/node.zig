@@ -101,6 +101,13 @@ pub fn vtableFor(comptime Fs: type) FsVTable {
 
 const mem_vtable: FsVTable = vtableFor(fs.Mem);
 
+fn vtableForPtr(comptime Fs: type) *const FsVTable {
+    const Holder = struct {
+        const value = vtableFor(Fs);
+    };
+    return &Holder.value;
+}
+
 /// Owned root for a filesystem tree. Always heap-stable via `*Root`.
 pub const Root = struct {
     node: *Node,
@@ -447,6 +454,26 @@ pub fn newRootNodeMemWithOptions(
     options: Options,
 ) Allocator.Error!*Root {
     return newRootNodeWithOptions(allocator, mem, &mem_vtable, submodules, options);
+}
+
+/// Convenience for any billy-style filesystem backend.
+pub fn newRootNodeFor(
+    comptime Fs: type,
+    allocator: Allocator,
+    filesystem: *Fs,
+    submodules: ?std.StringHashMapUnmanaged(Hash),
+) Allocator.Error!*Root {
+    return newRootNode(allocator, filesystem, vtableForPtr(Fs), submodules);
+}
+
+pub fn newRootNodeForWithOptions(
+    comptime Fs: type,
+    allocator: Allocator,
+    filesystem: *Fs,
+    submodules: ?std.StringHashMapUnmanaged(Hash),
+    options: Options,
+) Allocator.Error!*Root {
+    return newRootNodeWithOptions(allocator, filesystem, vtableForPtr(Fs), submodules, options);
 }
 
 // ---------------------------------------------------------------------------

@@ -91,6 +91,10 @@ pub const Scanner = struct {
     crc: std.hash.Crc32 = .init(),
     /// Pack trailer hasher (active object format: SHA-1 or SHA-256).
     pack_hasher: hash_pkg.Hasher = undefined,
+    /// Streaming readers can prefetch the trailer. Delay hashing the last
+    /// digest-sized window so checksum bytes never enter `pack_hasher`.
+    stream_hash_tail: [plumbing.MaxSize]u8 = undefined,
+    stream_hash_tail_len: usize = 0,
 
     pending_object: ?ObjectHeader = null,
     version: u32 = 0,
@@ -422,21 +426,29 @@ pub const Scanner = struct {
     pub fn checksum(self: *Scanner) (Error || IoReader.Error || IoWriter.Error || binary.Error)!Hash {
         try self.discardObjectIfNeeded();
         self.flush();
-        if (self.mem != null) self.catchUpHashes();
+        if (self.mem != null) {
+            self.catchUpHashes();
 
+            var actual: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
+            var ph = self.pack_hasher;
+            const n = ph.digestSize();
+            ph.final(actual[0..n]);
+            const actual_hash = Hash.fromBytes(actual[0..n]);
+
+            const pack_checksum = try self.readHash();
+            if (!actual_hash.eql(pack_checksum)) return error.MalformedPackFile;
+            return pack_checksum;
+        }
+
+        // Read the trailer first. The streaming hash window then contains the
+        // trailer while every preceding payload byte has entered the hasher.
+        const pack_checksum = try self.readHash();
         var actual: [plumbing.MaxSize]u8 = .{0} ** plumbing.MaxSize;
         var ph = self.pack_hasher;
         const n = ph.digestSize();
         ph.final(actual[0..n]);
         const actual_hash = Hash.fromBytes(actual[0..n]);
-
-        // Read trailer without folding it into the already-finalised digest.
-        // (Streaming tee still updates pack_hasher after this — harmless.)
-        const pack_checksum = try self.readHash();
-
-        if (!actual_hash.eql(pack_checksum)) {
-            return error.MalformedPackFile;
-        }
+        if (!actual_hash.eql(pack_checksum)) return error.MalformedPackFile;
         return pack_checksum;
     }
 
@@ -473,6 +485,7 @@ pub const Scanner = struct {
         self.hashed_upto = 0;
         self.crc = .init();
         self.pack_hasher = hash_pkg.new(hash_pkg.objectFormat());
+        self.stream_hash_tail_len = 0;
         self.pending_object = null;
         self.version = 0;
         self.objects = 0;
@@ -513,7 +526,7 @@ pub const Scanner = struct {
         // bytes taken from upstream (defaultReadVec sizes the limit to fit).
         w.writeAll(chunk) catch return error.WriteFailed;
         s.crc.update(chunk);
-        s.pack_hasher.update(chunk);
+        s.updateStreamingHash(chunk);
         s.stream_offset += @intCast(n);
         return n;
     }
@@ -527,9 +540,35 @@ pub const Scanner = struct {
         const n = up.readSliceShort(tmp[0..want]) catch return error.ReadFailed;
         if (n == 0) return error.EndOfStream;
         s.crc.update(tmp[0..n]);
-        s.pack_hasher.update(tmp[0..n]);
+        s.updateStreamingHash(tmp[0..n]);
         s.stream_offset += @intCast(n);
         return n;
+    }
+
+    fn updateStreamingHash(self: *Scanner, bytes: []const u8) void {
+        const digest_len = self.pack_hasher.digestSize();
+        var excess = self.stream_hash_tail_len + bytes.len -| digest_len;
+
+        const from_tail = @min(excess, self.stream_hash_tail_len);
+        if (from_tail > 0) {
+            self.pack_hasher.update(self.stream_hash_tail[0..from_tail]);
+            const retained = self.stream_hash_tail_len - from_tail;
+            std.mem.copyForwards(
+                u8,
+                self.stream_hash_tail[0..retained],
+                self.stream_hash_tail[from_tail..self.stream_hash_tail_len],
+            );
+            self.stream_hash_tail_len = retained;
+            excess -= from_tail;
+        }
+
+        if (excess > 0) self.pack_hasher.update(bytes[0..excess]);
+        const retained_bytes = bytes[excess..];
+        @memcpy(
+            self.stream_hash_tail[self.stream_hash_tail_len..][0..retained_bytes.len],
+            retained_bytes,
+        );
+        self.stream_hash_tail_len += retained_bytes.len;
     }
 };
 
@@ -889,9 +928,7 @@ test "TestSeekObjectHeaderNonSeekable" {
 }
 
 // go-git ScannerSuite.TestNextObjectHeaderWithOutReadObjectNonSeekable.
-// Header/offset/type parity on a non-seekable stream. Pack trailer SHA-1 is
-// verified on the seekable REF-delta walk (same bytes); prefer initSeekable
-// for checksum integrity.
+// Header/offset/type and checksum parity on a non-seekable stream.
 test "TestNextObjectHeaderWithOutReadObjectNonSeekable" {
     const pack = ref_delta_pack.data();
     var r: IoReader = .fixed(pack);
@@ -907,6 +944,8 @@ test "TestNextObjectHeaderWithOutReadObjectNonSeekable" {
         const h = try sc.nextObjectHeader();
         try expectHeaderEql(h, expected_headers_ref[i]);
     }
+    const sum = try sc.checksum();
+    try std.testing.expect(sum.eql(plumbing.newHash(ref_delta_pack_checksum_hex)));
     try std.testing.expectError(error.SeekNotSupported, sc.seekObjectHeader(12));
 }
 

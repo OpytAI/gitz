@@ -20,6 +20,7 @@ The workspace `.bazelrc` configures the shared output root.
 | `//check:allowlists` | Reject expired compatibility exceptions |
 | `//check:checker_self_tests` | Test the inventory checkers |
 | `//check:all` | Run the complete acceptance suite |
+| `//examples/wasm:all` | Build and run the five import-free freestanding WebAssembly artifacts |
 
 ## Add or update an inventory entry
 

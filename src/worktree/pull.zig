@@ -20,16 +20,16 @@ const server = @import("server");
 const sync = @import("utils/sync");
 const transport = @import("transport");
 
-const worktree_mod = @import("worktree.zig");
 const options_mod = @import("options.zig");
 const error_mod = @import("error.zig");
 const reset_mod = @import("reset.zig");
+const worktree_mod = @import("worktree.zig");
+const util = @import("util.zig");
 
 const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
 const Reference = plumbing.Reference;
 const ReferenceName = plumbing.ReferenceName;
-const Worktree = worktree_mod.Worktree;
 const PullOptions = options_mod.PullOptions;
 const FetchOptions = remote.FetchOptions;
 const RemoteError = remote.Error;
@@ -39,7 +39,7 @@ const WorktreeError = error_mod.Error;
 //
 // Returns `error.AlreadyUpToDate` when the branch is already current and
 // fetch reported no updates (go-git `NoErrAlreadyUpToDate`).
-pub fn pull(w: *Worktree, o: *PullOptions) !void {
+pub fn pull(w: anytype, o: *PullOptions) !void {
     try o.validate();
 
     const cfg = try w.storer.config();
@@ -81,8 +81,9 @@ pub fn pull(w: *Worktree, o: *PullOptions) !void {
 
     const ref = try storer.resolveReference(&fetch_head, o.reference_name);
 
-    const head_or_err = storer.resolveReference(w.storer, plumbing.HEAD);
+    const head_or_err = util.resolveReference(w.storer, plumbing.HEAD);
     if (head_or_err) |head| {
+        defer w.storer.freeReference(head);
         const shallow_list = w.storer.shallow();
         const earliest_shallow: ?Hash = if (shallow_list.len > 0) shallow_list[0] else null;
 
@@ -141,7 +142,7 @@ pub fn pull(w: *Worktree, o: *PullOptions) !void {
 
 /// Package-level go-git `PullContext` equivalent.
 pub fn pullContext(
-    w: *Worktree,
+    w: anytype,
     context: transport.OperationContext,
     o: *const PullOptions,
 ) !void {
@@ -151,8 +152,9 @@ pub fn pullContext(
 }
 
 // go-git `(*Worktree).updateHEAD` — move the current branch tip (or detached HEAD).
-fn updateHEAD(w: *Worktree, commit: Hash) !void {
+fn updateHEAD(w: anytype, commit: Hash) !void {
     const head = try w.storer.reference(plumbing.HEAD);
+    defer w.storer.freeReference(head);
     var name: ReferenceName = plumbing.HEAD;
     if (head.type != .hash) {
         name = head.target;

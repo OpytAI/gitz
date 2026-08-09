@@ -1,8 +1,8 @@
 //! Repository core (go-git root package — partial).
 //!
-//! Init/Open over `*memory.Storage` plus object/ref facades, Log, CreateTag,
-//! and configScoped. PlainInit/PlainOpen over filesystem storage + `fs.Mem`
-//! live in `plain.zig`. Worktree integration lives in `worktree` / `worktree_api`.
+//! Default Init/Open use `*memory.Storage`. `RepositoryFor` exposes the same
+//! local object/ref/config/worktree surface for compatible backends.
+//! PlainInit/PlainOpen over filesystem storage + `fs.Mem` live in `plain.zig`.
 //! Remote Fetch / List / Push use `//src/remote` and are re-exported here.
 //! Storer config is `memory.Config`; high-level remotes/branches use `gitconfig`
 //! (also via `configScoped`).
@@ -28,9 +28,11 @@ pub const PruneOptions = repository.PruneOptions;
 pub const BlameResult = repository.BlameResult;
 
 pub const Repository = repository.Repository;
+pub const RepositoryFor = repository.RepositoryFor;
 pub const InitOptions = repository.InitOptions;
 pub const git_dir_name = repository.git_dir_name;
 pub const newRepository = repository.newRepository;
+pub const newRepositoryFor = repository.newRepositoryFor;
 pub const init = repository.init;
 pub const initWithOptions = repository.initWithOptions;
 pub const open = repository.open;
@@ -43,12 +45,18 @@ pub const LogOptions = log_mod.LogOptions;
 pub const LogOrder = log_mod.LogOrder;
 pub const LogResult = log_mod.LogResult;
 pub const EncodedCommitIter = facade.EncodedCommitIter;
+pub const EncodedCommitIterFor = facade.EncodedCommitIterFor;
 pub const BlobObjectsIter = facade.BlobObjectsIter;
+pub const BlobObjectsIterFor = facade.BlobObjectsIterFor;
 pub const TagObjectsIter = facade.TagObjectsIter;
+pub const TagObjectsIterFor = facade.TagObjectsIterFor;
 pub const ObjectsIter = facade.ObjectsIter;
+pub const ObjectsIterFor = facade.ObjectsIterFor;
 pub const FilteredRefIter = facade.FilteredRefIter;
+pub const FilteredRefIterFor = facade.FilteredRefIterFor;
 
 pub const Remote = remote_mod.Remote;
+pub const RemoteFor = remote_mod.RemoteFor;
 pub const newRemote = remote_mod.newRemote;
 pub const newRemoteEmbedded = remote_mod.newRemoteEmbedded;
 pub const freeReferences = remote_mod.freeReferences;
@@ -64,6 +72,7 @@ pub const RemoteError = remote_mod.Error;
 
 pub const CreateTagOptions = crud.CreateTagOptions;
 pub const AnonymousRemote = crud.AnonymousRemote;
+pub const AnonymousRemoteFor = crud.AnonymousRemoteFor;
 
 pub const PlainRepository = plain.PlainRepository;
 pub const PlainInitOptions = plain.PlainInitOptions;

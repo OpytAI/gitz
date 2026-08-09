@@ -17,13 +17,12 @@ const memory = @import("memory");
 const fs_pkg = @import("fs");
 const filemode = @import("filemode");
 
-const worktree_mod = @import("worktree.zig");
 const status_types = @import("status_types.zig");
 const options_mod = @import("options.zig");
 const util = @import("util.zig");
+const worktree_mod = @import("worktree.zig");
 
 const Allocator = std.mem.Allocator;
-const Worktree = worktree_mod.Worktree;
 const Status = status_types.Status;
 const StatusCode = status_types.StatusCode;
 const StatusOptions = options_mod.StatusOptions;
@@ -32,17 +31,18 @@ const Hash = plumbing.Hash;
 const ZeroHash = plumbing.ZeroHash;
 const Index = index_fmt.Index;
 const Action = merkletrie.Action;
-const Changes = merkletrie.Changes;
+pub const Changes = merkletrie.Changes;
 const Noder = noder.Noder;
 
 /// go-git `Worktree.StatusWithOptions`.
-pub fn status(w: *Worktree, o: StatusOptions) !Status {
+pub fn status(w: anytype, o: StatusOptions) !Status {
     var commit_hash = ZeroHash;
-    const ref = storer.resolveReference(w.storer, plumbing.HEAD) catch |err| switch (err) {
+    const ref = util.resolveReference(w.storer, plumbing.HEAD) catch |err| switch (err) {
         error.ReferenceNotFound => null,
         else => |e| return e,
     };
     if (ref) |r| {
+        defer w.storer.freeReference(r);
         if (r.type == .hash) commit_hash = r.hash;
     }
 
@@ -73,7 +73,7 @@ pub fn status(w: *Worktree, o: StatusOptions) !Status {
 /// HEAD tree ↔ index staging pass. Merkletrie `Path` holds noder pointers; those
 /// noders must stay alive while `Path.string` / `name` run (do not return
 /// Changes after destroying the session / index root).
-fn applyStagingFromCommit(w: *Worktree, s: *Status, commit: Hash) !void {
+fn applyStagingFromCommit(w: anytype, s: *Status, commit: Hash) !void {
     var tree_ptr: ?*objpkg.Tree = null;
     defer if (tree_ptr) |t| objpkg.freeTree(w.allocator, t);
 
@@ -107,14 +107,14 @@ fn applyStagingFromCommit(w: *Worktree, s: *Status, commit: Hash) !void {
     try applyStagingChanges(s, w.allocator, &changes);
 }
 
-fn strategyNew(w: *Worktree, ss: StatusStrategy) !Status {
+fn strategyNew(w: anytype, ss: StatusStrategy) !Status {
     return switch (ss) {
         .preload => try preloadStatus(w),
         .empty => Status.init(w.allocator),
     };
 }
 
-fn preloadStatus(w: *Worktree) !Status {
+fn preloadStatus(w: anytype) !Status {
     const idx = try w.storer.index();
     var s = Status.init(w.allocator);
     errdefer s.deinit();
@@ -156,7 +156,7 @@ fn applyStagingChanges(s: *Status, allocator: Allocator, changes: *const Changes
     }
 }
 
-fn applyWorktreeStatus(w: *Worktree, s: *Status) !void {
+fn applyWorktreeStatus(w: anytype, s: *Status) !void {
     const idx = try w.storer.index();
     var indexed: std.StringHashMapUnmanaged(void) = .empty;
     defer indexed.deinit(w.allocator);
@@ -208,7 +208,7 @@ fn applyWorktreeStatus(w: *Worktree, s: *Status) !void {
     try walkUntracked(w, s, &indexed, ".", ignore.items);
 }
 
-fn hashWorktreeFile(w: *Worktree, path: []const u8) !Hash {
+fn hashWorktreeFile(w: anytype, path: []const u8) !Hash {
     var f = try w.filesystem.open(path);
     defer f.close() catch {};
     var list: std.ArrayList(u8) = .empty;
@@ -223,7 +223,7 @@ fn hashWorktreeFile(w: *Worktree, path: []const u8) !Hash {
 }
 
 fn walkUntracked(
-    w: *Worktree,
+    w: anytype,
     s: *Status,
     indexed: *const std.StringHashMapUnmanaged(void),
     dir: []const u8,
@@ -272,7 +272,7 @@ fn diffTreeIsEquals(a: Noder, b: Noder) bool {
 ///
 /// Returned `Changes` paths are **string-backed** (valid after return). Prefer
 /// status()'s internal apply path for production; this is for tests / tooling.
-pub fn diffCommitWithStaging(w: *Worktree, commit: Hash, reverse: bool) !Changes {
+pub fn diffCommitWithStaging(w: anytype, commit: Hash, reverse: bool) !Changes {
     var tree_ptr: ?*objpkg.Tree = null;
     defer if (tree_ptr) |t| objpkg.freeTree(w.allocator, t);
 
@@ -295,7 +295,7 @@ pub fn diffCommitWithStaging(w: *Worktree, commit: Hash, reverse: bool) !Changes
 ///
 /// Caller must free with `deinitMaterializedChanges` (not plain `Changes.deinit`)
 /// so owned name noders are released.
-pub fn diffTreeWithStaging(w: *Worktree, t: ?*objpkg.Tree, reverse: bool) !Changes {
+pub fn diffTreeWithStaging(w: anytype, t: ?*objpkg.Tree, reverse: bool) !Changes {
     var session = objpkg.TreeNoderSession.init(w.allocator);
     defer session.deinit();
 
@@ -618,4 +618,3 @@ test "status only ignored untracked is clean" {
     try std.testing.expect(s.isClean());
     try std.testing.expect(s.map.count() == 0);
 }
-

@@ -1,7 +1,7 @@
 //! Repository config/ref CRUD helpers (go-git `repository.go` non-network surface).
 //!
-//! Free functions take `*memory.Storage` so this module does **not** import
-//! `repository.zig` (no cycle). `Repository` methods are thin wrappers.
+//! Free functions accept compatible config/object/reference storage backends.
+//! This module does **not** import `repository.zig` (no cycle).
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -15,7 +15,6 @@ const Allocator = std.mem.Allocator;
 const Reference = plumbing.Reference;
 const ReferenceName = plumbing.ReferenceName;
 const Hash = plumbing.Hash;
-const Remote = remote_mod.Remote;
 
 /// go-git `CreateTagOptions`.
 ///
@@ -44,7 +43,7 @@ pub const CreateTagOptions = struct {
     /// `createAnnotatedTagObject` (go-git `loadConfigTagger`); MissingTagger
     /// is returned there when neither Author nor User is set.
     /// `store` and `hash` are accepted for API parity.
-    pub fn validate(self: *const CreateTagOptions, store: *memory.Storage, hash: Hash) !void {
+    pub fn validate(self: *const CreateTagOptions, store: anytype, hash: Hash) !void {
         _ = store;
         _ = hash;
         if (self.message.len == 0) return error.MissingMessage;
@@ -56,16 +55,17 @@ pub const CreateTagOptions = struct {
 // ---------------------------------------------------------------------------
 
 /// go-git `Repository.Remote`.
-pub fn remote(store: *memory.Storage, name: []const u8) !Remote {
+pub fn remote(store: anytype, name: []const u8) !remote_mod.RemoteFor(@TypeOf(store.*)) {
     const cfg = try store.config();
     const c = cfg.remotes.getPtr(name) orelse return error.RemoteNotFound;
     return remote_mod.newRemote(store, c);
 }
 
 /// go-git `Repository.Remotes` — caller frees the returned slice only.
-pub fn remotes(store: *memory.Storage, allocator: Allocator) ![]Remote {
+pub fn remotes(store: anytype, allocator: Allocator) ![]remote_mod.RemoteFor(@TypeOf(store.*)) {
     const cfg = try store.config();
-    const out = try allocator.alloc(Remote, cfg.remotes.count());
+    const RemoteType = remote_mod.RemoteFor(@TypeOf(store.*));
+    const out = try allocator.alloc(RemoteType, cfg.remotes.count());
     var i: usize = 0;
     var it = cfg.remotes.iterator();
     while (it.next()) |e| {
@@ -77,21 +77,21 @@ pub fn remotes(store: *memory.Storage, allocator: Allocator) ![]Remote {
 
 /// go-git `Repository.CreateRemote`.
 pub fn createRemote(
-    store: *memory.Storage,
+    store: anytype,
     name: []const u8,
     urls: []const []const u8,
-) !Remote {
+) !remote_mod.RemoteFor(@TypeOf(store.*)) {
     return createRemoteFull(store, name, urls, &.{}, false);
 }
 
 /// CreateRemote with fetch refspecs and mirror.
 pub fn createRemoteFull(
-    store: *memory.Storage,
+    store: anytype,
     name: []const u8,
     urls: []const []const u8,
     fetch: []const []const u8,
     mirror: bool,
-) !Remote {
+) !remote_mod.RemoteFor(@TypeOf(store.*)) {
     if (name.len == 0) return error.RemoteConfigEmptyName;
     if (urls.len == 0) return error.RemoteConfigEmptyURL;
 
@@ -104,24 +104,30 @@ pub fn createRemoteFull(
 }
 
 /// Ephemeral anonymous remote **not** written to config (go-git CreateRemoteAnonymous).
-pub const AnonymousRemote = struct {
-    remote: Remote,
-    owned: *memory.RemoteConfig,
-    allocator: Allocator,
+pub fn AnonymousRemoteFor(comptime Storage: type) type {
+    return struct {
+        const Self = @This();
 
-    pub fn deinit(self: *AnonymousRemote) void {
-        self.owned.deinit(self.allocator);
-        self.allocator.destroy(self.owned);
-        self.* = undefined;
-    }
-};
+        remote: remote_mod.RemoteFor(Storage),
+        owned: *memory.RemoteConfig,
+        allocator: Allocator,
+
+        pub fn deinit(self: *Self) void {
+            self.owned.deinit(self.allocator);
+            self.allocator.destroy(self.owned);
+            self.* = undefined;
+        }
+    };
+}
+
+pub const AnonymousRemote = AnonymousRemoteFor(memory.Storage);
 
 /// go-git `Repository.CreateRemoteAnonymous` (name is always `"anonymous"`).
 pub fn createRemoteAnonymous(
-    store: *memory.Storage,
+    store: anytype,
     allocator: Allocator,
     urls: []const []const u8,
-) !AnonymousRemote {
+) !AnonymousRemoteFor(@TypeOf(store.*)) {
     if (urls.len == 0) return error.RemoteConfigEmptyURL;
     const rc = try allocator.create(memory.RemoteConfig);
     errdefer allocator.destroy(rc);
@@ -145,7 +151,7 @@ pub fn createRemoteAnonymous(
 }
 
 /// go-git `Repository.DeleteRemote`.
-pub fn deleteRemote(store: *memory.Storage, name: []const u8) !void {
+pub fn deleteRemote(store: anytype, name: []const u8) !void {
     const cfg = try store.config();
     if (!cfg.removeRemote(name)) return error.RemoteNotFound;
     try store.setConfig(cfg);
@@ -156,14 +162,14 @@ pub fn deleteRemote(store: *memory.Storage, name: []const u8) !void {
 // ---------------------------------------------------------------------------
 
 /// go-git `Repository.Branch`.
-pub fn branch(store: *memory.Storage, name: []const u8) !*const memory.BranchConfig {
+pub fn branch(store: anytype, name: []const u8) !*const memory.BranchConfig {
     const cfg = try store.config();
     return cfg.branches.getPtr(name) orelse error.BranchNotFound;
 }
 
 /// go-git `Repository.CreateBranch`.
 pub fn createBranch(
-    store: *memory.Storage,
+    store: anytype,
     name: []const u8,
     remote_name: []const u8,
     merge: []const u8,
@@ -176,7 +182,7 @@ pub fn createBranch(
 }
 
 /// go-git `Repository.DeleteBranch`.
-pub fn deleteBranch(store: *memory.Storage, name: []const u8) !void {
+pub fn deleteBranch(store: anytype, name: []const u8) !void {
     const cfg = try store.config();
     if (!cfg.removeBranch(name)) return error.BranchNotFound;
     try store.setConfig(cfg);
@@ -187,7 +193,7 @@ pub fn deleteBranch(store: *memory.Storage, name: []const u8) !void {
 // ---------------------------------------------------------------------------
 
 /// go-git `Repository.Tag`.
-pub fn tag(store: *memory.Storage, name: []const u8) !Reference {
+pub fn tag(store: anytype, name: []const u8) !Reference {
     var buf: [256]u8 = undefined;
     const rname = plumbing.newTagReferenceName(name, &buf) catch return error.InvalidReferenceName;
     try rname.validate();
@@ -199,7 +205,7 @@ pub fn tag(store: *memory.Storage, name: []const u8) !Reference {
 
 /// go-git `Repository.CreateTag` — lightweight when `opts == null`; annotated otherwise.
 pub fn createTag(
-    store: *memory.Storage,
+    store: anytype,
     name: []const u8,
     hash: Hash,
     opts: ?CreateTagOptions,
@@ -226,7 +232,7 @@ pub fn createTag(
 }
 
 fn createAnnotatedTagObject(
-    store: *memory.Storage,
+    store: anytype,
     name: []const u8,
     hash: Hash,
     opts: CreateTagOptions,
@@ -259,7 +265,7 @@ fn createAnnotatedTagObject(
     };
     tag_obj.target_type = enc.object_type;
     tag_obj.target = hash;
-    tag_obj.storage = storer_pkg.ObjectGetter.from(memory.Storage, store);
+    tag_obj.storage = storer_pkg.ObjectGetter.from(@TypeOf(store.*), store);
 
     // go-git: sign the unsigned encoding, then attach PGPSignature and store.
     if (opts.sign_key) |key| {
@@ -267,7 +273,8 @@ fn createAnnotatedTagObject(
         defer encoded.deinit();
         try tag_obj.encodeWithoutSignature(&encoded);
         const message = encoded.readerBytes();
-        tag_obj.pgp_signature = try objpkg.armoredDetachSign(gpa, key, message);
+        const signing_time = std.math.cast(u32, tagger.when) orelse return error.InvalidTimestamp;
+        tag_obj.pgp_signature = try objpkg.armoredDetachSignAt(gpa, key, message, signing_time);
     } else if (opts.pgp_signature) |sig| {
         tag_obj.pgp_signature = try gpa.dupe(u8, sig);
     }
@@ -280,7 +287,7 @@ fn createAnnotatedTagObject(
 /// go-git `CreateTagOptions.loadConfigTagger` subset using storer `memory.Config`.
 /// Prefer Author (both name+email non-empty), else User. Sets `when` to now.
 fn loadTaggerFromConfig(
-    store: *memory.Storage,
+    store: anytype,
     tagger: *objpkg.Signature,
     owned_name: *?[]u8,
     owned_email: *?[]u8,
@@ -304,15 +311,8 @@ fn loadTaggerFromConfig(
     owned_email.* = e;
     tagger.name = n;
     tagger.email = e;
-    tagger.when = nowUnixSeconds();
+    tagger.when = store.now().sec;
     tagger.tz_offset_minutes = 0;
-}
-
-/// Wall-clock unix seconds (go-git `time.Now()` for tagger When).
-fn nowUnixSeconds() i64 {
-    var ts: std.posix.timespec = .{ .sec = 0, .nsec = 0 };
-    _ = std.posix.system.clock_gettime(.REALTIME, &ts);
-    return @intCast(ts.sec);
 }
 
 /// go-git `CreateTagOptions.Validate` message canonicalize: `TrimSpace(msg) + "\n"`.
@@ -325,7 +325,7 @@ fn canonicalizeTagMessage(allocator: Allocator, message: []const u8) Allocator.E
 }
 
 /// go-git `Repository.DeleteTag`.
-pub fn deleteTag(store: *memory.Storage, name: []const u8) !void {
+pub fn deleteTag(store: anytype, name: []const u8) !void {
     _ = try tag(store, name);
     var buf: [256]u8 = undefined;
     const rname = plumbing.newTagReferenceName(name, &buf) catch return error.InvalidReferenceName;

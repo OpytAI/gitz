@@ -16,6 +16,8 @@ const remote_mod = @import("remote.zig");
 const session_mod = @import("session.zig");
 const refs_mod = @import("refs.zig");
 const list_mod = @import("list.zig");
+const push_mod = @import("push.zig");
+const pack_import_mod = @import("pack_import.zig");
 
 // --- error.zig ---
 pub const Error = error_mod.Error;
@@ -34,6 +36,7 @@ pub const ListOptions = options_mod.ListOptions;
 
 // --- remote.zig ---
 pub const Remote = remote_mod.Remote;
+pub const RemoteFor = remote_mod.RemoteFor;
 pub const newRemote = remote_mod.newRemote;
 pub const newRemoteEmbedded = remote_mod.newRemoteEmbedded;
 pub const freeReferences = remote_mod.freeReferences;
@@ -56,6 +59,13 @@ pub const getHaves = refs_mod.getHaves;
 pub const objectExists = refs_mod.objectExists;
 pub const collectLocalRefs = refs_mod.collectLocalRefs;
 pub const isFastForward = refs_mod.isFastForward;
+
+// --- transport-independent pack construction ---
+pub const PackBuildOptions = push_mod.PackBuildOptions;
+pub const PackBuildResult = push_mod.PackBuildResult;
+pub const buildPack = push_mod.buildPack;
+pub const PackImportSession = pack_import_mod.PackImportSession;
+pub const PackImportResult = pack_import_mod.PackImportResult;
 
 // Unit tests (including MapLoader e2e) are pulled in by `test_root.zig`
 // (//src/remote:remote_test). Keep this production root free of test-only imports

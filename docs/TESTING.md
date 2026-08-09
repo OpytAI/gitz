@@ -50,6 +50,15 @@ bazel test //...
 # Acceptance checks
 bazel test //check:all
 
+# Freestanding WebAssembly acceptance gate
+bazel test //examples/wasm:all
+
+# Release-small WebAssembly acceptance gate
+bazel test //examples/wasm:release
+
+# Safety-enabled WebAssembly acceptance gate
+bazel test //examples/wasm:debug
+
 # One package
 bazel test //src/plumbing/format/packfile:packfile_test
 ```

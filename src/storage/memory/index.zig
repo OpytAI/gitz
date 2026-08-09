@@ -5,6 +5,7 @@
 //! stamps `mod_time` (go-git sets `ModTime = time.Now()` for racy-git checks).
 
 const std = @import("std");
+const builtin = @import("builtin");
 const index_format = @import("index");
 
 const Allocator = std.mem.Allocator;
@@ -14,14 +15,45 @@ pub const Index = index_format.Index;
 pub const Entry = index_format.Entry;
 pub const Time = index_format.Time;
 
+/// Repository clock used for index timestamps and implicit Git identities.
+/// Freestanding callers must provide a fixed or callback-backed clock instead
+/// of acquiring ambient wall-clock authority.
+pub const Clock = union(enum) {
+    system,
+    fixed: Time,
+
+    pub fn systemClock() Clock {
+        if (comptime builtin.os.tag == .freestanding) {
+            @compileError("freestanding storage requires an explicit Clock");
+        }
+        return .system;
+    }
+
+    pub fn fixedClock(time: Time) Clock {
+        return .{ .fixed = time };
+    }
+
+    pub fn now(self: Clock) Time {
+        return switch (self) {
+            .system => systemTimeNow(),
+            .fixed => |time| time,
+        };
+    }
+};
+
 /// go-git `IndexStorage`.
 pub const IndexStorage = struct {
     allocator: Allocator,
+    clock: Clock,
     /// Owned index pointer (field name avoids clash with method `index`).
     stored: ?*Index = null,
 
     pub fn init(allocator: Allocator) IndexStorage {
-        return .{ .allocator = allocator };
+        return initWithClock(allocator, Clock.systemClock());
+    }
+
+    pub fn initWithClock(allocator: Allocator, clock: Clock) IndexStorage {
+        return .{ .allocator = allocator, .clock = clock };
     }
 
     pub fn deinit(self: *IndexStorage) void {
@@ -36,7 +68,7 @@ pub const IndexStorage = struct {
     /// go-git `SetIndex` — takes ownership of `idx` and stamps `mod_time`.
     /// Previous stored index (if any) is freed.
     pub fn setIndex(self: *IndexStorage, idx: *Index) void {
-        idx.mod_time = timeNow();
+        idx.mod_time = self.clock.now();
         if (self.stored) |old| {
             if (old != idx) {
                 old.deinit();
@@ -57,7 +89,8 @@ pub const IndexStorage = struct {
     }
 };
 
-fn timeNow() Time {
+fn systemTimeNow() Time {
+    if (comptime builtin.os.tag == .freestanding) unreachable;
     // Prefer std.time when present; Zig 0.16 removed milliTimestamp.
     if (@hasDecl(std.time, "nanoTimestamp")) {
         const ns = std.time.nanoTimestamp();

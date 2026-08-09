@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const UsizeShift = std.math.Log2Int(usize);
 
 /// Standard chunk size for fingerprints (go-git `blksz` / `s`).
 pub const blksz: usize = 16;
@@ -231,7 +232,7 @@ fn tableSize(worst_case_block_cnt: usize) usize {
     // go-git `tableSize`.
     const w: u32 = @intCast(worst_case_block_cnt);
     const shift: u5 = @intCast(32 - @clz(w));
-    var sz: usize = @as(usize, 1) << @as(u6, shift -| 1);
+    var sz: usize = @as(usize, 1) << @as(UsizeShift, @intCast(shift -| 1));
     if (sz < worst_case_block_cnt) {
         sz <<= 1;
     }

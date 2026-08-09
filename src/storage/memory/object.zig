@@ -94,6 +94,65 @@ pub const ObjectStorage = struct {
         return h;
     }
 
+    /// Reserve space for and atomically adopt every object in `tx`.
+    ///
+    /// All allocations and type validation happen before the first mutation.
+    /// This gives pack import an all-or-nothing commit boundary for the memory
+    /// backend instead of exposing a partially copied object set on OOM.
+    pub fn commitTransaction(self: *ObjectStorage, tx: *TxObjectStorage) (Allocator.Error || Error)!void {
+        try self.prepareTransaction(tx);
+        self.commitPrepared(tx);
+    }
+
+    /// Allocate and validate everything required for `commitPrepared`.
+    pub fn prepareTransaction(self: *ObjectStorage, tx: *TxObjectStorage) (Allocator.Error || Error)!void {
+        const object_count = tx.objects.count();
+
+        var validate = tx.objects.valueIterator();
+        while (validate.next()) |obj| switch (obj.*.object_type) {
+            .commit, .tree, .blob, .tag => {},
+            else => return error.UnsupportedObjectType,
+        };
+
+        try self.objects.ensureUnusedCapacity(self.allocator, object_count);
+        try self.commits.ensureUnusedCapacity(self.allocator, object_count);
+        try self.trees.ensureUnusedCapacity(self.allocator, object_count);
+        try self.blobs.ensureUnusedCapacity(self.allocator, object_count);
+        try self.tags.ensureUnusedCapacity(self.allocator, object_count);
+    }
+
+    /// Adopt a transaction after `prepareTransaction`; this cannot fail.
+    pub fn commitPrepared(self: *ObjectStorage, tx: *TxObjectStorage) void {
+        while (tx.objects.count() > 0) {
+            var it = tx.objects.iterator();
+            const entry = it.next().?;
+            const h = entry.key_ptr.*;
+            const obj = entry.value_ptr.*;
+            _ = tx.objects.remove(h);
+            self.adoptAssumeCapacity(h, obj);
+        }
+    }
+
+    fn adoptAssumeCapacity(self: *ObjectStorage, h: Hash, obj: *MemoryObject) void {
+        if (self.objects.get(h)) |old| {
+            if (old != obj) {
+                self.removeFromTypeMaps(h, old.object_type);
+                old.deinit();
+                self.allocator.destroy(old);
+            } else {
+                self.removeFromTypeMaps(h, old.object_type);
+            }
+        }
+        self.objects.putAssumeCapacity(h, obj);
+        switch (obj.object_type) {
+            .commit => self.commits.putAssumeCapacity(h, obj),
+            .tree => self.trees.putAssumeCapacity(h, obj),
+            .blob => self.blobs.putAssumeCapacity(h, obj),
+            .tag => self.tags.putAssumeCapacity(h, obj),
+            else => unreachable,
+        }
+    }
+
     fn removeFromTypeMaps(self: *ObjectStorage, h: Hash, t: ObjectType) void {
         switch (t) {
             .commit => _ = self.commits.remove(h),
@@ -138,6 +197,10 @@ pub const ObjectStorage = struct {
             },
         };
         return try ObjectSnapshotIter.fromMap(self.allocator, map);
+    }
+
+    pub fn count(self: *const ObjectStorage) usize {
+        return self.objects.count();
     }
 
     /// Start a write transaction (go-git `Begin`).
@@ -241,6 +304,10 @@ pub const TxObjectStorage = struct {
         return obj;
     }
 
+    pub fn count(self: *const TxObjectStorage) usize {
+        return self.objects.count();
+    }
+
     /// Merge buffered objects into the parent store (go-git `Commit`).
     /// Each object is removed from the tx map then handed to parent `setEncodedObject`
     /// (same order as go-git: delete from tx, then Set on parent).
@@ -254,6 +321,11 @@ pub const TxObjectStorage = struct {
             // Ownership moves to parent (object stays there even on UnsupportedObjectType).
             _ = try self.storage.setEncodedObject(obj);
         }
+    }
+
+    /// Commit without partial mutation on allocation failure.
+    pub fn commitAtomic(self: *TxObjectStorage) (Allocator.Error || Error)!void {
+        return self.storage.commitTransaction(self);
     }
 
     /// Drop all buffered objects without applying them (go-git `Rollback`).

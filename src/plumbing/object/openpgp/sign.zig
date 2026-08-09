@@ -1,6 +1,7 @@
 //! Armored detached sign: selectSigningKey, buildV4SignaturePacket, armoredDetachSign.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const crypto = std.crypto;
 const Allocator = std.mem.Allocator;
 
@@ -93,6 +94,18 @@ pub fn buildV4SignaturePacket(
     message: []const u8,
     hash_algo: u8,
 ) (Allocator.Error || Error)![]u8 {
+    const created_at = try systemUnixSeconds();
+    return buildV4SignaturePacketAt(allocator, entity, message, hash_algo, created_at);
+}
+
+/// Deterministic v4 signature packet construction with caller-supplied time.
+pub fn buildV4SignaturePacketAt(
+    allocator: Allocator,
+    entity: *const Entity,
+    message: []const u8,
+    hash_algo: u8,
+    created_at: u32,
+) (Allocator.Error || Error)![]u8 {
     const sk = try selectSigningKey(entity);
 
     // Hashed subpackets: creation time (critical) + issuer key id of selected key.
@@ -100,10 +113,7 @@ pub fn buildV4SignaturePacket(
     defer hashed.deinit(allocator);
 
     var ctime: [4]u8 = undefined;
-    // Zig 0.16: no std.time.timestamp; wall-clock via posix.
-    var ts: std.posix.timespec = .{ .sec = 0, .nsec = 0 };
-    _ = std.posix.system.clock_gettime(.REALTIME, &ts);
-    std.mem.writeInt(u32, &ctime, @intCast(ts.sec), .big);
+    std.mem.writeInt(u32, &ctime, created_at, .big);
     try appendSubpacket(&hashed, allocator, 2, &ctime, true);
     const kid = sk.keyId();
     try appendSubpacket(&hashed, allocator, 16, &kid, false);
@@ -175,8 +185,25 @@ pub fn armoredDetachSign(
     entity: *const Entity,
     message: []const u8,
 ) (Allocator.Error || Error)![]u8 {
-    // selectSigningKey runs inside buildV4SignaturePacket (EncryptedKey / NoPrivateKey).
-    const bin = try buildV4SignaturePacket(allocator, entity, message, hash_sha256);
+    const created_at = try systemUnixSeconds();
+    return armoredDetachSignAt(allocator, entity, message, created_at);
+}
+
+/// Deterministic detached signature with caller-supplied creation time.
+pub fn armoredDetachSignAt(
+    allocator: Allocator,
+    entity: *const Entity,
+    message: []const u8,
+    created_at: u32,
+) (Allocator.Error || Error)![]u8 {
+    const bin = try buildV4SignaturePacketAt(allocator, entity, message, hash_sha256, created_at);
     defer allocator.free(bin);
     return encodeArmor(allocator, "PGP SIGNATURE", bin);
+}
+
+fn systemUnixSeconds() Error!u32 {
+    if (comptime builtin.os.tag == .freestanding) return error.ClockUnavailable;
+    var ts: std.posix.timespec = .{ .sec = 0, .nsec = 0 };
+    _ = std.posix.system.clock_gettime(.REALTIME, &ts);
+    return std.math.cast(u32, ts.sec) orelse error.ClockUnavailable;
 }

@@ -50,6 +50,7 @@ zig_test(
     size = "medium",
     main = "test_root.zig",
     srcs = _SRCS + [
+        "backend_tests.zig",
         "root.zig",
         "network_tests.zig",
         "test_root.zig",
@@ -57,6 +58,17 @@ zig_test(
     deps = _DEPS + [
         "//src/plumbing/transport/client",
         "//src/plumbing/transport/test:fixtures",
+        "//src/remote:pack_import_filesystem",
+    ],
+)
+
+zig_test(
+    name = "backend_test",
+    size = "small",
+    main = "backend_tests.zig",
+    srcs = _SRCS + ["backend_tests.zig"],
+    deps = _DEPS + [
+        "//src/remote:pack_import_filesystem",
     ],
 )
 

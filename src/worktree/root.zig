@@ -41,11 +41,17 @@ pub const GrepResult = grep_mod.GrepResult;
 pub const freeGrepResults = grep_mod.freeGrepResults;
 
 pub const Worktree = worktree_mod.Worktree;
+pub const WorktreeFor = worktree_mod.WorktreeFor;
 pub const newWorktree = worktree_mod.newWorktree;
+pub const newWorktreeFor = worktree_mod.newWorktreeFor;
 pub const newWorktreeEmbedded = worktree_mod.newWorktreeEmbedded;
 
 // Package-level free functions (also available as Worktree methods).
 pub const status = status_mod.status;
+pub const Changes = status_mod.Changes;
+pub const diffCommitWithStaging = status_mod.diffCommitWithStaging;
+pub const diffTreeWithStaging = status_mod.diffTreeWithStaging;
+pub const deinitMaterializedChanges = status_mod.deinitMaterializedChanges;
 pub const add = add_mod.add;
 pub const addWithOptions = add_mod.addWithOptions;
 pub const addGlob = add_mod.addGlob;

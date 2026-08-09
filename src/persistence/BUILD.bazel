@@ -1,0 +1,31 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+zig_library(
+    name = "persistence",
+    main = "root.zig",
+    import_name = "persistence",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/fs",
+        "//src/plumbing",
+        "//src/plumbing/format/index",
+        "//src/storage/memory",
+    ],
+)
+
+zig_test(
+    name = "persistence_test",
+    main = "root.zig",
+    deps = [
+        "//src/fs",
+        "//src/plumbing",
+        "//src/plumbing/format/index",
+        "//src/storage/memory",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

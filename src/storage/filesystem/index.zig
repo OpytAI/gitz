@@ -43,7 +43,7 @@ pub fn IndexStorage(comptime Fs: type) type {
         }
 
         /// go-git `SetIndex` — encode and write `.git/index`.
-        /// Caller retains ownership of `idx` (go-git does not free the argument).
+        /// Caller retains ownership of `idx`.
         pub fn setIndex(self: *Self, idx: *Index) Error!void {
             var aw: std.Io.Writer.Allocating = try .initCapacity(self.allocator, 256);
             defer aw.deinit();
@@ -56,8 +56,13 @@ pub fn IndexStorage(comptime Fs: type) type {
             const data = aw.written();
             if (data.len > 0) _ = try f.write(data);
 
-            // Drop cache so next `index()` re-reads from disk.
+            // Keep a write-back of the cached pointer live. Otherwise drop the
+            // old cache so the next `index()` decodes the persisted bytes.
             if (self.cached) |old| {
+                if (old == idx) {
+                    old.mod_time = timeNow(self.dir);
+                    return;
+                }
                 old.deinit();
                 self.allocator.destroy(old);
                 self.cached = null;

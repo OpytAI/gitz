@@ -8,6 +8,7 @@
 //! - https://github.com/tarruda/node-git-core/blob/master/src/js/delta.js
 
 const std = @import("std");
+const UsizeShift = std.math.Log2Int(usize);
 const Allocator = std.mem.Allocator;
 
 const plumbing = @import("plumbing");
@@ -207,7 +208,7 @@ fn appendEncodeCopyOperation(
 
     var i: u3 = 0;
     while (i < 4) : (i += 1) {
-        const shift: u6 = @as(u6, i) * 8;
+        const shift: UsizeShift = @intCast(@as(u6, i) * 8);
         const f: usize = @as(usize, 0xff) << shift;
         if (offset & f != 0) {
             opcodes[n_op] = @truncate((offset & f) >> shift);
@@ -218,7 +219,7 @@ fn appendEncodeCopyOperation(
 
     i = 0;
     while (i < 3) : (i += 1) {
-        const shift: u6 = @as(u6, i) * 8;
+        const shift: UsizeShift = @intCast(@as(u6, i) * 8);
         const f: usize = @as(usize, 0xff) << shift;
         if (length & f != 0) {
             opcodes[n_op] = @truncate((length & f) >> shift);
@@ -319,11 +320,11 @@ fn deltaTestCases() []const DeltaCase {
         .{
             .description = "complex modification",
             .base = &[_]GenPiece{
-                .{ .val = "0", .times = 3 },  .{ .val = "1", .times = 40 }, .{ .val = "2", .times = 30 },
-                .{ .val = "3", .times = 2 },  .{ .val = "4", .times = 400 }, .{ .val = "5", .times = 23 },
+                .{ .val = "0", .times = 3 }, .{ .val = "1", .times = 40 },  .{ .val = "2", .times = 30 },
+                .{ .val = "3", .times = 2 }, .{ .val = "4", .times = 400 }, .{ .val = "5", .times = 23 },
             },
             .target = &[_]GenPiece{
-                .{ .val = "1", .times = 30 }, .{ .val = "2", .times = 20 }, .{ .val = "7", .times = 40 },
+                .{ .val = "1", .times = 30 },  .{ .val = "2", .times = 20 }, .{ .val = "7", .times = 40 },
                 .{ .val = "4", .times = 400 }, .{ .val = "5", .times = 10 },
             },
         },

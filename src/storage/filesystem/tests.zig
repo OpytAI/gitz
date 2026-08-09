@@ -3,6 +3,7 @@ const std = @import("std");
 const plumbing = @import("plumbing");
 const cache_pkg = @import("cache");
 const fs_pkg = @import("fs");
+const memory = @import("memory");
 const filesystem = @import("root.zig");
 const storage_suite = @import("storage_suite");
 
@@ -180,6 +181,59 @@ test "set/get reference" {
     try std.testing.expect(got.type == .hash);
 }
 
+test "filesystem multi-ref updates validate before publication" {
+    const gpa = std.testing.allocator;
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+
+    const s = try newStorage(gpa, &mem, null);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+    try s.initLayout();
+
+    const main = plumbing.ReferenceName.init("refs/heads/main");
+    const tag = plumbing.ReferenceName.init("refs/tags/v1");
+    const first = plumbing.newHash("1111111111111111111111111111111111111111");
+    const second = plumbing.newHash("2222222222222222222222222222222222222222");
+    const wrong = plumbing.newHash("3333333333333333333333333333333333333333");
+    try s.setReference(plumbing.Reference.newHashReference(main, first));
+
+    const rejected = [_]memory.ReferenceUpdate{
+        .{
+            .name = main,
+            .new_reference = plumbing.Reference.newHashReference(main, second),
+            .expected = plumbing.Reference.newHashReference(main, wrong),
+        },
+        .{ .name = tag, .new_reference = plumbing.Reference.newHashReference(tag, second) },
+    };
+    try std.testing.expectError(error.ReferenceHasChanged, s.prepareReferenceUpdates(&rejected));
+    const unchanged = try s.reference(main);
+    defer s.freeReference(unchanged);
+    try std.testing.expect(unchanged.hash.eql(first));
+    try std.testing.expectError(error.ReferenceNotFound, s.reference(tag));
+
+    const accepted = [_]memory.ReferenceUpdate{
+        .{
+            .name = main,
+            .new_reference = plumbing.Reference.newHashReference(main, second),
+            .expected = plumbing.Reference.newHashReference(main, first),
+        },
+        .{ .name = tag, .new_reference = plumbing.Reference.newHashReference(tag, second) },
+    };
+    var prepared = try s.prepareReferenceUpdates(&accepted);
+    defer prepared.deinit();
+    try s.commitPreparedReferenceUpdates(&accepted, &prepared);
+
+    const updated = try s.reference(main);
+    defer s.freeReference(updated);
+    const tagged = try s.reference(tag);
+    defer s.freeReference(tagged);
+    try std.testing.expect(updated.hash.eql(second));
+    try std.testing.expect(tagged.hash.eql(second));
+}
+
 test "set/get empty index" {
     const gpa = std.testing.allocator;
     var mem = try fs_pkg.Mem.init(gpa);
@@ -298,7 +352,6 @@ test "shallow set and get" {
 // ---------------------------------------------------------------------------
 // BaseStorageSuite on filesystem.Storage over Mem (go-git storage_test.go)
 // ---------------------------------------------------------------------------
-
 
 /// Factory: fresh Mem + Storage + initLayout per suite case (go-git SetUpTest).
 const FilesystemSuiteFactory = struct {

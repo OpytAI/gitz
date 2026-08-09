@@ -7,6 +7,19 @@ const Allocator = std.mem.Allocator;
 const Reference = plumbing.Reference;
 const ReferenceName = plumbing.ReferenceName;
 
+pub const ReferenceUpdate = struct {
+    name: ReferenceName,
+    new_reference: ?Reference,
+    expected: ?Reference = null,
+    require_absent: bool = false,
+};
+
+pub const ReferenceUpdateError = error{
+    ReferenceHasChanged,
+    DuplicateReference,
+    ReferenceNameMismatch,
+};
+
 /// Map of owned reference name → owned `Reference` (name strings heap-owned).
 pub const ReferenceStorage = struct {
     allocator: Allocator,
@@ -97,7 +110,75 @@ pub const ReferenceStorage = struct {
             freeOwned(self.allocator, old.key, old.value);
         }
     }
+
+    /// Validate and allocate a complete replacement map without changing the
+    /// visible refs. Publish it later with `commitPrepared`.
+    pub fn prepareUpdates(
+        self: *const ReferenceStorage,
+        updates: []const ReferenceUpdate,
+    ) (Allocator.Error || plumbing.Error || ReferenceUpdateError)!ReferenceStorage {
+        var names: std.StringHashMapUnmanaged(void) = .empty;
+        defer names.deinit(self.allocator);
+
+        for (updates) |update| {
+            try update.name.validate();
+            if (names.contains(update.name.raw)) return error.DuplicateReference;
+            try names.put(self.allocator, update.name.raw, {});
+
+            if (update.new_reference) |new_ref| {
+                if (!std.mem.eql(u8, new_ref.name.raw, update.name.raw)) {
+                    return error.ReferenceNameMismatch;
+                }
+                try new_ref.name.validate();
+                if (new_ref.type == .symbolic) try new_ref.target.validate();
+            }
+
+            const current = self.refs.get(update.name.raw);
+            if (update.require_absent and current != null) return error.ReferenceHasChanged;
+            if (update.expected) |expected| {
+                if (current == null or !referencesEqual(current.?, expected)) {
+                    return error.ReferenceHasChanged;
+                }
+            }
+        }
+
+        var prepared = ReferenceStorage.init(self.allocator);
+        errdefer prepared.deinit();
+        var current_it = self.refs.valueIterator();
+        while (current_it.next()) |ref| try prepared.setReference(ref.*);
+        for (updates) |update| {
+            if (update.new_reference) |new_ref| {
+                try prepared.setReference(new_ref);
+            } else {
+                prepared.removeReference(update.name);
+            }
+        }
+        return prepared;
+    }
+
+    /// Publish a map returned by `prepareUpdates`. This cannot fail.
+    pub fn commitPrepared(self: *ReferenceStorage, prepared: *ReferenceStorage) void {
+        std.mem.swap(std.StringHashMapUnmanaged(Reference), &self.refs, &prepared.refs);
+        prepared.deinit();
+    }
+
+    pub fn applyUpdates(
+        self: *ReferenceStorage,
+        updates: []const ReferenceUpdate,
+    ) (Allocator.Error || ReferenceUpdateError)!void {
+        var prepared = try self.prepareUpdates(updates);
+        self.commitPrepared(&prepared);
+    }
 };
+
+fn referencesEqual(a: Reference, b: Reference) bool {
+    if (a.type != b.type or !std.mem.eql(u8, a.name.raw, b.name.raw)) return false;
+    return switch (a.type) {
+        .hash => a.hash.eql(b.hash),
+        .symbolic => std.mem.eql(u8, a.target.raw, b.target.raw),
+        .invalid => true,
+    };
+}
 
 fn cloneOwned(allocator: Allocator, ref: Reference, name_owned: []u8) Allocator.Error!Reference {
     var out = ref;

@@ -36,6 +36,10 @@ pub const BranchConfig = config_mod.BranchConfig;
 pub const SubmoduleEntry = config_mod.SubmoduleEntry;
 pub const IndexStorage = index_mod.IndexStorage;
 pub const Index = index_mod.Index;
+pub const Time = index_mod.Time;
+pub const Clock = index_mod.Clock;
+pub const ReferenceUpdate = reference_mod.ReferenceUpdate;
+pub const ReferenceUpdateError = reference_mod.ReferenceUpdateError;
 
 pub const ObjectError = object_mod.Error;
 pub const ConfigError = config_mod.Error;
@@ -78,10 +82,15 @@ pub const ShallowStorage = struct {
 /// Module map name → nested Storage (go-git `ModuleStorage`).
 pub const ModuleStorage = struct {
     allocator: Allocator,
+    clock: Clock,
     modules: std.StringHashMapUnmanaged(*Storage) = .empty,
 
     pub fn init(allocator: Allocator) ModuleStorage {
-        return .{ .allocator = allocator };
+        return initWithClock(allocator, Clock.systemClock());
+    }
+
+    pub fn initWithClock(allocator: Allocator, clock: Clock) ModuleStorage {
+        return .{ .allocator = allocator, .clock = clock };
     }
 
     pub fn deinit(self: *ModuleStorage) void {
@@ -99,7 +108,7 @@ pub const ModuleStorage = struct {
     pub fn module(self: *ModuleStorage, name: []const u8) Allocator.Error!*Storage {
         if (self.modules.get(name)) |m| return m;
 
-        const m = try newStorage(self.allocator);
+        const m = try newStorageWithClock(self.allocator, self.clock);
         errdefer {
             m.deinit();
             self.allocator.destroy(m);
@@ -129,19 +138,27 @@ pub const Storage = struct {
     pub const implements_delta_object_storer = false;
     /// go-git memory `SetIndex` takes ownership of the heap `*Index`.
     pub const set_index_takes_ownership = true;
+    pub const set_index_can_fail = false;
     /// Memory refs borrow map keys; suite must not free them.
     pub const reference_returns_owned = false;
+    pub const ObjectHashIter = ObjectSnapshotIter;
+    pub const ReferenceIter = ReferenceSliceIter;
 
     /// Initialize embedded storages (stack or heap). Prefer `newStorage` for heap.
     pub fn init(allocator: Allocator) Storage {
+        return initWithClock(allocator, Clock.systemClock());
+    }
+
+    /// Initialize memory storage with caller-owned time authority.
+    pub fn initWithClock(allocator: Allocator, clock: Clock) Storage {
         return .{
             .allocator = allocator,
             .config_storage = ConfigStorage.init(allocator),
             .object_storage = ObjectStorage.init(allocator),
             .shallow_storage = ShallowStorage.init(allocator),
-            .index_storage = IndexStorage.init(allocator),
+            .index_storage = IndexStorage.initWithClock(allocator, clock),
             .reference_storage = ReferenceStorage.init(allocator),
-            .module_storage = ModuleStorage.init(allocator),
+            .module_storage = ModuleStorage.initWithClock(allocator, clock),
             .hash_algo = .sha1,
         };
     }
@@ -161,6 +178,11 @@ pub const Storage = struct {
     /// Call when switching repos on a thread; object hashing uses per-object `hash_algo`.
     pub fn activateFormat(self: *const Storage) void {
         plumbing.setObjectFormat(self.hash_algo);
+    }
+
+    /// Current repository time from the capability supplied at construction.
+    pub fn now(self: *const Storage) Time {
+        return self.index_storage.clock.now();
     }
 
     pub fn deinit(self: *Storage) void {
@@ -253,12 +275,22 @@ pub const Storage = struct {
         return self.reference_storage.reference(n);
     }
 
+    /// Memory references borrow storage-owned name and target bytes.
+    pub fn freeReference(_: *const Storage, _: Reference) void {}
+
     pub fn iterReferences(self: *const Storage) Allocator.Error!ReferenceSliceIter {
         return self.reference_storage.iterReferences();
     }
 
     pub fn removeReference(self: *Storage, n: ReferenceName) void {
         self.reference_storage.removeReference(n);
+    }
+
+    pub fn applyReferenceUpdates(
+        self: *Storage,
+        updates: []const ReferenceUpdate,
+    ) (Allocator.Error || ReferenceUpdateError)!void {
+        return self.reference_storage.applyUpdates(updates);
     }
 
     pub fn countLooseRefs(self: *const Storage) usize {
@@ -311,8 +343,13 @@ pub const Storage = struct {
 
 /// go-git `NewStorage` — heap-allocated storage; free with `deinit` + `destroy`.
 pub fn newStorage(allocator: Allocator) Allocator.Error!*Storage {
+    return newStorageWithClock(allocator, Clock.systemClock());
+}
+
+/// Heap-allocated storage with explicit time authority.
+pub fn newStorageWithClock(allocator: Allocator, clock: Clock) Allocator.Error!*Storage {
     const s = try allocator.create(Storage);
-    s.* = Storage.init(allocator);
+    s.* = Storage.initWithClock(allocator, clock);
     return s;
 }
 

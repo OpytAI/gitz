@@ -17,6 +17,7 @@ const pathutil = @import("pathutil");
 const worktree_mod = @import("worktree.zig");
 const options_mod = @import("options.zig");
 const error_mod = @import("error.zig");
+const util = @import("util.zig");
 const platform_mod = @import("platform.zig");
 
 const Allocator = std.mem.Allocator;
@@ -30,7 +31,7 @@ const Index = index_fmt.Index;
 const FileMode = filemode.FileMode;
 
 /// go-git `Worktree.Checkout`.
-pub fn checkout(w: *Worktree, o: CheckoutOptions) !void {
+pub fn checkout(w: anytype, o: CheckoutOptions) !void {
     var opts = o;
     try opts.validate();
 
@@ -70,7 +71,7 @@ pub fn checkout(w: *Worktree, o: CheckoutOptions) !void {
 
 /// Write every regular/symlink blob from `tree_hash` into the worktree FS and
 /// rebuild the index to match (go-git hard/merge reset materialisation subset).
-pub fn checkoutTree(w: *Worktree, tree_hash: Hash) !void {
+pub fn checkoutTree(w: anytype, tree_hash: Hash) !void {
     const allocator = w.allocator;
 
     const tree = try objpkg.getTree(allocator, w.storer, tree_hash);
@@ -115,7 +116,7 @@ pub fn checkoutTree(w: *Worktree, tree_hash: Hash) !void {
         try addIndexFromFile(w, idx, f.name, f.blob.hash, f.mode);
     }
 
-    w.storer.setIndex(idx);
+    try util.setIndex(w.storer, idx);
 }
 
 // ---------------------------------------------------------------------------
@@ -123,15 +124,16 @@ pub fn checkoutTree(w: *Worktree, tree_hash: Hash) !void {
 // ---------------------------------------------------------------------------
 
 /// Detach HEAD at `commit` (go-git `setHEADToCommit`).
-pub fn setHEADToCommit(w: *Worktree, commit: Hash) !void {
+pub fn setHEADToCommit(w: anytype, commit: Hash) !void {
     const head = Reference.newHashReference(plumbing.HEAD, commit);
     try w.storer.setReference(head);
 }
 
 /// Point HEAD at `branch` (symbolic when it is a branch), else detach at `commit`.
 /// go-git `setHEADToBranch`.
-pub fn setHEADToBranch(w: *Worktree, branch: ReferenceName, commit: Hash) !void {
+pub fn setHEADToBranch(w: anytype, branch: ReferenceName, commit: Hash) !void {
     const target = try w.storer.reference(branch);
+    defer w.storer.freeReference(target);
     const head = if (target.name.isBranch())
         Reference.newSymbolicReference(plumbing.HEAD, target.name)
     else
@@ -143,27 +145,30 @@ pub fn setHEADToBranch(w: *Worktree, branch: ReferenceName, commit: Hash) !void 
 // createBranch / resolve commit (go-git helpers)
 // ---------------------------------------------------------------------------
 
-fn createBranch(w: *Worktree, opts: *CheckoutOptions) !void {
+fn createBranch(w: anytype, opts: *CheckoutOptions) !void {
     try opts.branch.validate();
 
-    if (w.storer.reference(opts.branch)) |_| {
+    if (w.storer.reference(opts.branch)) |existing| {
+        w.storer.freeReference(existing);
         return error.BranchAlreadyExists;
     } else |err| {
         if (err != error.ReferenceNotFound) return err;
     }
 
     if (opts.hash.isZero()) {
-        const head = try storer.resolveReference(w.storer, plumbing.HEAD);
+        const head = try util.resolveReference(w.storer, plumbing.HEAD);
+        defer w.storer.freeReference(head);
         opts.hash = head.hash;
     }
 
     try w.storer.setReference(Reference.newHashReference(opts.branch, opts.hash));
 }
 
-fn getCommitFromCheckoutOptions(w: *Worktree, opts: *const CheckoutOptions) !Hash {
+fn getCommitFromCheckoutOptions(w: anytype, opts: *const CheckoutOptions) !Hash {
     var hash = opts.hash;
     if (hash.isZero()) {
-        const b = try storer.resolveReference(w.storer, opts.branch);
+        const b = try util.resolveReference(w.storer, opts.branch);
+        defer w.storer.freeReference(b);
         hash = b.hash;
     }
 
@@ -184,7 +189,7 @@ fn getCommitFromCheckoutOptions(w: *Worktree, opts: *const CheckoutOptions) !Has
 // File materialisation
 // ---------------------------------------------------------------------------
 
-fn checkoutFile(w: *Worktree, f: *const objpkg.File) !void {
+fn checkoutFile(w: anytype, f: *const objpkg.File) !void {
     try pathutil.validTreePath(f.name);
     try ensureParentDirs(w.filesystem, f.name);
 
@@ -203,7 +208,7 @@ fn checkoutFile(w: *Worktree, f: *const objpkg.File) !void {
     try writeRegularFile(w, f.name, f.blob.readerBytes(), f.mode);
 }
 
-fn writeRegularFile(w: *Worktree, path: []const u8, content: []const u8, mode: FileMode) !void {
+fn writeRegularFile(w: anytype, path: []const u8, content: []const u8, mode: FileMode) !void {
     w.filesystem.remove(path) catch {};
     const perm: u32 = if (mode == filemode.Executable) 0o755 else 0o644;
     var file = try w.filesystem.openFile(path, fs_pkg.O.WRONLY | fs_pkg.O.CREATE | fs_pkg.O.TRUNC, perm);
@@ -211,14 +216,14 @@ fn writeRegularFile(w: *Worktree, path: []const u8, content: []const u8, mode: F
     _ = try file.write(content);
 }
 
-fn ensureParentDirs(filesystem: *fs_pkg.Mem, path: []const u8) !void {
+fn ensureParentDirs(filesystem: anytype, path: []const u8) !void {
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| {
         if (i > 0) try filesystem.mkdirAll(path[0..i], 0o755);
     }
 }
 
 fn addIndexFromFile(
-    w: *Worktree,
+    w: anytype,
     idx: *Index,
     name: []const u8,
     hash: Hash,
@@ -238,7 +243,7 @@ fn addIndexFromFile(
     platform_mod.fillSystemInfo(e, w.filesystem, name);
 }
 
-fn removeIndexFiles(w: *Worktree) !void {
+fn removeIndexFiles(w: anytype) !void {
     const idx = try w.storer.index();
     // Validate all names before removing the first path. The index can be
     // loaded from an untrusted repository.

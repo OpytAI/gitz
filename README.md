@@ -67,9 +67,14 @@ Useful targets:
 | `//:gitz` | Public library |
 | `//src:gitz_test` | Root API tests |
 | `//check:all` | Complete compatibility and regression suite |
+| `//examples/wasm:all` | Runnable `wasm32-freestanding` repository and pack gate |
 
 The repository `.bazelrc` selects the shared output cache and hermetic build
 settings.
+
+The WebAssembly gate runs in both safety-enabled and release-optimized modes.
+See [`examples/wasm/README.md`](examples/wasm/README.md) for its artifact,
+import-audit, ABI, memory, and size contracts.
 
 ## Project status
 

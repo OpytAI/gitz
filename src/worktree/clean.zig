@@ -10,11 +10,9 @@ const pathutil = @import("pathutil");
 
 const options_mod = @import("options.zig");
 const status_types = @import("status_types.zig");
-const worktree_mod = @import("worktree.zig");
 const util = @import("util.zig");
 
 const Allocator = std.mem.Allocator;
-const Worktree = worktree_mod.Worktree;
 const CleanOptions = options_mod.CleanOptions;
 const Status = status_types.Status;
 const FileInfo = fs_pkg.FileInfo;
@@ -24,7 +22,7 @@ const joinRel = util.joinRel;
 const git_dir_name = ".git";
 
 /// go-git `Worktree.Clean` — remove untracked files (and dirs if `o.dir`).
-pub fn clean(w: *Worktree, o: CleanOptions) !void {
+pub fn clean(w: anytype, o: CleanOptions) !void {
     var s = try w.status();
     defer s.deinit();
 
@@ -36,7 +34,7 @@ pub fn clean(w: *Worktree, o: CleanOptions) !void {
 
 /// go-git `doClean` — recursive clean under `dir`.
 fn doClean(
-    w: *Worktree,
+    w: anytype,
     status: *const Status,
     opts: CleanOptions,
     dir: []const u8,
@@ -68,7 +66,7 @@ fn doClean(
 
 /// go-git `removeDirIfEmpty` — remove `dir` when it has no entries.
 /// Returns true when the directory was removed.
-fn removeDirIfEmpty(w: *Worktree, dir: []const u8) !bool {
+fn removeDirIfEmpty(w: anytype, dir: []const u8) !bool {
     const files = try w.filesystem.readDir(dir);
     defer w.filesystem.freeReadDir(files);
     if (files.len > 0) return false;

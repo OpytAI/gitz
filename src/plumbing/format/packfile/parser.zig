@@ -5,7 +5,7 @@
 //!
 //! Prefer a seekable scanner (`Scanner.initSeekable`) so the pack image can be
 //! re-read while resolving deltas. Non-seekable sources require an
-//! `ObjectStore` (thin packs / stream-only).
+//! `EncodedObjectStore` (thin packs / stream-only).
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -32,6 +32,62 @@ const max_object_prealloc_bytes = common.max_object_prealloc_bytes;
 const max_delta_chain_depth = common.max_delta_chain_depth;
 
 const HashKey = Hash;
+
+// ---------------------------------------------------------------------------
+// EncodedObjectStore — parser storage boundary
+// ---------------------------------------------------------------------------
+
+/// The subset of go-git's `storer.EncodedObjectStorer` used by the parser.
+///
+/// This boundary lets callers parse directly into a repository transaction.
+/// It avoids materializing every decoded object in a parser-only map and then
+/// copying the same content into the destination storer.
+pub const EncodedObjectStore = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        get: *const fn (ptr: *anyopaque, h: Hash, out: **MemoryObject) u16,
+        put_content: *const fn (ptr: *anyopaque, t: ObjectType, content: []const u8, out: *Hash) u16,
+    };
+
+    pub fn get(self: EncodedObjectStore, h: Hash) anyerror!*MemoryObject {
+        var out: *MemoryObject = undefined;
+        const error_code = self.vtable.get(self.ptr, h, &out);
+        if (error_code != 0) return @errorFromInt(error_code);
+        return out;
+    }
+
+    pub fn putContent(self: EncodedObjectStore, t: ObjectType, content: []const u8) anyerror!Hash {
+        var out: Hash = undefined;
+        const error_code = self.vtable.put_content(self.ptr, t, content, &out);
+        if (error_code != 0) return @errorFromInt(error_code);
+        return out;
+    }
+
+    pub fn from(comptime T: type, impl: *T) EncodedObjectStore {
+        const gen = struct {
+            fn cbGet(ptr: *anyopaque, h: Hash, out: **MemoryObject) u16 {
+                const self: *T = @ptrCast(@alignCast(ptr));
+                out.* = self.get(h) catch |err| return @intFromError(err);
+                return 0;
+            }
+
+            fn cbPutContent(ptr: *anyopaque, t: ObjectType, content: []const u8, out: *Hash) u16 {
+                const self: *T = @ptrCast(@alignCast(ptr));
+                out.* = self.putContent(t, content) catch |err| return @intFromError(err);
+                return 0;
+            }
+
+            const vtable = VTable{
+                .get = cbGet,
+                .put_content = cbPutContent,
+            };
+        };
+
+        return .{ .ptr = impl, .vtable = &gen.vtable };
+    }
+};
 
 // ---------------------------------------------------------------------------
 // Security prealloc hints (go-git parser.go growHint / objectsHint)
@@ -221,7 +277,7 @@ fn newDeltaObject(
 pub const Parser = struct {
     allocator: Allocator,
     scanner: *Scanner,
-    storage: ?*ObjectStore,
+    storage: ?EncodedObjectStore,
     count: u32 = 0,
     oi: std.ArrayListUnmanaged(*ObjectInfo) = .empty,
     oi_by_hash: std.AutoHashMapUnmanaged(HashKey, *ObjectInfo) = .empty,
@@ -238,7 +294,7 @@ pub const Parser = struct {
         scanner: *Scanner,
         observers: []const Observer,
     ) Error!Parser {
-        return initWithStorage(allocator, scanner, null, observers);
+        return initWithStore(allocator, scanner, null, observers);
     }
 
     /// Create a parser with optional storage (go-git `NewParserWithStorage`).
@@ -246,7 +302,22 @@ pub const Parser = struct {
     pub fn initWithStorage(
         allocator: Allocator,
         scanner: *Scanner,
-        storage: ?*ObjectStore,
+        storage: anytype,
+        observers: []const Observer,
+    ) Error!Parser {
+        return initWithStore(
+            allocator,
+            scanner,
+            EncodedObjectStore.from(@TypeOf(storage.*), storage),
+            observers,
+        );
+    }
+
+    /// Create a parser from an already type-erased object store.
+    pub fn initWithStore(
+        allocator: Allocator,
+        scanner: *Scanner,
+        storage: ?EncodedObjectStore,
         observers: []const Observer,
     ) Error!Parser {
         if (!scanner.is_seekable and storage == null) {

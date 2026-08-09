@@ -2,15 +2,15 @@
 //!
 //! go-git sets CreatedAt (Ctim), Dev, Inode, UID, GID from `*syscall.Stat_t`.
 //!
-//! gitz worktree uses `fs.Mem` in hermetic tests. When `stat` succeeds we fill
-//! **synthetic but stable** Mem fields so the index has usable identity:
+//! Gitz worktrees use both `fs.Mem` and `fs.Os`. When `stat` succeeds we fill
+//! stable fields from the common filesystem information surface:
 //! - `created_at` ← mtime (best ctime proxy Mem provides)
 //! - `dev` = 1 (single synthetic memfs device)
 //! - `inode` = FNV-1a path hash (stable across runs for the same path)
 //! - `uid`/`gid` = 0 (no identity in Mem)
 //!
-//! This is strictly more useful than all-zero Sys() while remaining honest that
-//! values are not host OS stats. When Os FS is wired, replace with real Stat_t.
+//! These are backend-stable values, not a claim to expose the complete host
+//! `Stat_t` through the billy-style filesystem interface.
 
 const std = @import("std");
 const index_fmt = @import("index");
@@ -19,7 +19,7 @@ const fs_pkg = @import("fs");
 const Entry = index_fmt.Entry;
 
 /// go-git `fillSystemInfo` body for linux.
-pub fn fillSystemInfoLinux(e: *Entry, filesystem: *fs_pkg.Mem, path: []const u8) void {
+pub fn fillSystemInfoLinux(e: *Entry, filesystem: anytype, path: []const u8) void {
     const info = filesystem.stat(path) catch return;
     // Synthetic Mem platform fields (see file header).
     e.created_at = .{ .sec = info.mtime_sec, .nsec = 0 };

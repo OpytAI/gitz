@@ -93,11 +93,12 @@ pub const Sha1cd = struct {
         const bit_len = self.len;
         var tmp: [64]u8 = .{0} ** 64;
         tmp[0] = 0x80;
-        if (bit_len % 64 < 56) {
-            self.update(tmp[0 .. 56 - bit_len % 64]);
-        } else {
-            self.update(tmp[0 .. 64 + 56 - bit_len % 64]);
-        }
+        const block_offset: usize = @intCast(bit_len % BlockSize);
+        const padding_len: usize = if (block_offset < 56)
+            56 - block_offset
+        else
+            BlockSize + 56 - block_offset;
+        self.update(tmp[0..padding_len]);
 
         const len_bits = bit_len << 3;
         var len_buf: [8]u8 = undefined;

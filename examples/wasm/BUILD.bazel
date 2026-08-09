@@ -1,0 +1,359 @@
+load("@aspect_rules_js//js:defs.bzl", "js_test")
+load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
+
+package(default_visibility = ["//visibility:public"])
+
+test_suite(
+    name = "all",
+    tests = [
+        ":local_repo_test",
+        ":local_repo_debug_test",
+        ":pack_import_test",
+        ":pack_import_debug_test",
+        ":pack_build_test",
+        ":pack_build_debug_test",
+        ":persistence_test",
+        ":persistence_debug_test",
+        ":engine_smoke_test",
+        ":engine_smoke_debug_test",
+    ],
+)
+
+test_suite(
+    name = "release",
+    tests = [
+        ":local_repo_test",
+        ":pack_import_test",
+        ":pack_build_test",
+        ":persistence_test",
+        ":engine_smoke_test",
+    ],
+)
+
+test_suite(
+    name = "debug",
+    tests = [
+        ":local_repo_debug_test",
+        ":pack_import_debug_test",
+        ":pack_build_debug_test",
+        ":persistence_debug_test",
+        ":engine_smoke_debug_test",
+    ],
+)
+
+zig_binary(
+    name = "probe.wasm",
+    main = "probe.zig",
+    zigopts = [
+        "-fno-entry",
+        "-rdynamic",
+        "-fsingle-threaded",
+    ],
+    deps = ["//src/crypto/sha1cd"],
+)
+
+zig_configure_binary(
+    name = "probe",
+    actual = ":probe.wasm",
+    mode = "release_small",
+    target = "//platforms:wasm32_freestanding",
+)
+
+zig_binary(
+    name = "local_repo.wasm",
+    main = "local_repo.zig",
+    srcs = ["abi.zig"],
+    zigopts = [
+        "-fno-entry",
+        "-rdynamic",
+        "-fsingle-threaded",
+    ],
+    deps = [
+        "//src/fs",
+        "//src/plumbing",
+        "//src/plumbing/object",
+        "//src/repo",
+        "//src/storage/memory",
+        "//src/worktree",
+    ],
+)
+
+zig_configure_binary(
+    name = "local_repo",
+    actual = ":local_repo.wasm",
+    mode = "release_small",
+    target = "//platforms:wasm32_freestanding",
+)
+
+zig_configure_binary(
+    name = "local_repo_debug",
+    actual = ":local_repo.wasm",
+    mode = "debug",
+    target = "//platforms:wasm32_freestanding",
+)
+
+zig_binary(
+    name = "pack_build.wasm",
+    main = "pack_build.zig",
+    srcs = ["abi.zig"],
+    zigopts = [
+        "-fno-entry",
+        "-rdynamic",
+        "-fsingle-threaded",
+    ],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/format/packfile",
+        "//src/remote",
+        "//src/storage/memory",
+    ],
+)
+
+zig_configure_binary(
+    name = "pack_build",
+    actual = ":pack_build.wasm",
+    mode = "release_small",
+    target = "//platforms:wasm32_freestanding",
+)
+
+zig_configure_binary(
+    name = "pack_build_debug",
+    actual = ":pack_build.wasm",
+    mode = "debug",
+    target = "//platforms:wasm32_freestanding",
+)
+
+js_test(
+    name = "pack_build_test",
+    data = [
+        ":pack_build",
+        "pack_build_test.mjs",
+    ],
+    entry_point = "pack_build_test.mjs",
+    env = {
+        "GITZ_WASM": "$(rlocationpath :pack_build)",
+    },
+)
+
+js_test(
+    name = "pack_build_debug_test",
+    data = [
+        ":pack_build_debug",
+        "pack_build_test.mjs",
+    ],
+    entry_point = "pack_build_test.mjs",
+    env = {
+        "GITZ_WASM": "$(rlocationpath :pack_build_debug)",
+    },
+)
+
+zig_binary(
+    name = "pack_import.wasm",
+    main = "pack_import.zig",
+    srcs = ["abi.zig"],
+    zigopts = [
+        "-fno-entry",
+        "-rdynamic",
+        "-fsingle-threaded",
+    ],
+    deps = [
+        "//src/fs",
+        "//src/plumbing",
+        "//src/plumbing/object",
+        "//src/remote",
+        "//src/repo",
+        "//src/storage/memory",
+        "//src/worktree",
+    ],
+)
+
+zig_configure_binary(
+    name = "pack_import",
+    actual = ":pack_import.wasm",
+    mode = "release_small",
+    target = "//platforms:wasm32_freestanding",
+)
+
+zig_configure_binary(
+    name = "pack_import_debug",
+    actual = ":pack_import.wasm",
+    mode = "debug",
+    target = "//platforms:wasm32_freestanding",
+)
+
+js_test(
+    name = "pack_import_test",
+    data = [
+        ":pack_import",
+        "pack_import_test.mjs",
+    ],
+    entry_point = "pack_import_test.mjs",
+    env = {
+        "GITZ_WASM": "$(rlocationpath :pack_import)",
+    },
+)
+
+js_test(
+    name = "pack_import_debug_test",
+    data = [
+        ":pack_import_debug",
+        "pack_import_test.mjs",
+    ],
+    entry_point = "pack_import_test.mjs",
+    env = {
+        "GITZ_WASM": "$(rlocationpath :pack_import_debug)",
+    },
+)
+
+zig_binary(
+    name = "persistence.wasm",
+    main = "persistence.zig",
+    srcs = ["abi.zig"],
+    zigopts = [
+        "-fno-entry",
+        "-rdynamic",
+        "-fsingle-threaded",
+    ],
+    deps = [
+        "//src/fs",
+        "//src/persistence",
+        "//src/plumbing",
+        "//src/plumbing/object",
+        "//src/repo",
+        "//src/storage/memory",
+        "//src/worktree",
+    ],
+)
+
+zig_configure_binary(
+    name = "persistence",
+    actual = ":persistence.wasm",
+    mode = "release_small",
+    target = "//platforms:wasm32_freestanding",
+)
+
+zig_configure_binary(
+    name = "persistence_debug",
+    actual = ":persistence.wasm",
+    mode = "debug",
+    target = "//platforms:wasm32_freestanding",
+)
+
+js_test(
+    name = "persistence_test",
+    data = [
+        ":persistence",
+        "persistence_test.mjs",
+    ],
+    entry_point = "persistence_test.mjs",
+    env = {
+        "GITZ_WASM": "$(rlocationpath :persistence)",
+    },
+)
+
+js_test(
+    name = "persistence_debug_test",
+    data = [
+        ":persistence_debug",
+        "persistence_test.mjs",
+    ],
+    entry_point = "persistence_test.mjs",
+    env = {
+        "GITZ_WASM": "$(rlocationpath :persistence_debug)",
+    },
+)
+
+zig_binary(
+    name = "engine_smoke.wasm",
+    main = "engine_smoke.zig",
+    srcs = ["abi.zig"],
+    zigopts = [
+        "-fno-entry",
+        "-rdynamic",
+        "-fsingle-threaded",
+    ],
+    deps = [
+        "//src/fs",
+        "//src/persistence",
+        "//src/plumbing",
+        "//src/plumbing/object",
+        "//src/remote",
+        "//src/repo",
+        "//src/storage/memory",
+        "//src/worktree",
+    ],
+)
+
+zig_configure_binary(
+    name = "engine_smoke",
+    actual = ":engine_smoke.wasm",
+    mode = "release_small",
+    target = "//platforms:wasm32_freestanding",
+)
+
+zig_configure_binary(
+    name = "engine_smoke_debug",
+    actual = ":engine_smoke.wasm",
+    mode = "debug",
+    target = "//platforms:wasm32_freestanding",
+)
+
+js_test(
+    name = "engine_smoke_test",
+    data = [
+        ":engine_smoke",
+        "engine_smoke_test.mjs",
+    ],
+    entry_point = "engine_smoke_test.mjs",
+    env = {
+        "GITZ_WASM": "$(rlocationpath :engine_smoke)",
+    },
+)
+
+js_test(
+    name = "engine_smoke_debug_test",
+    data = [
+        ":engine_smoke_debug",
+        "engine_smoke_test.mjs",
+    ],
+    entry_point = "engine_smoke_test.mjs",
+    env = {
+        "GITZ_WASM": "$(rlocationpath :engine_smoke_debug)",
+    },
+)
+
+js_test(
+    name = "local_repo_test",
+    data = [
+        ":local_repo",
+        "local_repo_test.mjs",
+    ],
+    entry_point = "local_repo_test.mjs",
+    env = {
+        "GITZ_WASM": "$(rlocationpath :local_repo)",
+    },
+)
+
+js_test(
+    name = "local_repo_debug_test",
+    data = [
+        ":local_repo_debug",
+        "local_repo_test.mjs",
+    ],
+    entry_point = "local_repo_test.mjs",
+    env = {
+        "GITZ_WASM": "$(rlocationpath :local_repo_debug)",
+    },
+)
+
+js_test(
+    name = "probe_test",
+    data = [
+        ":probe",
+        "probe_test.mjs",
+    ],
+    entry_point = "probe_test.mjs",
+    env = {
+        "GITZ_WASM": "$(rlocationpath :probe)",
+    },
+)

@@ -14,16 +14,15 @@ const index_fmt = @import("index");
 const gitignore = @import("gitignore");
 const pathutil = @import("pathutil");
 
-const worktree_mod = @import("worktree.zig");
 const options_mod = @import("options.zig");
 const platform_mod = @import("platform.zig");
 const error_mod = @import("error.zig");
 const status_types = @import("status_types.zig");
 const status_mod = @import("status.zig");
 const util = @import("util.zig");
+const worktree_mod = @import("worktree.zig");
 
 const Allocator = std.mem.Allocator;
-const Worktree = worktree_mod.Worktree;
 const AddOptions = options_mod.AddOptions;
 const Hash = plumbing.Hash;
 const ZeroHash = plumbing.ZeroHash;
@@ -38,12 +37,12 @@ const FileInfo = fs_pkg.FileInfo;
 
 /// go-git `Worktree.Add` — stage `path` (file or directory). Returns blob hash
 /// for a file, or `ZeroHash` when staging a directory.
-pub fn add(w: *Worktree, path: []const u8) !Hash {
+pub fn add(w: anytype, path: []const u8) !Hash {
     return doAdd(w, path, &.{}, false);
 }
 
 /// go-git `Worktree.AddWithOptions`.
-pub fn addWithOptions(w: *Worktree, o: AddOptions) !void {
+pub fn addWithOptions(w: anytype, o: AddOptions) !void {
     try o.validate();
     if (o.all) {
         _ = try doAdd(w, ".", w.excludes, false);
@@ -57,7 +56,7 @@ pub fn addWithOptions(w: *Worktree, o: AddOptions) !void {
 
 /// go-git `Worktree.Remove` — remove `path` from the index and worktree.
 /// Returns the removed blob hash for a file, or `ZeroHash` for a directory.
-pub fn remove(w: *Worktree, path: []const u8) !Hash {
+pub fn remove(w: anytype, path: []const u8) !Hash {
     try pathutil.validTreePath(path);
     const idx = try w.storer.index();
     var h = ZeroHash;
@@ -65,7 +64,7 @@ pub fn remove(w: *Worktree, path: []const u8) !Hash {
     const fi = w.filesystem.lstat(path) catch |err| switch (err) {
         error.NotExist => {
             h = try doRemoveFile(w, idx, path);
-            w.storer.setIndex(idx);
+            try util.setIndex(w.storer, idx);
             return h;
         },
         else => return err,
@@ -77,7 +76,7 @@ pub fn remove(w: *Worktree, path: []const u8) !Hash {
         _ = try doRemoveDirectory(w, idx, path);
         h = ZeroHash;
     }
-    w.storer.setIndex(idx);
+    try util.setIndex(w.storer, idx);
     return h;
 }
 
@@ -86,7 +85,7 @@ pub fn remove(w: *Worktree, path: []const u8) !Hash {
 // ---------------------------------------------------------------------------
 
 fn doAdd(
-    w: *Worktree,
+    w: anytype,
     path_in: []const u8,
     ignore_pattern: []const gitignore.Pattern,
     skip_status: bool,
@@ -140,7 +139,7 @@ fn doAdd(
     }
 
     if (!added) return h;
-    w.storer.setIndex(idx);
+    try util.setIndex(w.storer, idx);
     return h;
 }
 
@@ -148,7 +147,7 @@ const AddFileResult = struct { added: bool, hash: Hash };
 
 /// go-git `doAddFile` — create/update blob + index entry, or stage deletion.
 fn doAddFile(
-    w: *Worktree,
+    w: anytype,
     idx: *Index,
     s: ?*Status,
     path: []const u8,
@@ -192,7 +191,7 @@ fn doAddFile(
 /// walk the Mem FS so untracked files under the directory are staged (Status
 /// Empty strategy may omit paths that are not yet in the map).
 fn doAddDirectory(
-    w: *Worktree,
+    w: anytype,
     idx: *Index,
     s: ?*Status,
     directory: []const u8,
@@ -269,7 +268,7 @@ fn isPathInDirectory(path: []const u8, directory: []const u8) bool {
 // ---------------------------------------------------------------------------
 
 /// go-git `copyFileToStorage` — read worktree path into a new blob object.
-pub fn copyFileToStorage(w: *Worktree, path: []const u8) !Hash {
+pub fn copyFileToStorage(w: anytype, path: []const u8) !Hash {
     try pathutil.validTreePath(path);
     const fi = try w.filesystem.lstat(path);
 
@@ -302,7 +301,7 @@ pub fn copyFileToStorage(w: *Worktree, path: []const u8) !Hash {
 }
 
 /// go-git `addOrUpdateFileToIndex`.
-pub fn addOrUpdateFileToIndex(w: *Worktree, idx: *Index, filename: []const u8, h: Hash) !void {
+pub fn addOrUpdateFileToIndex(w: anytype, idx: *Index, filename: []const u8, h: Hash) !void {
     try pathutil.validTreePath(filename);
     const e = idx.entry(filename) catch |err| {
         if (err == index_fmt.Error.EntryNotFound) {
@@ -313,13 +312,13 @@ pub fn addOrUpdateFileToIndex(w: *Worktree, idx: *Index, filename: []const u8, h
     return doUpdateFileToIndex(w, e, filename, h);
 }
 
-fn doAddFileToIndex(w: *Worktree, idx: *Index, filename: []const u8, h: Hash) !void {
+fn doAddFileToIndex(w: anytype, idx: *Index, filename: []const u8, h: Hash) !void {
     try pathutil.validTreePath(filename);
     const e = try idx.add(filename);
     return doUpdateFileToIndex(w, e, filename, h);
 }
 
-fn doUpdateFileToIndex(w: *Worktree, e: *Entry, filename: []const u8, h: Hash) !void {
+fn doUpdateFileToIndex(w: anytype, e: *Entry, filename: []const u8, h: Hash) !void {
     const info = try w.filesystem.lstat(filename);
 
     e.hash = h;
@@ -350,7 +349,7 @@ fn fileModeFromInfo(info: FileInfo) filemode.Error!filemode.FileMode {
 // Remove helpers
 // ---------------------------------------------------------------------------
 
-fn doRemoveDirectory(w: *Worktree, idx: *Index, directory: []const u8) !bool {
+fn doRemoveDirectory(w: anytype, idx: *Index, directory: []const u8) !bool {
     const entries = try w.filesystem.readDir(directory);
     defer w.filesystem.freeReadDir(entries);
 
@@ -378,7 +377,7 @@ fn doRemoveDirectory(w: *Worktree, idx: *Index, directory: []const u8) !bool {
     return removed;
 }
 
-fn removeEmptyDirectory(w: *Worktree, path: []const u8) !void {
+fn removeEmptyDirectory(w: anytype, path: []const u8) !void {
     const entries = w.filesystem.readDir(path) catch |err| {
         if (err == error.NotExist) return;
         return err;
@@ -391,7 +390,7 @@ fn removeEmptyDirectory(w: *Worktree, path: []const u8) !void {
     };
 }
 
-fn doRemoveFile(w: *Worktree, idx: *Index, path: []const u8) !Hash {
+fn doRemoveFile(w: anytype, idx: *Index, path: []const u8) !Hash {
     const hash = try deleteFromIndex(idx, path);
     try deleteFromFilesystem(w, path);
     return hash;
@@ -404,7 +403,7 @@ fn deleteFromIndex(idx: *Index, path: []const u8) !Hash {
     return h;
 }
 
-fn deleteFromFilesystem(w: *Worktree, path: []const u8) !void {
+fn deleteFromFilesystem(w: anytype, path: []const u8) !void {
     w.filesystem.remove(path) catch |err| {
         if (err == error.NotExist) return;
         return err;
@@ -417,7 +416,7 @@ fn deleteFromFilesystem(w: *Worktree, path: []const u8) !void {
 
 /// go-git `Worktree.Move` — rename a file in the worktree and the index.
 /// Directories are not supported.
-pub fn move(w: *Worktree, from: []const u8, to: []const u8) !Hash {
+pub fn move(w: anytype, from: []const u8, to: []const u8) !Hash {
     try pathutil.validTreePath(from);
     try pathutil.validTreePath(to);
     _ = try w.filesystem.lstat(from);
@@ -434,13 +433,13 @@ pub fn move(w: *Worktree, from: []const u8, to: []const u8) !Hash {
     const hash = try deleteFromIndex(idx, from);
     try w.filesystem.rename(from, to);
     try addOrUpdateFileToIndex(w, idx, to, hash);
-    w.storer.setIndex(idx);
+    try util.setIndex(w.storer, idx);
     return hash;
 }
 
 /// go-git `Worktree.RemoveGlob` — remove every index entry matching `pattern`
 /// from the index and worktree. Empty match list is not an error.
-pub fn removeGlob(w: *Worktree, pattern: []const u8) !void {
+pub fn removeGlob(w: anytype, pattern: []const u8) !void {
     const idx = try w.storer.index();
     const entries = try idx.glob(pattern);
     defer w.allocator.free(entries);
@@ -473,13 +472,13 @@ pub fn removeGlob(w: *Worktree, pattern: []const u8) !void {
         }
     }
 
-    w.storer.setIndex(idx);
+    try util.setIndex(w.storer, idx);
 }
 
 /// go-git `Worktree.AddGlob` — stage all paths matching `pattern`.
 /// If the pattern matches a directory, its contents are staged recursively.
 /// Returns `GlobNoMatches` when nothing matches.
-pub fn addGlob(w: *Worktree, pattern: []const u8) !void {
+pub fn addGlob(w: anytype, pattern: []const u8) !void {
     var matches: std.ArrayList([]const u8) = .empty;
     defer {
         for (matches.items) |p| w.allocator.free(p);
@@ -507,11 +506,11 @@ pub fn addGlob(w: *Worktree, pattern: []const u8) !void {
         if (added) save_index = true;
     }
 
-    if (save_index) w.storer.setIndex(idx);
+    if (save_index) try util.setIndex(w.storer, idx);
 }
 
 fn collectGlobMatches(
-    w: *Worktree,
+    w: anytype,
     dir: []const u8,
     pattern: []const u8,
     out: *std.ArrayList([]const u8),
@@ -556,7 +555,7 @@ const cleanToSlash = util.cleanToSlash;
 const joinRel = util.joinRel;
 const matchIgnore = util.matchIgnore;
 
-fn collectFiles(w: *Worktree, dir: []const u8, out: *std.ArrayList([]const u8)) !void {
+fn collectFiles(w: anytype, dir: []const u8, out: *std.ArrayList([]const u8)) !void {
     const entries = w.filesystem.readDir(dir) catch |err| {
         if (err == error.NotExist or err == error.NotDir) return;
         return err;
@@ -577,7 +576,7 @@ fn collectFiles(w: *Worktree, dir: []const u8, out: *std.ArrayList([]const u8)) 
 }
 
 /// Load worktree Status for Add skip-unmodified (go-git always Status unless SkipStatus).
-fn loadStatus(w: *Worktree) !Status {
+fn loadStatus(w: anytype) !Status {
     return try status_mod.status(w, .{});
 }
 

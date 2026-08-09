@@ -13,6 +13,7 @@ const std = @import("std");
 const plumbing = @import("plumbing");
 const cache_pkg = @import("cache");
 const fs_pkg = @import("fs");
+const memory = @import("memory");
 
 const dotgit = @import("dotgit");
 const object_mod = @import("object.zig");
@@ -41,6 +42,9 @@ pub fn OptionsFor(comptime Fs: type) type {
         max_open_descriptors: i32 = 0,
         large_object_threshold: i64 = 0,
         alternates_fs: ?*Fs = null,
+        /// Repository time authority. Callers that need deterministic or
+        /// freestanding behavior supply a fixed or injected clock.
+        clock: memory.Clock = memory.Clock.systemClock(),
     };
 }
 
@@ -83,16 +87,19 @@ pub fn Storage(comptime Fs: type) type {
         module_storage: Self.ModuleStorage,
         /// Per-repo object hash algorithm (SHA-1 / SHA-256).
         hash_algo: Algorithm = .sha1,
+        clock: memory.Clock,
 
         pub const implements_transactioner = false;
         pub const implements_packfile_writer = true;
         pub const implements_delta_object_storer = true;
         /// go-git filesystem `SetIndex` does not take ownership of the argument.
         pub const set_index_takes_ownership = false;
+        pub const set_index_can_fail = true;
         /// `reference()` returns owned name/target strings (free with freeRef pattern).
         pub const reference_returns_owned = true;
 
         pub const ObjectHashIter = ObjectHashIterT;
+        pub const ReferenceIter = reference_mod.ReferenceSliceIter;
         pub const LazyWriter = ObjectStorageT.LazyWriter;
         pub const Index = index_mod.Index;
         pub const Config = config_mod.Config;
@@ -102,11 +109,12 @@ pub fn Storage(comptime Fs: type) type {
         pub const ModuleStorage = struct {
             allocator: Allocator,
             dir: *DotGit,
+            clock: memory.Clock,
             modules: std.StringHashMapUnmanaged(*Self) = .empty,
             chroots: std.ArrayListUnmanaged(*Fs) = .empty,
 
-            pub fn init(allocator: Allocator, dir: *DotGit) Self.ModuleStorage {
-                return .{ .allocator = allocator, .dir = dir };
+            pub fn init(allocator: Allocator, dir: *DotGit, clock: memory.Clock) Self.ModuleStorage {
+                return .{ .allocator = allocator, .dir = dir, .clock = clock };
             }
 
             pub fn deinit(self: *Self.ModuleStorage) void {
@@ -134,7 +142,9 @@ pub fn Storage(comptime Fs: type) type {
                 fs_ptr.* = chrooted;
                 try self.chroots.append(self.allocator, fs_ptr);
 
-                const nested = try newStorageFor(Fs, self.allocator, fs_ptr, null);
+                const nested = try newStorageWithOptionsFor(Fs, self.allocator, fs_ptr, null, .{
+                    .clock = self.clock,
+                });
                 errdefer {
                     nested.deinit();
                     self.allocator.destroy(nested);
@@ -176,6 +186,10 @@ pub fn Storage(comptime Fs: type) type {
 
         pub fn hashAlgo(self: *const Self) Algorithm {
             return self.hash_algo;
+        }
+
+        pub fn now(self: *const Self) memory.Time {
+            return self.clock.now();
         }
 
         pub fn setHashAlgo(self: *Self, algo: Algorithm) void {
@@ -285,6 +299,11 @@ pub fn Storage(comptime Fs: type) type {
             return self.reference_storage.reference(n);
         }
 
+        /// Release an owned reference returned by `reference`.
+        pub fn freeReference(self: *const Self, ref: Reference) void {
+            dotgit.freeRef(self.allocator, ref);
+        }
+
         pub fn iterReferences(self: *Self) reference_mod.Error!reference_mod.ReferenceSliceIter {
             return self.reference_storage.iterReferences();
         }
@@ -301,6 +320,21 @@ pub fn Storage(comptime Fs: type) type {
             return self.reference_storage.packRefs();
         }
 
+        pub fn prepareReferenceUpdates(
+            self: *Self,
+            updates: []const memory.ReferenceUpdate,
+        ) !reference_mod.PreparedReferenceUpdates {
+            return self.reference_storage.prepareUpdates(updates);
+        }
+
+        pub fn commitPreparedReferenceUpdates(
+            self: *Self,
+            updates: []const memory.ReferenceUpdate,
+            prepared: *reference_mod.PreparedReferenceUpdates,
+        ) !void {
+            return self.reference_storage.commitPrepared(updates, prepared);
+        }
+
         // --- ShallowStorer ---
 
         pub fn setShallow(self: *Self, commits: []const Hash) shallow_mod.Error!void {
@@ -315,6 +349,17 @@ pub fn Storage(comptime Fs: type) type {
 
         pub fn setIndex(self: *Self, idx: *index_mod.Index) index_mod.Error!void {
             return self.index_storage.setIndex(idx);
+        }
+
+        /// Worktree write-back variant. It consumes a newly built index while
+        /// preserving an index pointer already cached by this storage.
+        pub fn setIndexOwned(self: *Self, idx: *index_mod.Index) index_mod.Error!void {
+            const was_cached = self.index_storage.cached == idx;
+            try self.index_storage.setIndex(idx);
+            if (!was_cached) {
+                idx.deinit();
+                self.allocator.destroy(idx);
+            }
         }
 
         pub fn index(self: *Self) index_mod.Error!*index_mod.Index {
@@ -447,6 +492,7 @@ pub fn newStorageWithOptionsFor(
         .config_storage = undefined,
         .module_storage = undefined,
         .hash_algo = .sha1,
+        .clock = ops.clock,
     };
     if (owns_cache) {
         s.cache_storage = ObjectLru.initDefault(allocator);
@@ -466,6 +512,6 @@ pub fn newStorageWithOptionsFor(
     s.index_storage = IndexStorageT.init(allocator, dir);
     s.shallow_storage = ShallowStorageT.init(allocator, dir);
     s.config_storage = ConfigStorageT.init(allocator, dir);
-    s.module_storage = StorageT.ModuleStorage.init(allocator, dir);
+    s.module_storage = StorageT.ModuleStorage.init(allocator, dir, ops.clock);
     return s;
 }

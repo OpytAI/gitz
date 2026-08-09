@@ -31,6 +31,45 @@ const PushOptions = options_mod.PushOptions;
 const ForceWithLease = options_mod.ForceWithLease;
 const RemoteError = error_mod.Error;
 
+/// Options for reusable wants/haves pack construction.
+pub const PackBuildOptions = struct {
+    /// Use REF deltas instead of OFS deltas. Push selects this from the
+    /// receiver capability set; host-mediated callers can choose explicitly.
+    use_ref_deltas: bool = false,
+};
+
+pub const PackBuildResult = struct {
+    bytes: []u8,
+    object_count: usize,
+
+    pub fn deinit(self: *PackBuildResult, allocator: Allocator) void {
+        allocator.free(self.bytes);
+        self.* = undefined;
+    }
+};
+
+/// Build a pack containing objects reachable from `wants` but not `haves`.
+///
+/// This is the transport-independent primitive used by push. The caller owns
+/// the returned bytes and can expose them through a bounded stream ABI.
+pub fn buildPack(
+    allocator: Allocator,
+    sto: anytype,
+    wants: []const Hash,
+    haves: []const Hash,
+    options: PackBuildOptions,
+) !PackBuildResult {
+    const Storage = @TypeOf(sto.*);
+    var adapter = StoreAdapter(Storage){ .inner = sto };
+    const hashes = try revlist.objects(allocator, &adapter, wants, haves);
+    defer allocator.free(hashes);
+
+    return .{
+        .bytes = try encodePack(allocator, sto, hashes, options.use_ref_deltas),
+        .object_count = hashes.len,
+    };
+}
+
 /// go-git `(*Remote).Push`.
 ///
 /// Returns `error.AlreadyUpToDate` when there are no commands to send.
@@ -185,7 +224,7 @@ pub fn push(
 
     var pack_all_delete = all_delete;
     if (!all_delete) {
-        var adapter = MemoryStoreAdapter{ .inner = sto };
+        var adapter = StoreAdapter(memory.Storage){ .inner = sto };
         const hs = try revlist.objects(allocator, &adapter, objects, haves_all.items);
         hashes_to_push = hs;
         if (hs.len == 0) {
@@ -233,27 +272,32 @@ fn receiveAndFinish(
     try updateRemoteReferenceStorage(allocator, sto, config, req);
 }
 
-const MemoryStoreAdapter = struct {
-    inner: *memory.Storage,
-    pub fn encodedObject(self: *MemoryStoreAdapter, t: plumbing.ObjectType, h: Hash) anyerror!*plumbing.MemoryObject {
-        return self.inner.encodedObject(t, h);
-    }
-};
+fn StoreAdapter(comptime Storage: type) type {
+    return struct {
+        const Self = @This();
+        inner: *Storage,
+
+        pub fn encodedObject(self: *Self, t: plumbing.ObjectType, h: Hash) anyerror!*plumbing.MemoryObject {
+            return self.inner.encodedObject(t, h);
+        }
+    };
+}
 
 fn encodePack(
     allocator: Allocator,
-    sto: *memory.Storage,
+    sto: anytype,
     hashes: []const Hash,
     use_ref_deltas: bool,
 ) ![]u8 {
     var aw: std.Io.Writer.Allocating = .init(allocator);
     errdefer aw.deinit();
 
-    var adapter = MemoryStoreAdapter{ .inner = sto };
+    const Storage = @TypeOf(sto.*);
+    var adapter = StoreAdapter(Storage){ .inner = sto };
     var enc = packfile.Encoder.initFrom(
         allocator,
         &aw.writer,
-        MemoryStoreAdapter,
+        StoreAdapter(Storage),
         &adapter,
         use_ref_deltas,
     );

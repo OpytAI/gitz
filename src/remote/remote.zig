@@ -20,58 +20,70 @@ const PushOptions = options_mod.PushOptions;
 
 /// go-git `Remote` — local storer + remote config + optional embedded server.
 ///
-/// Fields are public (borrowed; this type does not own them). When `embedded`
-/// is non-null, list/fetch/push use that in-process server; otherwise the
-/// transport client registry is used (`session.zig`).
-pub const Remote = struct {
-    /// Allocator for list results, `string`, and delegated operations.
-    /// Usually `storer.allocator` (not owned).
-    allocator: Allocator,
-    /// Local object/ref storage (borrowed).
-    storer: *memory.Storage,
-    /// Borrowed remote config (go-git private field `c`).
-    config: *const memory.RemoteConfig,
-    /// In-process server used as client. Null → client registry.
-    embedded: ?*server.Server = null,
+/// Fields are public (borrowed; this type does not own them). A config view
+/// from storage remains valid only until that storage's next config read or
+/// write. When `embedded` is non-null, list/fetch/push use that in-process
+/// server; otherwise the transport client registry is used (`session.zig`).
+/// Config, name, string, and list are backend-generic. The current fetch and
+/// push transport bodies require `memory.Storage`; host-mediated callers use
+/// the pack import and build APIs with any supported repository backend.
+pub fn RemoteFor(comptime Storage: type) type {
+    return struct {
+        const Self = @This();
 
-    /// Remote name (`config.name`).
-    pub fn name(self: *const Remote) []const u8 {
-        return self.config.name;
-    }
+        /// Allocator for list results, `string`, and delegated operations.
+        /// Usually `storer.allocator` (not owned).
+        allocator: Allocator,
+        /// Local object/ref storage (borrowed).
+        storer: *Storage,
+        /// Borrowed remote config (go-git private field `c`).
+        config: *const memory.RemoteConfig,
+        /// In-process server used as client. Null → client registry.
+        embedded: ?*server.Server = null,
 
-    /// go-git `Remote.String` — `name\turl (fetch)\nname\turl (push)`.
-    pub fn string(self: *const Remote, allocator: Allocator) Allocator.Error![]u8 {
-        const fetch_url: []const u8 = if (self.config.urls.len > 0) self.config.urls[0] else "";
-        const push_url: []const u8 = if (self.config.urls.len > 0)
-            self.config.urls[self.config.urls.len - 1]
-        else
-            "";
-        return std.fmt.allocPrint(allocator, "{s}\t{s} (fetch)\n{s}\t{s} (push)", .{
-            self.config.name,
-            fetch_url,
-            self.config.name,
-            push_url,
-        });
-    }
+        /// Remote name (`config.name`).
+        pub fn name(self: *const Self) []const u8 {
+            return self.config.name;
+        }
 
-    /// go-git `Remote.List`. Caller frees with `freeReferences`.
-    pub fn list(self: *const Remote, opts: ListOptions) ![]Reference {
-        return list_mod.list(self.allocator, self.config, self.embedded, opts);
-    }
+        /// go-git `Remote.String` — `name\turl (fetch)\nname\turl (push)`.
+        pub fn string(self: *const Self, allocator: Allocator) Allocator.Error![]u8 {
+            const fetch_url: []const u8 = if (self.config.urls.len > 0) self.config.urls[0] else "";
+            const push_url: []const u8 = if (self.config.urls.len > 0)
+                self.config.urls[self.config.urls.len - 1]
+            else
+                "";
+            return std.fmt.allocPrint(allocator, "{s}\t{s} (fetch)\n{s}\t{s} (push)", .{
+                self.config.name,
+                fetch_url,
+                self.config.name,
+                push_url,
+            });
+        }
 
-    /// go-git `Remote.Fetch`. Returns `error.AlreadyUpToDate` when noop.
-    pub fn fetch(self: *Remote, opts: *FetchOptions) !void {
-        return fetch_mod.fetch(self.allocator, self.storer, self.config, self.embedded, opts);
-    }
+        /// go-git `Remote.List`. Caller frees with `freeReferences`.
+        pub fn list(self: *const Self, opts: ListOptions) ![]Reference {
+            return list_mod.list(self.allocator, self.config, self.embedded, opts);
+        }
 
-    /// go-git `Remote.Push`. Returns `error.AlreadyUpToDate` when noop.
-    pub fn push(self: *Remote, opts: *PushOptions) !void {
-        return push_mod.push(self.allocator, self.storer, self.config, self.embedded, opts);
-    }
-};
+        /// go-git `Remote.Fetch`. Memory-storage transport implementation.
+        /// Returns `error.AlreadyUpToDate` when noop.
+        pub fn fetch(self: *Self, opts: *FetchOptions) !void {
+            return fetch_mod.fetch(self.allocator, self.storer, self.config, self.embedded, opts);
+        }
+
+        /// go-git `Remote.Push`. Memory-storage transport implementation.
+        /// Returns `error.AlreadyUpToDate` when noop.
+        pub fn push(self: *Self, opts: *PushOptions) !void {
+            return push_mod.push(self.allocator, self.storer, self.config, self.embedded, opts);
+        }
+    };
+}
+
+pub const Remote = RemoteFor(memory.Storage);
 
 /// go-git `NewRemote`.
-pub fn newRemote(s: *memory.Storage, c: *const memory.RemoteConfig) Remote {
+pub fn newRemote(s: anytype, c: *const memory.RemoteConfig) RemoteFor(@TypeOf(s.*)) {
     return .{
         .allocator = s.allocator,
         .storer = s,
@@ -82,10 +94,10 @@ pub fn newRemote(s: *memory.Storage, c: *const memory.RemoteConfig) Remote {
 
 /// Like `newRemote`, but bind an in-process server as the client transport.
 pub fn newRemoteEmbedded(
-    s: *memory.Storage,
+    s: anytype,
     c: *const memory.RemoteConfig,
     srv: *server.Server,
-) Remote {
+) RemoteFor(@TypeOf(s.*)) {
     return .{
         .allocator = s.allocator,
         .storer = s,

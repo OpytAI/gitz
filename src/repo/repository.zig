@@ -65,345 +65,382 @@ pub const InitOptions = struct {
     default_branch: ReferenceName = plumbing.master,
 };
 
-/// Git repository (go-git `Repository` subset: storer + optional worktree).
+/// Git repository over a storage and worktree-filesystem backend.
 ///
-/// Does **not** own `storer` or `wt`. Caller allocates and frees them.
-pub const Repository = struct {
-    /// Repository object storage and refs (go-git `Storer`).
-    storer: *memory.Storage,
-    /// Optional worktree filesystem; null means bare (go-git `Repository.wt`).
-    /// Named `wt` so the method `worktree` can match go-git `Repository.Worktree`.
-    wt: ?*fs_pkg.Mem = null,
+/// Does **not** own `storer` or `wt`. Caller allocates and frees them. The
+/// default `Repository` alias retains the memory-backed API.
+pub fn RepositoryFor(comptime Storage: type, comptime Fs: type) type {
+    return struct {
+        const Self = @This();
 
-    // -----------------------------------------------------------------------
-    // Config
-    // -----------------------------------------------------------------------
+        /// Repository object storage and refs (go-git `Storer`).
+        storer: *Storage,
+        /// Optional worktree filesystem; null means bare (go-git `Repository.wt`).
+        /// Named `wt` so the method `worktree` can match go-git `Repository.Worktree`.
+        wt: ?*Fs = null,
 
-    /// Activate this repository's object format for process-wide wire codecs.
-    pub fn activateFormat(self: *const Repository) void {
-        self.storer.activateFormat();
-    }
+        // -----------------------------------------------------------------------
+        // Config
+        // -----------------------------------------------------------------------
 
-    /// go-git `Repository.Config` — return repository config from the storer.
-    pub fn config(self: *Repository) Allocator.Error!*Config {
-        return self.storer.config();
-    }
-
-    /// go-git `Repository.SetConfig` — write repository config via the storer.
-    /// Takes ownership of `cfg` on success (memory.ConfigStorage contract).
-    pub fn setConfig(self: *Repository, cfg: *Config) (Allocator.Error || memory.ConfigError)!void {
-        return self.storer.setConfig(cfg);
-    }
-
-    /// go-git `Repository.ConfigScoped` — local storer config merged with
-    /// requested scope and lower (system ⊂ global ⊂ local).
-    ///
-    /// Returns a **heap copy** of the local config with missing remotes/branches
-    /// filled from system then global, and `is_bare` filled from higher scopes
-    /// only when local is still false (mergo zero-value rule). Caller owns the
-    /// pointer (`deinit` + `destroy`). Do not pass the result to `setConfig`.
-    ///
-    /// `io` / `environ` feed `gitconfig.loadConfig` (Zig 0.16 host paths).
-    pub fn configScoped(
-        self: *Repository,
-        allocator: Allocator,
-        scope: gitconfig.Scope,
-        io: std.Io,
-        environ: std.process.Environ,
-    ) ! *Config {
-        return configScopedFromLocal(try self.config(), allocator, scope, io, environ);
-    }
-
-    // -----------------------------------------------------------------------
-    // References
-    // -----------------------------------------------------------------------
-
-    /// go-git `Repository.Head` — resolve HEAD to a hash reference.
-    pub fn head(self: *const Repository) !Reference {
-        return storer.resolveReference(self.storer, plumbing.HEAD);
-    }
-
-    /// go-git `Repository.Reference`.
-    /// When `resolved` is true, symbolic refs are resolved to a hash ref.
-    pub fn reference(self: *const Repository, name: ReferenceName, resolved: bool) !Reference {
-        if (resolved) return storer.resolveReference(self.storer, name);
-        return self.storer.reference(name);
-    }
-
-    /// go-git `Repository.References` — unsorted iterator over all references.
-    pub fn references(self: *const Repository) Allocator.Error!memory.ReferenceSliceIter {
-        return self.storer.iterReferences();
-    }
-
-    // -----------------------------------------------------------------------
-    // Worktree (go-git Repository.Worktree + bare probe)
-    // -----------------------------------------------------------------------
-
-    /// Whether this repository has a worktree filesystem attached.
-    pub fn isBare(self: *const Repository) bool {
-        return self.wt == null;
-    }
-
-    /// go-git `setIsBare` — set `core.bare` in config.
-    pub fn setIsBare(self: *Repository, bare: bool) (Allocator.Error || memory.ConfigError)!void {
-        const cfg = try self.config();
-        cfg.is_bare = bare;
-        try self.setConfig(cfg);
-    }
-
-    /// Attached worktree filesystem only, or `error.IsBareRepository`.
-    /// Prefer `worktree` when you need the full `worktree.Worktree` handle.
-    pub fn worktreeFs(self: *Repository) error{IsBareRepository}!*fs_pkg.Mem {
-        return self.wt orelse error.IsBareRepository;
-    }
-
-    /// go-git `Repository.Worktree` — Worktree handle over the attached FS.
-    ///
-    /// Returns `error.IsBareRepository` when no worktree filesystem is attached.
-    pub fn worktree(self: *Repository) Error!worktree_pkg.Worktree {
-        const fs: *fs_pkg.Mem = self.wt orelse return error.IsBareRepository;
-        return worktree_pkg.newWorktree(self.storer.allocator, self.storer, fs);
-    }
-
-    /// Like `worktree` but binds an in-process server for Pull tests.
-    pub fn worktreeEmbedded(self: *Repository, srv: *server_pkg.Server) Error!worktree_pkg.Worktree {
-        const fs: *fs_pkg.Mem = self.wt orelse return error.IsBareRepository;
-        return worktree_pkg.newWorktreeEmbedded(self.storer.allocator, self.storer, fs, srv);
-    }
-
-    // -----------------------------------------------------------------------
-    // Remotes / config branches / tags
-    // -----------------------------------------------------------------------
-
-    pub fn remote(self: *Repository, name: []const u8) !Remote {
-        return crud.remote(self.storer, name);
-    }
-    pub fn remotes(self: *Repository, allocator: Allocator) ![]Remote {
-        return crud.remotes(self.storer, allocator);
-    }
-    pub fn createRemote(self: *Repository, name: []const u8, urls: []const []const u8) !Remote {
-        return crud.createRemote(self.storer, name, urls);
-    }
-    pub fn createRemoteFull(
-        self: *Repository,
-        name: []const u8,
-        urls: []const []const u8,
-        fetch_specs: []const []const u8,
-        mirror: bool,
-    ) !Remote {
-        return crud.createRemoteFull(self.storer, name, urls, fetch_specs, mirror);
-    }
-    pub fn createRemoteAnonymous(
-        self: *Repository,
-        allocator: Allocator,
-        urls: []const []const u8,
-    ) !AnonymousRemote {
-        return crud.createRemoteAnonymous(self.storer, allocator, urls);
-    }
-    pub fn deleteRemote(self: *Repository, name: []const u8) !void {
-        return crud.deleteRemote(self.storer, name);
-    }
-
-    /// go-git `Repository.Fetch` — resolve remote by `o.remote_name`, then fetch.
-    pub fn fetch(self: *Repository, o: *FetchOptions) !void {
-        try o.validate();
-        var rem = try self.remote(o.remote_name);
-        return rem.fetch(o);
-    }
-    /// go-git `Repository.FetchContext` via cooperative transport context.
-    pub fn fetchContext(
-        self: *Repository,
-        context: transport.OperationContext,
-        o: *const FetchOptions,
-    ) !void {
-        var opts = o.*;
-        opts.transport.operation_context = context;
-        return self.fetch(&opts);
-    }
-
-    /// go-git `Repository.Push` — resolve remote by `o.remote_name`, then push.
-    pub fn push(self: *Repository, o: *PushOptions) !void {
-        try o.validate();
-        var rem = try self.remote(o.remote_name);
-        return rem.push(o);
-    }
-    /// go-git `Repository.PushContext` via cooperative transport context.
-    pub fn pushContext(
-        self: *Repository,
-        context: transport.OperationContext,
-        o: *const PushOptions,
-    ) !void {
-        var opts = o.*;
-        opts.transport.operation_context = context;
-        return self.push(&opts);
-    }
-    pub fn branch(self: *Repository, name: []const u8) !*const memory.BranchConfig {
-        return crud.branch(self.storer, name);
-    }
-    pub fn createBranch(
-        self: *Repository,
-        name: []const u8,
-        remote_name: []const u8,
-        merge_ref: []const u8,
-    ) !void {
-        return crud.createBranch(self.storer, name, remote_name, merge_ref);
-    }
-    pub fn deleteBranch(self: *Repository, name: []const u8) !void {
-        return crud.deleteBranch(self.storer, name);
-    }
-    pub fn tag(self: *Repository, name: []const u8) !Reference {
-        return crud.tag(self.storer, name);
-    }
-    pub fn createTag(
-        self: *Repository,
-        name: []const u8,
-        hash: plumbing.Hash,
-        opts: ?CreateTagOptions,
-    ) !Reference {
-        return crud.createTag(self.storer, name, hash, opts);
-    }
-    pub fn deleteTag(self: *Repository, name: []const u8) !void {
-        return crud.deleteTag(self.storer, name);
-    }
-
-    // -----------------------------------------------------------------------
-    // Object getters, Log, ResolveRevision, ref filters
-    // -----------------------------------------------------------------------
-
-    pub fn commitObject(self: *Repository, h: plumbing.Hash) !*objpkg.Commit {
-        return facade.commitObject(self.storer, h);
-    }
-    pub fn blobObject(self: *Repository, h: plumbing.Hash) !objpkg.Blob {
-        return facade.blobObject(self.storer, h);
-    }
-    pub fn treeObject(self: *Repository, h: plumbing.Hash) !*objpkg.Tree {
-        return facade.treeObject(self.storer, h);
-    }
-    pub fn tagObject(self: *Repository, h: plumbing.Hash) !objpkg.Tag {
-        return facade.tagObject(self.storer, h);
-    }
-    pub fn object(self: *Repository, t: plumbing.ObjectType, h: plumbing.Hash) !objpkg.Object {
-        return facade.object(self.storer, t, h);
-    }
-    pub fn commitObjects(self: *Repository) !facade.EncodedCommitIter {
-        return facade.commitObjects(self.storer);
-    }
-    pub fn blobObjects(self: *Repository) !facade.BlobObjectsIter {
-        return facade.blobObjects(self.storer);
-    }
-    pub fn treeObjects(self: *Repository) !objpkg.TreeIter {
-        return facade.treeObjects(self.storer);
-    }
-    pub fn tagObjects(self: *Repository) !facade.TagObjectsIter {
-        return facade.tagObjects(self.storer);
-    }
-    pub fn objects(self: *Repository) !facade.ObjectsIter {
-        return facade.objects(self.storer);
-    }
-    pub fn branches(self: *Repository) !facade.FilteredRefIter {
-        return facade.branches(self.storer);
-    }
-    pub fn tags(self: *Repository) !facade.FilteredRefIter {
-        return facade.tags(self.storer);
-    }
-    pub fn notes(self: *Repository) !facade.FilteredRefIter {
-        return facade.notes(self.storer);
-    }
-    pub fn log(self: *Repository, opts: LogOptions) !LogResult {
-        return log_mod.log(self.storer, opts);
-    }
-    pub fn resolveRevision(self: *Repository, rev: []const u8) !plumbing.Hash {
-        return facade.resolveRevision(self.storer, rev);
-    }
-
-    /// go-git `Repository.Grep`. Searches commit trees and works for bare repos.
-    pub fn grep(
-        self: *Repository,
-        allocator: Allocator,
-        opts: worktree_pkg.GrepOptions,
-    ) ![]worktree_pkg.GrepResult {
-        return worktree_pkg.grepRepository(allocator, self.storer, opts);
-    }
-
-    /// Repository method form of blame for callers that have a commit hash.
-    pub fn blame(
-        self: *Repository,
-        allocator: Allocator,
-        commit_hash: Hash,
-        path: []const u8,
-    ) !BlameResult {
-        const c = try objpkg.getCommit(allocator, self.storer, commit_hash);
-        defer {
-            c.deinit();
-            allocator.destroy(c);
-        }
-        return blame_pkg.blame(allocator, c, path);
-    }
-
-    /// go-git `Repository.DeleteObject` method form.
-    pub fn deleteObject(self: *Repository, hash: Hash) !void {
-        return prune_pkg.deleteObject(self.storer, hash);
-    }
-
-    /// go-git `Repository.Prune` method form.
-    pub fn prune(self: *Repository, allocator: Allocator, opts: PruneOptions) !void {
-        return prune_pkg.prune(allocator, self.storer, opts);
-    }
-
-    // -----------------------------------------------------------------------
-    // Repack
-    // -----------------------------------------------------------------------
-
-    /// go-git `Repository.RepackObjects` over memory storage.
-    ///
-    /// Memory implements PackedObjectStorer (empty packs) but not PackfileWriter,
-    /// so this always returns `error.PackfileWriterNotSupported`. Use
-    /// `PlainRepository.repackObjects` / `repackObjectsFs` for filesystem backends.
-    pub fn repackObjects(self: *Repository, allocator: Allocator, cfg: *const RepackConfig) !void {
-        return repack_mod.repackObjects(allocator, self.storer, cfg);
-    }
-
-    // -----------------------------------------------------------------------
-    // Merge (go-git Repository.Merge — FastForwardOnly)
-    // -----------------------------------------------------------------------
-
-    /// go-git `Repository.Merge`. Only `fast_forward_merge` is supported.
-    ///
-    /// When `ref` is a fast-forward of HEAD, updates the current branch tip
-    /// (or detached HEAD) to `ref.hash`.
-    pub fn merge(
-        self: *Repository,
-        allocator: Allocator,
-        ref: plumbing.Reference,
-        opts: MergeOptions,
-    ) !void {
-        if (opts.strategy != .fast_forward_merge) {
-            return error.UnsupportedMergeStrategy;
+        /// Activate this repository's object format for process-wide wire codecs.
+        pub fn activateFormat(self: *const Self) void {
+            self.storer.activateFormat();
         }
 
-        const head_tip = try storer.resolveReference(self.storer, plumbing.HEAD);
-        const shallow_list = self.storer.shallow();
-        const earliest: ?Hash = if (shallow_list.len > 0) shallow_list[0] else null;
-
-        // isFastForward(old=head, new=ref) ⇒ ref is descendant of head.
-        const ff = try remote_mod.isFastForward(
-            allocator,
-            self.storer,
-            head_tip.hash,
-            ref.hash,
-            earliest,
-        );
-        if (!ff) return error.FastForwardMergeNotPossible;
-
-        // Update current branch tip (symbolic HEAD → branch name) or detached HEAD.
-        var tip_name = plumbing.HEAD;
-        const head_sym = try self.storer.reference(plumbing.HEAD);
-        if (head_sym.type == .symbolic) {
-            tip_name = head_sym.target;
+        /// go-git `Repository.Config` — return repository config from the storer.
+        pub fn config(self: *Self) !*Config {
+            return self.storer.config();
         }
-        try self.storer.setReference(plumbing.Reference.newHashReference(tip_name, ref.hash));
+
+        /// go-git `Repository.SetConfig` — write repository config via the storer.
+        /// Takes ownership of `cfg` on success (memory.ConfigStorage contract).
+        pub fn setConfig(self: *Self, cfg: *Config) !void {
+            return self.storer.setConfig(cfg);
+        }
+
+        /// go-git `Repository.ConfigScoped` — local storer config merged with
+        /// requested scope and lower (system ⊂ global ⊂ local).
+        ///
+        /// Returns a **heap copy** of the local config with missing remotes/branches
+        /// filled from system then global, and `is_bare` filled from higher scopes
+        /// only when local is still false (mergo zero-value rule). Caller owns the
+        /// pointer (`deinit` + `destroy`). Do not pass the result to `setConfig`.
+        ///
+        /// `io` / `environ` feed `gitconfig.loadConfig` (Zig 0.16 host paths).
+        pub fn configScoped(
+            self: *Self,
+            allocator: Allocator,
+            scope: gitconfig.Scope,
+            io: std.Io,
+            environ: std.process.Environ,
+        ) !*Config {
+            return configScopedFromLocal(try self.config(), allocator, scope, io, environ);
+        }
+
+        // -----------------------------------------------------------------------
+        // References
+        // -----------------------------------------------------------------------
+
+        /// go-git `Repository.Head` — resolve HEAD to a hash reference.
+        pub fn head(self: *const Self) !Reference {
+            return resolveBackendReference(self.storer, plumbing.HEAD);
+        }
+
+        /// go-git `Repository.Reference`.
+        /// When `resolved` is true, symbolic refs are resolved to a hash ref.
+        pub fn reference(self: *const Self, name: ReferenceName, resolved: bool) !Reference {
+            if (resolved) return resolveBackendReference(self.storer, name);
+            return self.storer.reference(name);
+        }
+
+        /// Release a reference returned by `head` or `reference`.
+        pub fn freeReference(self: *const Self, ref: Reference) void {
+            self.storer.freeReference(ref);
+        }
+
+        /// go-git `Repository.References` — unsorted iterator over all references.
+        pub fn references(self: *const Self) !Storage.ReferenceIter {
+            return self.storer.iterReferences();
+        }
+
+        // -----------------------------------------------------------------------
+        // Worktree (go-git Repository.Worktree + bare probe)
+        // -----------------------------------------------------------------------
+
+        /// Whether this repository has a worktree filesystem attached.
+        pub fn isBare(self: *const Self) bool {
+            return self.wt == null;
+        }
+
+        /// go-git `setIsBare` — set `core.bare` in config.
+        pub fn setIsBare(self: *Self, bare: bool) !void {
+            const cfg = try self.config();
+            cfg.is_bare = bare;
+            try self.setConfig(cfg);
+        }
+
+        /// Attached worktree filesystem only, or `error.IsBareRepository`.
+        /// Prefer `worktree` when you need the full `worktree.Worktree` handle.
+        pub fn worktreeFs(self: *Self) error{IsBareRepository}!*Fs {
+            return self.wt orelse error.IsBareRepository;
+        }
+
+        /// go-git `Repository.Worktree` — Worktree handle over the attached FS.
+        ///
+        /// Returns `error.IsBareRepository` when no worktree filesystem is attached.
+        pub fn worktree(self: *Self) !worktree_pkg.WorktreeFor(Storage, Fs) {
+            const fs: *Fs = self.wt orelse return error.IsBareRepository;
+            return worktree_pkg.newWorktreeFor(Storage, Fs, self.storer.allocator, self.storer, fs);
+        }
+
+        /// Like `worktree` but binds an in-process server for Pull tests.
+        pub fn worktreeEmbedded(self: *Self, srv: *server_pkg.Server) !worktree_pkg.WorktreeFor(Storage, Fs) {
+            const fs: *Fs = self.wt orelse return error.IsBareRepository;
+            var result = worktree_pkg.newWorktreeFor(Storage, Fs, self.storer.allocator, self.storer, fs);
+            result.embedded = srv;
+            return result;
+        }
+
+        // -----------------------------------------------------------------------
+        // Remotes / config branches / tags
+        // -----------------------------------------------------------------------
+
+        pub fn remote(self: *Self, name: []const u8) !remote_mod.RemoteFor(Storage) {
+            return crud.remote(self.storer, name);
+        }
+        pub fn remotes(self: *Self, allocator: Allocator) ![]remote_mod.RemoteFor(Storage) {
+            return crud.remotes(self.storer, allocator);
+        }
+        pub fn createRemote(self: *Self, name: []const u8, urls: []const []const u8) !remote_mod.RemoteFor(Storage) {
+            return crud.createRemote(self.storer, name, urls);
+        }
+        pub fn createRemoteFull(
+            self: *Self,
+            name: []const u8,
+            urls: []const []const u8,
+            fetch_specs: []const []const u8,
+            mirror: bool,
+        ) !remote_mod.RemoteFor(Storage) {
+            return crud.createRemoteFull(self.storer, name, urls, fetch_specs, mirror);
+        }
+        pub fn createRemoteAnonymous(
+            self: *Self,
+            allocator: Allocator,
+            urls: []const []const u8,
+        ) !crud.AnonymousRemoteFor(Storage) {
+            return crud.createRemoteAnonymous(self.storer, allocator, urls);
+        }
+        pub fn deleteRemote(self: *Self, name: []const u8) !void {
+            return crud.deleteRemote(self.storer, name);
+        }
+
+        /// go-git `Repository.Fetch` — resolve remote by `o.remote_name`, then fetch.
+        pub fn fetch(self: *Self, o: *FetchOptions) !void {
+            try o.validate();
+            var rem = try self.remote(o.remote_name);
+            return rem.fetch(o);
+        }
+        /// go-git `Repository.FetchContext` via cooperative transport context.
+        pub fn fetchContext(
+            self: *Self,
+            context: transport.OperationContext,
+            o: *const FetchOptions,
+        ) !void {
+            var opts = o.*;
+            opts.transport.operation_context = context;
+            return self.fetch(&opts);
+        }
+
+        /// go-git `Repository.Push` — resolve remote by `o.remote_name`, then push.
+        pub fn push(self: *Self, o: *PushOptions) !void {
+            try o.validate();
+            var rem = try self.remote(o.remote_name);
+            return rem.push(o);
+        }
+        /// go-git `Repository.PushContext` via cooperative transport context.
+        pub fn pushContext(
+            self: *Self,
+            context: transport.OperationContext,
+            o: *const PushOptions,
+        ) !void {
+            var opts = o.*;
+            opts.transport.operation_context = context;
+            return self.push(&opts);
+        }
+        pub fn branch(self: *Self, name: []const u8) !*const memory.BranchConfig {
+            return crud.branch(self.storer, name);
+        }
+        pub fn createBranch(
+            self: *Self,
+            name: []const u8,
+            remote_name: []const u8,
+            merge_ref: []const u8,
+        ) !void {
+            return crud.createBranch(self.storer, name, remote_name, merge_ref);
+        }
+        pub fn deleteBranch(self: *Self, name: []const u8) !void {
+            return crud.deleteBranch(self.storer, name);
+        }
+        pub fn tag(self: *Self, name: []const u8) !Reference {
+            return crud.tag(self.storer, name);
+        }
+        pub fn createTag(
+            self: *Self,
+            name: []const u8,
+            hash: plumbing.Hash,
+            opts: ?CreateTagOptions,
+        ) !Reference {
+            return crud.createTag(self.storer, name, hash, opts);
+        }
+        pub fn deleteTag(self: *Self, name: []const u8) !void {
+            return crud.deleteTag(self.storer, name);
+        }
+
+        // -----------------------------------------------------------------------
+        // Object getters, Log, ResolveRevision, ref filters
+        // -----------------------------------------------------------------------
+
+        pub fn commitObject(self: *Self, h: plumbing.Hash) !*objpkg.Commit {
+            return facade.commitObject(self.storer, h);
+        }
+        pub fn blobObject(self: *Self, h: plumbing.Hash) !objpkg.Blob {
+            return facade.blobObject(self.storer, h);
+        }
+        pub fn treeObject(self: *Self, h: plumbing.Hash) !*objpkg.Tree {
+            return facade.treeObject(self.storer, h);
+        }
+        pub fn tagObject(self: *Self, h: plumbing.Hash) !objpkg.Tag {
+            return facade.tagObject(self.storer, h);
+        }
+        pub fn object(self: *Self, t: plumbing.ObjectType, h: plumbing.Hash) !objpkg.Object {
+            return facade.object(self.storer, t, h);
+        }
+        pub fn commitObjects(self: *Self) !facade.EncodedCommitIterFor(Storage) {
+            return facade.commitObjects(self.storer);
+        }
+        pub fn blobObjects(self: *Self) !facade.BlobObjectsIterFor(Storage) {
+            return facade.blobObjects(self.storer);
+        }
+        pub fn treeObjects(self: *Self) !objpkg.TreeIter {
+            return facade.treeObjects(self.storer);
+        }
+        pub fn tagObjects(self: *Self) !facade.TagObjectsIterFor(Storage) {
+            return facade.tagObjects(self.storer);
+        }
+        pub fn objects(self: *Self) !facade.ObjectsIterFor(Storage) {
+            return facade.objects(self.storer);
+        }
+        pub fn branches(self: *Self) !facade.FilteredRefIterFor(Storage.ReferenceIter) {
+            return facade.branches(self.storer);
+        }
+        pub fn tags(self: *Self) !facade.FilteredRefIterFor(Storage.ReferenceIter) {
+            return facade.tags(self.storer);
+        }
+        pub fn notes(self: *Self) !facade.FilteredRefIterFor(Storage.ReferenceIter) {
+            return facade.notes(self.storer);
+        }
+        pub fn log(self: *Self, opts: LogOptions) !LogResult {
+            return log_mod.log(self.storer, opts);
+        }
+        pub fn resolveRevision(self: *Self, rev: []const u8) !plumbing.Hash {
+            return facade.resolveRevision(self.storer, rev);
+        }
+
+        /// go-git `Self.Grep`. Searches commit trees and works for bare repos.
+        pub fn grep(
+            self: *Self,
+            allocator: Allocator,
+            opts: worktree_pkg.GrepOptions,
+        ) ![]worktree_pkg.GrepResult {
+            return worktree_pkg.grepRepository(allocator, self.storer, opts);
+        }
+
+        /// Self method form of blame for callers that have a commit hash.
+        pub fn blame(
+            self: *Self,
+            allocator: Allocator,
+            commit_hash: Hash,
+            path: []const u8,
+        ) !BlameResult {
+            const c = try objpkg.getCommit(allocator, self.storer, commit_hash);
+            defer {
+                c.deinit();
+                allocator.destroy(c);
+            }
+            return blame_pkg.blame(allocator, c, path);
+        }
+
+        /// go-git `Self.DeleteObject` method form.
+        pub fn deleteObject(self: *Self, hash: Hash) !void {
+            return prune_pkg.deleteObject(self.storer, hash);
+        }
+
+        /// go-git `Self.Prune` method form.
+        pub fn prune(self: *Self, allocator: Allocator, opts: PruneOptions) !void {
+            return prune_pkg.prune(allocator, self.storer, opts);
+        }
+
+        // -----------------------------------------------------------------------
+        // Repack
+        // -----------------------------------------------------------------------
+
+        /// go-git `Self.RepackObjects` over memory storage.
+        ///
+        /// Memory implements PackedObjectStorer (empty packs) but not PackfileWriter,
+        /// so this always returns `error.PackfileWriterNotSupported`. Use
+        /// `PlainRepository.repackObjects` / `repackObjectsFs` for filesystem backends.
+        pub fn repackObjects(self: *Self, allocator: Allocator, cfg: *const RepackConfig) !void {
+            return repack_mod.repackObjects(allocator, self.storer, cfg);
+        }
+
+        // -----------------------------------------------------------------------
+        // Merge (go-git Self.Merge — FastForwardOnly)
+        // -----------------------------------------------------------------------
+
+        /// go-git `Self.Merge`. Only `fast_forward_merge` is supported.
+        ///
+        /// When `ref` is a fast-forward of HEAD, updates the current branch tip
+        /// (or detached HEAD) to `ref.hash`.
+        pub fn merge(
+            self: *Self,
+            allocator: Allocator,
+            ref: plumbing.Reference,
+            opts: MergeOptions,
+        ) !void {
+            if (opts.strategy != .fast_forward_merge) {
+                return error.UnsupportedMergeStrategy;
+            }
+
+            const head_tip = try resolveBackendReference(self.storer, plumbing.HEAD);
+            defer self.storer.freeReference(head_tip);
+            const shallow_list = self.storer.shallow();
+            const earliest: ?Hash = if (shallow_list.len > 0) shallow_list[0] else null;
+
+            // isFastForward(old=head, new=ref) ⇒ ref is descendant of head.
+            const ff = try remote_mod.isFastForward(
+                allocator,
+                self.storer,
+                head_tip.hash,
+                ref.hash,
+                earliest,
+            );
+            if (!ff) return error.FastForwardMergeNotPossible;
+
+            // Update current branch tip (symbolic HEAD → branch name) or detached HEAD.
+            var tip_name = plumbing.HEAD;
+            const head_sym = try self.storer.reference(plumbing.HEAD);
+            defer self.storer.freeReference(head_sym);
+            if (head_sym.type == .symbolic) {
+                tip_name = head_sym.target;
+            }
+            try self.storer.setReference(plumbing.Reference.newHashReference(tip_name, ref.hash));
+        }
+    };
+}
+
+pub const Repository = RepositoryFor(memory.Storage, fs_pkg.Mem);
+
+/// Resolve references while releasing owned symbolic hops for filesystem
+/// backends. The caller releases the returned reference with `freeReference`.
+fn resolveBackendReference(storage: anytype, name: ReferenceName) !Reference {
+    var current = try storage.reference(name);
+    var recursion: usize = 0;
+    while (current.type == .symbolic) {
+        if (recursion > storer.MaxResolveRecursion) {
+            storage.freeReference(current);
+            return error.MaxResolveRecursion;
+        }
+        const next = storage.reference(current.target) catch |err| {
+            storage.freeReference(current);
+            return err;
+        };
+        storage.freeReference(current);
+        current = next;
+        recursion += 1;
     }
-};
+    return current;
+}
 
 /// go-git `MergeStrategy`.
 pub const MergeStrategy = enum(i8) {
@@ -423,10 +460,17 @@ pub const MergeOptions = struct {
 
 /// go-git `newRepository`.
 pub fn newRepository(s: *memory.Storage, worktree: ?*fs_pkg.Mem) Repository {
-    return .{
-        .storer = s,
-        .wt = worktree,
-    };
+    return newRepositoryFor(memory.Storage, fs_pkg.Mem, s, worktree);
+}
+
+/// Construct a repository over any compatible storage and filesystem pair.
+pub fn newRepositoryFor(
+    comptime Storage: type,
+    comptime Fs: type,
+    s: *Storage,
+    worktree: ?*Fs,
+) RepositoryFor(Storage, Fs) {
+    return .{ .storer = s, .wt = worktree };
 }
 
 /// go-git `Init` — create an empty repository. `worktree == null` → bare.
@@ -536,7 +580,7 @@ pub fn configScopedFromLocal(
     scope: gitconfig.Scope,
     io: std.Io,
     environ: std.process.Environ,
-) ! *Config {
+) !*Config {
     const merged = try cloneMemoryConfig(allocator, local);
     errdefer {
         merged.deinit();
@@ -935,7 +979,8 @@ test "mergeGitconfigIntoMemory fills missing remotes branches is_bare" {
     defer local.deinit();
     try local.putRemote("origin", &[_][]const u8{"http://local/r.git"});
 
-    var gc = try gitconfig.readConfig(allocator,
+    var gc = try gitconfig.readConfig(
+        allocator,
         "[core]\n" ++
             "\tbare = true\n" ++
             "[remote \"origin\"]\n" ++

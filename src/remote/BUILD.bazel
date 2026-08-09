@@ -9,6 +9,7 @@ _SRCS = [
     "list.zig",
     "fetch.zig",
     "push.zig",
+    "pack_import.zig",
     "remote.zig",
 ]
 
@@ -35,6 +36,20 @@ zig_library(
     import_name = "remote",
     visibility = ["//visibility:public"],
     deps = _DEPS,
+)
+
+zig_library(
+    name = "pack_import_filesystem",
+    main = "filesystem_pack_import.zig",
+    srcs = ["filesystem_pack_import.zig"],
+    import_name = "remote_pack_import_filesystem",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/format/packfile",
+        "//src/storage/filesystem",
+        "//src/storage/memory",
+    ],
 )
 
 zig_test(

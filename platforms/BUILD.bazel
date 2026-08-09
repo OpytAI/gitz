@@ -1,0 +1,28 @@
+load("@rules_zig//zig:toolchain.bzl", "zig_target_toolchain")
+
+package(default_visibility = ["//visibility:public"])
+
+platform(
+    name = "wasm32_freestanding",
+    constraint_values = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+        "@rules_zig//zig/platforms/abi:none",
+    ],
+)
+
+zig_target_toolchain(
+    name = "wasm32_freestanding_target",
+    target = "wasm32-freestanding",
+)
+
+toolchain(
+    name = "wasm32_freestanding_toolchain",
+    target_compatible_with = [
+        "@platforms//cpu:wasm32",
+        "@platforms//os:none",
+        "@rules_zig//zig/platforms/abi:none",
+    ],
+    toolchain = ":wasm32_freestanding_target",
+    toolchain_type = "@rules_zig//zig/target:toolchain_type",
+)

@@ -23,6 +23,7 @@ const pathutil = @import("pathutil");
 const worktree_mod = @import("worktree.zig");
 const options_mod = @import("options.zig");
 const error_mod = @import("error.zig");
+const util = @import("util.zig");
 const platform_mod = @import("platform.zig");
 
 const Allocator = std.mem.Allocator;
@@ -36,7 +37,7 @@ const Index = index_fmt.Index;
 const Entry = index_fmt.Entry;
 
 /// go-git `(*Worktree).Reset`.
-pub fn reset(w: *Worktree, o: ResetOptions) !void {
+pub fn reset(w: anytype, o: ResetOptions) !void {
     return resetSparsely(w, o, &.{});
 }
 
@@ -46,7 +47,7 @@ pub fn reset(w: *Worktree, o: ResetOptions) !void {
 /// - Staged + Worktree → hard reset of `files`.
 /// - Worktree only / neither → `RestoreWorktreeOnlyNotSupported`.
 /// - Empty files → `NoRestorePaths`.
-pub fn restore(w: *Worktree, o: options_mod.RestoreOptions) !void {
+pub fn restore(w: anytype, o: options_mod.RestoreOptions) !void {
     try o.validate();
     if (o.staged) {
         const mode: options_mod.ResetMode = if (o.worktree) .hard else .mixed;
@@ -59,7 +60,7 @@ pub fn restore(w: *Worktree, o: options_mod.RestoreOptions) !void {
 }
 
 /// go-git `(*Worktree).ResetSparsely` (`dirs` = sparse checkout prefixes; empty = full).
-pub fn resetSparsely(w: *Worktree, o: ResetOptions, dirs: []const []const u8) !void {
+pub fn resetSparsely(w: anytype, o: ResetOptions, dirs: []const []const u8) !void {
     var opts = o;
     try validate(w, &opts);
 
@@ -104,9 +105,10 @@ pub fn resetSparsely(w: *Worktree, o: ResetOptions, dirs: []const []const u8) !v
 // ---------------------------------------------------------------------------
 
 /// go-git `(*ResetOptions).Validate`.
-fn validate(w: *Worktree, o: *ResetOptions) !void {
+fn validate(w: anytype, o: *ResetOptions) !void {
     if (o.commit.isZero()) {
-        const resolved = try storer.resolveReference(w.storer, plumbing.HEAD);
+        const resolved = try util.resolveReference(w.storer, plumbing.HEAD);
+        defer w.storer.freeReference(resolved);
         o.commit = resolved.hash;
     } else {
         const c = objpkg.getCommit(w.allocator, w.storer, o.commit) catch |err| {
@@ -120,20 +122,22 @@ fn validate(w: *Worktree, o: *ResetOptions) !void {
 }
 
 /// go-git `(*Worktree).setHEADCommit`.
-fn setHEADCommit(w: *Worktree, commit: Hash) !void {
+fn setHEADCommit(w: anytype, commit: Hash) !void {
     const head = try w.storer.reference(plumbing.HEAD);
+    defer w.storer.freeReference(head);
     if (head.type == .hash) {
         try w.storer.setReference(Reference.newHashReference(plumbing.HEAD, commit));
         return;
     }
 
     const branch = try w.storer.reference(head.target);
+    defer w.storer.freeReference(branch);
     if (!branch.name.isBranch()) return error.InvalidReferenceName;
 
     try w.storer.setReference(Reference.newHashReference(branch.name, commit));
 }
 
-fn getTreeFromCommitHash(w: *Worktree, commit: Hash) !*Tree {
+fn getTreeFromCommitHash(w: anytype, commit: Hash) !*Tree {
     const c = try objpkg.getCommit(w.allocator, w.storer, commit);
     defer {
         c.deinit();
@@ -148,7 +152,7 @@ fn getTreeFromCommitHash(w: *Worktree, commit: Hash) !*Tree {
 
 /// go-git `(*Worktree).resetIndex`. Returns paths touched (caller frees each string + slice).
 fn resetIndex(
-    w: *Worktree,
+    w: anytype,
     t: *Tree,
     dirs: []const []const u8,
     files: []const []const u8,
@@ -230,7 +234,7 @@ fn resetIndex(
         idx.skipUnless(dirs);
     }
 
-    w.storer.setIndex(idx);
+    try util.setIndex(w.storer, idx);
     return try removed.toOwnedSlice(gpa);
 }
 
@@ -239,14 +243,15 @@ fn resetIndex(
 // ---------------------------------------------------------------------------
 
 /// go-git `(*Worktree).resetWorktree`.
-fn resetWorktree(w: *Worktree, t: *Tree, files: []const []const u8) !void {
+fn resetWorktree(w: anytype, t: *Tree, files: []const []const u8) !void {
     const gpa = w.allocator;
     const idx = try w.storer.index();
 
     // Paths read through noders — keep roots alive for the whole loop.
     var from_root = try mindex.newRootNode(gpa, idx);
     defer from_root.deinit();
-    const to_root = try mfs.newRootNodeMemWithOptions(gpa, w.filesystem, null, .{ .index = idx });
+    const Fs = @TypeOf(w.filesystem.*);
+    const to_root = try mfs.newRootNodeForWithOptions(Fs, gpa, w.filesystem, null, .{ .index = idx });
     defer to_root.deinit();
 
     var changes = try merkletrie.diffTree(gpa, to_root.noder(), from_root.noder(), diffTreeIsEquals);
@@ -275,12 +280,12 @@ fn resetWorktree(w: *Worktree, t: *Tree, files: []const []const u8) !void {
         try checkoutChange(w, ch, t, idx);
     }
 
-    w.storer.setIndex(idx);
+    try util.setIndex(w.storer, idx);
 }
 
 /// go-git `(*Worktree).checkoutChange` (regular files + delete; submodule → index only).
 fn checkoutChange(
-    w: *Worktree,
+    w: anytype,
     ch: *const merkletrie.Change,
     t: *Tree,
     idx: *Index,
@@ -325,7 +330,7 @@ fn checkoutChange(
 
 /// go-git `(*Worktree).checkoutChangeRegularFile`.
 fn checkoutChangeRegularFile(
-    w: *Worktree,
+    w: anytype,
     name: []const u8,
     act: merkletrie.Action,
     t: *Tree,
@@ -351,7 +356,7 @@ fn checkoutChangeRegularFile(
 }
 
 /// go-git `(*Worktree).checkoutFile` (regular + symlink via Mem FS).
-fn checkoutFile(w: *Worktree, f: *const objpkg.File) !void {
+fn checkoutFile(w: anytype, f: *const objpkg.File) !void {
     try clearBlockingSymlinks(w.filesystem, f.name);
 
     const content = f.blob.readerBytes();
@@ -366,7 +371,7 @@ fn checkoutFile(w: *Worktree, f: *const objpkg.File) !void {
     try writeRegularFile(w.filesystem, f.name, content, f.mode);
 }
 
-fn writeRegularFile(filesystem: *fs_pkg.Mem, path: []const u8, content: []const u8, mode: filemode.FileMode) !void {
+fn writeRegularFile(filesystem: anytype, path: []const u8, content: []const u8, mode: filemode.FileMode) !void {
     try ensureParentDirs(filesystem, path);
     const perm: u32 = if (mode == filemode.Executable) 0o755 else 0o644;
     var file = try filesystem.openFile(path, fs_pkg.O.WRONLY | fs_pkg.O.CREATE | fs_pkg.O.TRUNC, perm);
@@ -374,14 +379,14 @@ fn writeRegularFile(filesystem: *fs_pkg.Mem, path: []const u8, content: []const 
     _ = try file.write(content);
 }
 
-fn ensureParentDirs(filesystem: *fs_pkg.Mem, path: []const u8) !void {
+fn ensureParentDirs(filesystem: anytype, path: []const u8) !void {
     if (std.mem.lastIndexOfScalar(u8, path, '/')) |i| {
         if (i > 0) try filesystem.mkdirAll(path[0..i], 0o755);
     }
 }
 
 /// go-git `clearBlockingSymlinks` subset: remove a final-component symlink if present.
-fn clearBlockingSymlinks(filesystem: *fs_pkg.Mem, name: []const u8) !void {
+fn clearBlockingSymlinks(filesystem: anytype, name: []const u8) !void {
     // Leading components that are symlinks.
     var dirs: std.ArrayList([]const u8) = .empty;
     defer dirs.deinit(filesystem.allocator);
@@ -412,7 +417,7 @@ fn clearBlockingSymlinks(filesystem: *fs_pkg.Mem, name: []const u8) !void {
 }
 
 fn addIndexFromFile(
-    w: *Worktree,
+    w: anytype,
     name: []const u8,
     h: Hash,
     mode: filemode.FileMode,
@@ -431,7 +436,7 @@ fn addIndexFromFile(
 }
 
 /// Fill size / mtime from Mem FS, then platform fillSystemInfo (go-git Sys fields).
-fn fillEntryFromFs(e: *Entry, filesystem: *fs_pkg.Mem, path: []const u8) void {
+fn fillEntryFromFs(e: *Entry, filesystem: anytype, path: []const u8) void {
     const info = filesystem.lstat(path) catch return;
     e.size = @intCast(@min(info.size, std.math.maxInt(u32)));
     e.modified_at = index_fmt.Time.unix(info.mtime_sec, 0);
@@ -439,7 +444,7 @@ fn fillEntryFromFs(e: *Entry, filesystem: *fs_pkg.Mem, path: []const u8) void {
 }
 
 /// go-git `rmFileAndDirsIfEmpty`.
-fn rmFileAndDirsIfEmpty(filesystem: *fs_pkg.Mem, path: []const u8) !void {
+fn rmFileAndDirsIfEmpty(filesystem: anytype, path: []const u8) !void {
     try pathutil.validTreePath(path);
     filesystem.remove(path) catch |err| {
         if (err == error.NotExist) return;
@@ -458,13 +463,14 @@ fn rmFileAndDirsIfEmpty(filesystem: *fs_pkg.Mem, path: []const u8) !void {
 // ---------------------------------------------------------------------------
 
 /// go-git `(*Worktree).containsUnstagedChanges`.
-fn containsUnstagedChanges(w: *Worktree) !bool {
+fn containsUnstagedChanges(w: anytype) !bool {
     const gpa = w.allocator;
     const idx = try w.storer.index();
 
     var from_root = try mindex.newRootNode(gpa, idx);
     defer from_root.deinit();
-    const to_root = try mfs.newRootNodeMemWithOptions(gpa, w.filesystem, null, .{ .index = idx });
+    const Fs = @TypeOf(w.filesystem.*);
+    const to_root = try mfs.newRootNodeForWithOptions(Fs, gpa, w.filesystem, null, .{ .index = idx });
     defer to_root.deinit();
 
     // Action() only inspects from/to presence; still keep roots alive for safety.

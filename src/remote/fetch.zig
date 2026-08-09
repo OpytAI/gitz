@@ -261,28 +261,42 @@ fn depthChanged(before: []const Hash, sto: *const memory.Storage) !bool {
 
 /// Ingest pack bytes into memory storage (go-git `packfile.UpdateObjectStorage` path).
 fn applyPackToStorer(allocator: Allocator, sto: *memory.Storage, pack_bytes: []const u8) !void {
-    var obj_store = packfile.ObjectStore.init(allocator);
-    defer obj_store.deinit();
+    var tx = sto.object_storage.begin();
+    defer tx.deinit();
+    var target = PackImportTarget{ .allocator = allocator, .base = sto, .tx = &tx };
 
-    _ = packfile.updateObjectStorage(allocator, &obj_store, pack_bytes) catch |err| {
+    var sc = packfile.Scanner.initSeekable(pack_bytes);
+    var parser = try packfile.Parser.initWithStorage(allocator, &sc, &target, &.{});
+    defer parser.deinit();
+    _ = parser.parse() catch |err| {
         if (err == error.EmptyPackfile) return;
         return err;
     };
-
-    var it = obj_store.map.iterator();
-    while (it.next()) |e| {
-        const src = e.value_ptr.*;
-        const dst = try sto.newEncodedObject();
-        errdefer {
-            dst.deinit();
-            dst.allocator.destroy(dst);
-        }
-        dst.setType(src.object_type);
-        try dst.setContent(src.readerBytes());
-        _ = try sto.setEncodedObject(dst);
-    }
+    try tx.commitAtomic();
     sync.deinitPools(allocator);
 }
+
+const PackImportTarget = struct {
+    allocator: Allocator,
+    base: *memory.Storage,
+    tx: *memory.TxObjectStorage,
+
+    pub fn get(self: *PackImportTarget, h: Hash) !*plumbing.MemoryObject {
+        return self.tx.encodedObject(.any, h) catch |err| switch (err) {
+            error.ObjectNotFound => self.base.encodedObject(.any, h),
+        };
+    }
+
+    pub fn putContent(self: *PackImportTarget, t: plumbing.ObjectType, content: []const u8) !Hash {
+        const obj = try self.allocator.create(plumbing.MemoryObject);
+        errdefer self.allocator.destroy(obj);
+        obj.* = plumbing.MemoryObject.init(self.allocator);
+        errdefer obj.deinit();
+        obj.setType(t);
+        try obj.setContent(content);
+        return self.tx.setEncodedObject(obj);
+    }
+};
 
 fn pruneRemotes(
     allocator: Allocator,

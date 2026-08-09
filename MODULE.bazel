@@ -18,6 +18,11 @@ use_repo(zig, "zig_toolchains")
 
 register_toolchains("@rules_zig//zig/target:all")
 register_toolchains("@zig_toolchains//:all")
+register_toolchains("//platforms:wasm32_freestanding_toolchain")
+
+# JavaScript is the production WebAssembly runtime used by AgentOS. Keep the
+# upstream runtime tests hermetic instead of depending on a host-installed Node.
+bazel_dep(name = "aspect_rules_js", version = "3.2.2")
 
 # Hermetic CPython (rules_python). Fixture generation: //tools:gen_index_fixtures.
 python = use_extension("@rules_python//python/extensions:python.bzl", "python")

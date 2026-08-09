@@ -11,7 +11,7 @@ const fs_pkg = @import("fs");
 const Entry = index_fmt.Entry;
 
 /// go-git `fillSystemInfo` body for windows.
-pub fn fillSystemInfoWindows(e: *Entry, filesystem: *fs_pkg.Mem, path: []const u8) void {
+pub fn fillSystemInfoWindows(e: *Entry, filesystem: anytype, path: []const u8) void {
     const info = filesystem.stat(path) catch return;
     // Mem proxy for CreationTime; Windows go-git does not set dev/ino/uid/gid.
     e.created_at = .{ .sec = info.mtime_sec, .nsec = 0 };

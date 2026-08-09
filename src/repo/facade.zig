@@ -1,6 +1,7 @@
 //! Repository facades — go-git `repository.go` object/ref methods.
 //!
-//! Free functions take `*memory.Storage`. `Repository` wraps them as methods.
+//! Free functions accept compatible object/reference storage backends.
+//! `RepositoryFor` wraps them as methods.
 //!
 //! Log lives in `log.zig` (re-exported here for import stability).
 
@@ -30,31 +31,30 @@ pub const log = log_mod.log;
 // Facade free functions
 // ---------------------------------------------------------------------------
 
-
 // --- Object getters ---
 
 /// go-git `CommitObject`. Caller owns `*Commit` (`deinit` + `destroy`).
-pub fn commitObject(store: *memory.Storage, h: Hash) !*objpkg.Commit {
+pub fn commitObject(store: anytype, h: Hash) !*objpkg.Commit {
     return objpkg.getCommit(store.allocator, store, h);
 }
 
 /// go-git `BlobObject`.
-pub fn blobObject(store: *memory.Storage, h: Hash) !objpkg.Blob {
+pub fn blobObject(store: anytype, h: Hash) !objpkg.Blob {
     return objpkg.getBlob(store, h);
 }
 
 /// go-git `TreeObject`. Caller frees with `objpkg.freeTree`.
-pub fn treeObject(store: *memory.Storage, h: Hash) !*objpkg.Tree {
+pub fn treeObject(store: anytype, h: Hash) !*objpkg.Tree {
     return objpkg.getTree(store.allocator, store, h);
 }
 
 /// go-git `TagObject` — annotated tags only. Caller `deinit`s the Tag.
-pub fn tagObject(store: *memory.Storage, h: Hash) !objpkg.Tag {
+pub fn tagObject(store: anytype, h: Hash) !objpkg.Tag {
     return objpkg.getTag(store.allocator, store, h);
 }
 
 /// go-git `Object`. Caller `deinit`s the returned value.
-pub fn object(store: *memory.Storage, t: ObjectType, h: Hash) !objpkg.Object {
+pub fn object(store: anytype, t: ObjectType, h: Hash) !objpkg.Object {
     const enc = try store.encodedObject(t, h);
     return objpkg.decodeObject(store.allocator, store, enc);
 }
@@ -62,9 +62,10 @@ pub fn object(store: *memory.Storage, t: ObjectType, h: Hash) !objpkg.Object {
 // --- Object iterators ---
 
 /// go-git `CommitObjects` — unsorted commits in the object store.
-pub fn commitObjects(store: *memory.Storage) !EncodedCommitIter {
+pub fn commitObjects(store: anytype) !EncodedCommitIterFor(@TypeOf(store.*)) {
+    const Storage = @TypeOf(store.*);
     const snap = try store.iterEncodedObjects(.commit);
-    return EncodedCommitIter{
+    return EncodedCommitIterFor(Storage){
         .allocator = store.allocator,
         .storer = store,
         .snap = snap,
@@ -72,20 +73,22 @@ pub fn commitObjects(store: *memory.Storage) !EncodedCommitIter {
 }
 
 /// go-git `BlobObjects`.
-pub fn blobObjects(store: *memory.Storage) !BlobObjectsIter {
-    return BlobObjectsIter{
+pub fn blobObjects(store: anytype) !BlobObjectsIterFor(@TypeOf(store.*)) {
+    const Storage = @TypeOf(store.*);
+    return BlobObjectsIterFor(Storage){
         .snap = try store.iterEncodedObjects(.blob),
     };
 }
 
 /// go-git `TreeObjects`.
-pub fn treeObjects(store: *memory.Storage) !objpkg.TreeIter {
+pub fn treeObjects(store: anytype) !objpkg.TreeIter {
     return objpkg.newTreeIter(store.allocator, store);
 }
 
 /// go-git `TagObjects`.
-pub fn tagObjects(store: *memory.Storage) !TagObjectsIter {
-    return TagObjectsIter{
+pub fn tagObjects(store: anytype) !TagObjectsIterFor(@TypeOf(store.*)) {
+    const Storage = @TypeOf(store.*);
+    return TagObjectsIterFor(Storage){
         .allocator = store.allocator,
         .storer = store,
         .snap = try store.iterEncodedObjects(.tag),
@@ -93,8 +96,9 @@ pub fn tagObjects(store: *memory.Storage) !TagObjectsIter {
 }
 
 /// go-git `Objects`.
-pub fn objects(store: *memory.Storage) !ObjectsIter {
-    return ObjectsIter{
+pub fn objects(store: anytype) !ObjectsIterFor(@TypeOf(store.*)) {
+    const Storage = @TypeOf(store.*);
+    return ObjectsIterFor(Storage){
         .allocator = store.allocator,
         .storer = store,
         .snap = try store.iterEncodedObjects(.any),
@@ -104,18 +108,21 @@ pub fn objects(store: *memory.Storage) !ObjectsIter {
 // --- Ref filters ---
 
 /// go-git `Branches`.
-pub fn branches(store: *memory.Storage) !FilteredRefIter {
-    return FilteredRefIter.init(try store.iterReferences(), isBranchRef);
+pub fn branches(store: anytype) !FilteredRefIterFor(@TypeOf(store.*).ReferenceIter) {
+    const Iter = @TypeOf(store.*).ReferenceIter;
+    return FilteredRefIterFor(Iter).init(try store.iterReferences(), isBranchRef);
 }
 
 /// go-git `Tags` — tag *references* (lightweight or annotated).
-pub fn tags(store: *memory.Storage) !FilteredRefIter {
-    return FilteredRefIter.init(try store.iterReferences(), isTagRef);
+pub fn tags(store: anytype) !FilteredRefIterFor(@TypeOf(store.*).ReferenceIter) {
+    const Iter = @TypeOf(store.*).ReferenceIter;
+    return FilteredRefIterFor(Iter).init(try store.iterReferences(), isTagRef);
 }
 
 /// go-git `Notes`.
-pub fn notes(store: *memory.Storage) !FilteredRefIter {
-    return FilteredRefIter.init(try store.iterReferences(), isNoteRef);
+pub fn notes(store: anytype) !FilteredRefIterFor(@TypeOf(store.*).ReferenceIter) {
+    const Iter = @TypeOf(store.*).ReferenceIter;
+    return FilteredRefIterFor(Iter).init(try store.iterReferences(), isNoteRef);
 }
 
 // --- ResolveRevision ---
@@ -125,7 +132,7 @@ pub fn notes(store: *memory.Storage) !FilteredRefIter {
 /// Supports: HEAD/branch/tag/ref expansion, full/prefix hash, `~`/`^`
 /// parent walks, and `^{/pattern}` message search (literal / simple
 /// substring; full RE2 is not required for the supported API).
-pub fn resolveRevision(store: *memory.Storage, rev: []const u8) !Hash {
+pub fn resolveRevision(store: anytype, rev: []const u8) !Hash {
     const gpa = store.allocator;
     if (rev.len == 0) return error.ReferenceNotFound;
 
@@ -158,6 +165,7 @@ pub fn resolveRevision(store: *memory.Storage, rev: []const u8) !Hash {
                 try appendHashPrefix(store, r.name, &try_hashes);
 
                 if (expandRef(store, r.name)) |ref| {
+                    defer store.freeReference(ref);
                     try try_hashes.append(gpa, ref.hash);
                 }
 
@@ -277,170 +285,191 @@ pub fn resolveRevision(store: *memory.Storage, rev: []const u8) !Hash {
 // ---------------------------------------------------------------------------
 
 /// Unsorted commit iterator over the object store (go-git `CommitObjects`).
-pub const EncodedCommitIter = struct {
-    allocator: Allocator,
-    storer: *memory.Storage,
-    snap: memory.ObjectSnapshotIter,
+pub fn EncodedCommitIterFor(comptime Storage: type) type {
+    return struct {
+        const Self = @This();
 
-    pub fn next(self: *EncodedCommitIter) !*objpkg.Commit {
-        while (true) {
-            const enc = try self.snap.next();
-            if (enc.object_type != .commit) continue;
-            return try objpkg.decodeCommit(self.allocator, self.storer, enc);
-        }
-    }
+        allocator: Allocator,
+        storer: *Storage,
+        snap: Storage.ObjectHashIter,
 
-    pub fn forEach(self: *EncodedCommitIter, cb: anytype) !void {
-        defer self.close();
-        while (true) {
-            const c = self.next() catch |err| {
-                if (err == error.EndOfStream) return;
-                return err;
-            };
-            defer {
-                c.deinit();
-                self.allocator.destroy(c);
+        pub fn next(self: *Self) !*objpkg.Commit {
+            while (true) {
+                const enc = try self.snap.next();
+                if (enc.object_type != .commit) continue;
+                return try objpkg.decodeCommit(self.allocator, self.storer, enc);
             }
-            @call(.auto, cb, .{c}) catch |err| {
-                const e: anyerror = err;
-                if (e == error.Stop) return;
-                return e;
-            };
         }
-    }
 
-    pub fn close(self: *EncodedCommitIter) void {
-        self.snap.close();
-    }
+        pub fn forEach(self: *Self, cb: anytype) !void {
+            defer self.close();
+            while (true) {
+                const c = self.next() catch |err| {
+                    if (err == error.EndOfStream) return;
+                    return err;
+                };
+                defer {
+                    c.deinit();
+                    self.allocator.destroy(c);
+                }
+                @call(.auto, cb, .{c}) catch |err| {
+                    const e: anyerror = err;
+                    if (e == error.Stop) return;
+                    return e;
+                };
+            }
+        }
 
-    pub fn deinit(self: *EncodedCommitIter) void {
-        self.snap.deinit();
-        self.* = undefined;
-    }
-};
+        pub fn close(self: *Self) void {
+            self.snap.close();
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.snap.deinit();
+            self.* = undefined;
+        }
+    };
+}
+
+pub const EncodedCommitIter = EncodedCommitIterFor(memory.Storage);
 
 /// Blob store iterator (go-git `BlobObjects`).
-pub const BlobObjectsIter = struct {
-    snap: memory.ObjectSnapshotIter,
+pub fn BlobObjectsIterFor(comptime Storage: type) type {
+    return struct {
+        const Self = @This();
+        snap: Storage.ObjectHashIter,
 
-    pub fn next(self: *BlobObjectsIter) !objpkg.Blob {
-        while (true) {
-            const enc = try self.snap.next();
-            if (enc.object_type != .blob) continue;
-            return try objpkg.decodeBlob(enc);
+        pub fn next(self: *Self) !objpkg.Blob {
+            while (true) {
+                const enc = try self.snap.next();
+                if (enc.object_type != .blob) continue;
+                return try objpkg.decodeBlob(enc);
+            }
         }
-    }
 
-    pub fn forEach(self: *BlobObjectsIter, cb: anytype) !void {
-        defer self.close();
-        while (true) {
-            const b = self.next() catch |err| {
-                if (err == error.EndOfStream) return;
-                return err;
-            };
-            @call(.auto, cb, .{&b}) catch |err| {
-                const e: anyerror = err;
-                if (e == error.Stop) return;
-                return e;
-            };
+        pub fn forEach(self: *Self, cb: anytype) !void {
+            defer self.close();
+            while (true) {
+                const b = self.next() catch |err| {
+                    if (err == error.EndOfStream) return;
+                    return err;
+                };
+                @call(.auto, cb, .{&b}) catch |err| {
+                    const e: anyerror = err;
+                    if (e == error.Stop) return;
+                    return e;
+                };
+            }
         }
-    }
 
-    pub fn close(self: *BlobObjectsIter) void {
-        self.snap.close();
-    }
+        pub fn close(self: *Self) void {
+            self.snap.close();
+        }
 
-    pub fn deinit(self: *BlobObjectsIter) void {
-        self.snap.deinit();
-        self.* = undefined;
-    }
-};
+        pub fn deinit(self: *Self) void {
+            self.snap.deinit();
+            self.* = undefined;
+        }
+    };
+}
+
+pub const BlobObjectsIter = BlobObjectsIterFor(memory.Storage);
 
 /// Tag store iterator (go-git `TagObjects`).
-pub const TagObjectsIter = struct {
-    allocator: Allocator,
-    storer: *memory.Storage,
-    snap: memory.ObjectSnapshotIter,
+pub fn TagObjectsIterFor(comptime Storage: type) type {
+    return struct {
+        const Self = @This();
+        allocator: Allocator,
+        storer: *Storage,
+        snap: Storage.ObjectHashIter,
 
-    pub fn next(self: *TagObjectsIter) !objpkg.Tag {
-        while (true) {
-            const enc = try self.snap.next();
-            if (enc.object_type != .tag) continue;
-            return try objpkg.decodeTag(self.allocator, self.storer, enc);
+        pub fn next(self: *Self) !objpkg.Tag {
+            while (true) {
+                const enc = try self.snap.next();
+                if (enc.object_type != .tag) continue;
+                return try objpkg.decodeTag(self.allocator, self.storer, enc);
+            }
         }
-    }
 
-    pub fn forEach(self: *TagObjectsIter, cb: anytype) !void {
-        defer self.close();
-        while (true) {
-            var t = self.next() catch |err| {
-                if (err == error.EndOfStream) return;
-                return err;
-            };
-            defer t.deinit();
-            @call(.auto, cb, .{&t}) catch |err| {
-                const e: anyerror = err;
-                if (e == error.Stop) return;
-                return e;
-            };
+        pub fn forEach(self: *Self, cb: anytype) !void {
+            defer self.close();
+            while (true) {
+                var t = self.next() catch |err| {
+                    if (err == error.EndOfStream) return;
+                    return err;
+                };
+                defer t.deinit();
+                @call(.auto, cb, .{&t}) catch |err| {
+                    const e: anyerror = err;
+                    if (e == error.Stop) return;
+                    return e;
+                };
+            }
         }
-    }
 
-    pub fn close(self: *TagObjectsIter) void {
-        self.snap.close();
-    }
+        pub fn close(self: *Self) void {
+            self.snap.close();
+        }
 
-    pub fn deinit(self: *TagObjectsIter) void {
-        self.snap.deinit();
-        self.* = undefined;
-    }
-};
+        pub fn deinit(self: *Self) void {
+            self.snap.deinit();
+            self.* = undefined;
+        }
+    };
+}
+
+pub const TagObjectsIter = TagObjectsIterFor(memory.Storage);
 
 /// Object store iterator (go-git `Objects`).
-pub const ObjectsIter = struct {
-    allocator: Allocator,
-    storer: *memory.Storage,
-    snap: memory.ObjectSnapshotIter,
+pub fn ObjectsIterFor(comptime Storage: type) type {
+    return struct {
+        const Self = @This();
+        allocator: Allocator,
+        storer: *Storage,
+        snap: Storage.ObjectHashIter,
 
-    pub fn next(self: *ObjectsIter) !objpkg.Object {
-        while (true) {
-            const enc = try self.snap.next();
-            const obj = objpkg.decodeObject(self.allocator, self.storer, enc) catch |err| {
-                const e: anyerror = err;
-                if (e == error.InvalidType) continue;
-                return e;
-            };
-            return obj;
+        pub fn next(self: *Self) !objpkg.Object {
+            while (true) {
+                const enc = try self.snap.next();
+                const obj = objpkg.decodeObject(self.allocator, self.storer, enc) catch |err| {
+                    const e: anyerror = err;
+                    if (e == error.InvalidType) continue;
+                    return e;
+                };
+                return obj;
+            }
         }
-    }
 
-    pub fn forEach(self: *ObjectsIter, cb: anytype) !void {
-        defer self.close();
-        while (true) {
-            var obj = self.next() catch |err| {
-                const e: anyerror = err;
-                if (e == error.EndOfStream) return;
-                return e;
-            };
-            const cb_result = cb(&obj);
-            obj.deinit(self.allocator);
-            cb_result catch |err| {
-                const e: anyerror = err;
-                if (e == error.Stop) return;
-                return e;
-            };
+        pub fn forEach(self: *Self, cb: anytype) !void {
+            defer self.close();
+            while (true) {
+                var obj = self.next() catch |err| {
+                    const e: anyerror = err;
+                    if (e == error.EndOfStream) return;
+                    return e;
+                };
+                const cb_result = cb(&obj);
+                obj.deinit(self.allocator);
+                cb_result catch |err| {
+                    const e: anyerror = err;
+                    if (e == error.Stop) return;
+                    return e;
+                };
+            }
         }
-    }
 
-    pub fn close(self: *ObjectsIter) void {
-        self.snap.close();
-    }
+        pub fn close(self: *Self) void {
+            self.snap.close();
+        }
 
-    pub fn deinit(self: *ObjectsIter) void {
-        self.snap.deinit();
-        self.* = undefined;
-    }
-};
+        pub fn deinit(self: *Self) void {
+            self.snap.deinit();
+            self.* = undefined;
+        }
+    };
+}
+
+pub const ObjectsIter = ObjectsIterFor(memory.Storage);
 
 // ---------------------------------------------------------------------------
 // Filtered reference iterators (Branches / Tags / Notes)
@@ -456,45 +485,51 @@ fn isNoteRef(r: Reference) bool {
     return r.name.isNote();
 }
 
-/// Filtered view over `memory.ReferenceSliceIter` (go-git `ReferenceFilteredIter`).
-pub const FilteredRefIter = struct {
-    inner: memory.ReferenceSliceIter,
-    filter: *const fn (Reference) bool,
+/// Filtered view over a backend reference iterator.
+pub fn FilteredRefIterFor(comptime Iter: type) type {
+    return struct {
+        const Self = @This();
 
-    pub fn init(inner: memory.ReferenceSliceIter, filter: *const fn (Reference) bool) FilteredRefIter {
-        return .{ .inner = inner, .filter = filter };
-    }
+        inner: Iter,
+        filter: *const fn (Reference) bool,
 
-    pub fn next(self: *FilteredRefIter) !Reference {
-        while (true) {
-            const r = try self.inner.next();
-            if (self.filter(r)) return r;
+        pub fn init(inner: Iter, filter: *const fn (Reference) bool) Self {
+            return .{ .inner = inner, .filter = filter };
         }
-    }
 
-    pub fn forEach(self: *FilteredRefIter, cb: anytype) !void {
-        defer self.close();
-        while (true) {
-            const r = self.next() catch |err| switch (err) {
-                error.EndOfStream => return,
-            };
-            @call(.auto, cb, .{r}) catch |err| {
-                const e: anyerror = err;
-                if (e == error.Stop) return;
-                return e;
-            };
+        pub fn next(self: *Self) !Reference {
+            while (true) {
+                const r = try self.inner.next();
+                if (self.filter(r)) return r;
+            }
         }
-    }
 
-    pub fn close(self: *FilteredRefIter) void {
-        self.inner.close();
-    }
+        pub fn forEach(self: *Self, cb: anytype) !void {
+            defer self.close();
+            while (true) {
+                const r = self.next() catch |err| switch (err) {
+                    error.EndOfStream => return,
+                };
+                @call(.auto, cb, .{r}) catch |err| {
+                    const e: anyerror = err;
+                    if (e == error.Stop) return;
+                    return e;
+                };
+            }
+        }
 
-    pub fn deinit(self: *FilteredRefIter) void {
-        self.inner.deinit();
-        self.* = undefined;
-    }
-};
+        pub fn close(self: *Self) void {
+            if (comptime @hasDecl(Iter, "close")) self.inner.close();
+        }
+
+        pub fn deinit(self: *Self) void {
+            self.inner.deinit();
+            self.* = undefined;
+        }
+    };
+}
+
+pub const FilteredRefIter = FilteredRefIterFor(memory.ReferenceSliceIter);
 
 // ---------------------------------------------------------------------------
 // Helpers — expand_ref, expandPartialHash
@@ -504,7 +539,7 @@ pub const FilteredRefIter = struct {
 ///
 /// Rules mirror `plumbing.ref_rev_parse_rules`. Each format is a separate
 /// `bufPrint` call so the format string is comptime-known.
-fn expandRef(s: *memory.Storage, short: []const u8) ?Reference {
+fn expandRef(s: anytype, short: []const u8) ?Reference {
     if (resolveName(s, short)) |r| return r;
 
     var name_buf: [256]u8 = undefined;
@@ -516,13 +551,13 @@ fn expandRef(s: *memory.Storage, short: []const u8) ?Reference {
     return null;
 }
 
-fn resolveName(s: *memory.Storage, name_str: []const u8) ?Reference {
+fn resolveName(s: anytype, name_str: []const u8) ?Reference {
     const name = ReferenceName.init(name_str);
-    return storer.resolveReference(s, name) catch null;
+    return resolveBackendReference(s, name) catch null;
 }
 
 fn tryResolveFmt(
-    s: *memory.Storage,
+    s: anytype,
     buf: []u8,
     comptime fmt: []const u8,
     short: []const u8,
@@ -531,12 +566,12 @@ fn tryResolveFmt(
     return resolveName(s, name_str);
 }
 
-/// go-git `expandPartialHash` slow path over memory storage.
+/// go-git `expandPartialHash` slow path over an encoded-object backend.
 fn expandPartialHash(
-    s: *memory.Storage,
+    s: anytype,
     allocator: Allocator,
     prefix: []const u8,
-) Allocator.Error![]Hash {
+) anyerror![]Hash {
     var list: std.ArrayList(Hash) = .empty;
     errdefer list.deinit(allocator);
 
@@ -555,7 +590,7 @@ fn expandPartialHash(
     return try list.toOwnedSlice(allocator);
 }
 
-fn appendHashPrefix(s: *memory.Storage, hash_str: []const u8, out: *std.ArrayList(Hash)) !void {
+fn appendHashPrefix(s: anytype, hash_str: []const u8, out: *std.ArrayList(Hash)) !void {
     const gpa = s.allocator;
     if (hash_str.len == 0) return;
 
@@ -596,6 +631,25 @@ fn appendHashPrefix(s: *memory.Storage, hash_str: []const u8, out: *std.ArrayLis
             try out.append(gpa, h);
         }
     }
+}
+
+fn resolveBackendReference(store: anytype, name: ReferenceName) !Reference {
+    var current = try store.reference(name);
+    var recursion: usize = 0;
+    while (current.type == .symbolic) {
+        if (recursion > storer.MaxResolveRecursion) {
+            store.freeReference(current);
+            return error.MaxResolveRecursion;
+        }
+        const next = store.reference(current.target) catch |err| {
+            store.freeReference(current);
+            return err;
+        };
+        store.freeReference(current);
+        current = next;
+        recursion += 1;
+    }
+    return current;
 }
 
 /// Literal / simple message match for `^{/pattern}` (go-git uses RE2).
@@ -785,13 +839,17 @@ test "resolveRevision HEAD and simple refs" {
     const caret = try resolveRevision(r, "HEAD^");
     try std.testing.expect(caret.eql(c0));
 
-    var br = try branches(r, );
+    var br = try branches(
+        r,
+    );
     defer br.deinit();
     const bref = try br.next();
     try std.testing.expect(bref.name.isBranch());
     try std.testing.expect(bref.hash.eql(c1));
 
-    var tg = try tags(r, );
+    var tg = try tags(
+        r,
+    );
     defer tg.deinit();
     const tref = try tg.next();
     try std.testing.expect(tref.name.isTag());

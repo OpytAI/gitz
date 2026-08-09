@@ -24,6 +24,7 @@ _SRCS = [
     "thinpack_pack.zig",
     "codecommit_pack.zig",
     "thin_pack_tests.zig",
+    "import_session.zig",
 ]
 
 zig_library(

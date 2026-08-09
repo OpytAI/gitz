@@ -3,10 +3,49 @@
 //! Keeps add/status/clean free of copy-pasted join/match/clean logic.
 
 const std = @import("std");
+const plumbing = @import("plumbing");
+const storer = @import("storer");
 const fs_pkg = @import("fs");
 const gitignore = @import("gitignore");
 
 const Allocator = std.mem.Allocator;
+
+/// Normalize the memory and filesystem `SetIndex` contracts.
+///
+/// Memory storage adopts the index and cannot fail. Filesystem storage writes
+/// the index and reports I/O errors. Callers use one fallible worktree path for
+/// both backends.
+pub fn setIndex(storage: anytype, idx: anytype) !void {
+    const Storage = @TypeOf(storage.*);
+    if (comptime @hasDecl(Storage, "setIndexOwned")) {
+        try storage.setIndexOwned(idx);
+    } else if (comptime @hasDecl(Storage, "set_index_can_fail") and Storage.set_index_can_fail) {
+        try storage.setIndex(idx);
+    } else {
+        storage.setIndex(idx);
+    }
+}
+
+/// Resolve a symbolic reference while honoring each backend's ownership rule.
+/// The returned reference must be passed to `freeReference`.
+pub fn resolveReference(storage: anytype, name: plumbing.ReferenceName) !plumbing.Reference {
+    var current = try storage.reference(name);
+    var recursion: usize = 0;
+    while (current.type == .symbolic) {
+        if (recursion > storer.MaxResolveRecursion) {
+            storage.freeReference(current);
+            return error.MaxResolveRecursion;
+        }
+        const next = storage.reference(current.target) catch |err| {
+            storage.freeReference(current);
+            return err;
+        };
+        storage.freeReference(current);
+        current = next;
+        recursion += 1;
+    }
+    return current;
+}
 
 /// Join relative worktree path segments with `/` (billy / go-git slash paths).
 ///

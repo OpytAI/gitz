@@ -6,6 +6,7 @@
 const remote_pkg = @import("remote");
 
 pub const Remote = remote_pkg.Remote;
+pub const RemoteFor = remote_pkg.RemoteFor;
 pub const newRemote = remote_pkg.newRemote;
 pub const newRemoteEmbedded = remote_pkg.newRemoteEmbedded;
 pub const freeReferences = remote_pkg.freeReferences;

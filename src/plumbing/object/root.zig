@@ -33,6 +33,7 @@ pub const readArmoredKeyRing = openpgp_mod.readArmoredKeyRing;
 pub const freeEntities = openpgp_mod.freeEntities;
 pub const entityForFingerprint = openpgp_mod.entityForFingerprint;
 pub const armoredDetachSign = openpgp_mod.armoredDetachSign;
+pub const armoredDetachSignAt = openpgp_mod.armoredDetachSignAt;
 pub const encodeArmor = openpgp_mod.encodeArmor;
 pub const decodeArmor = openpgp_mod.decodeArmor;
 pub const checkArmoredDetachedSignature = openpgp_mod.checkArmoredDetachedSignature;

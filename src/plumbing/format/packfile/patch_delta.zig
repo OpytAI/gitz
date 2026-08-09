@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
+const UsizeShift = std.math.Log2Int(usize);
 
 const plumbing = @import("plumbing");
 const MemoryObject = plumbing.MemoryObject;
@@ -33,7 +34,7 @@ const usize_bits: usize = @bitSizeOf(usize);
 
 const OffsetField = struct {
     mask: u8,
-    shift: u6,
+    shift: UsizeShift,
 };
 
 const offsets = [_]OffsetField{
@@ -434,7 +435,7 @@ fn encodeCopyOperation(allocator: Allocator, offset: usize, length: usize) ![]u8
 
     var i: u3 = 0;
     while (i < 4) : (i += 1) {
-        const shift: u6 = @as(u6, i) * 8;
+        const shift: UsizeShift = @intCast(@as(u6, i) * 8);
         const f: usize = @as(usize, 0xff) << shift;
         if (offset & f != 0) {
             try opcodes.append(allocator, @truncate((offset & f) >> shift));
@@ -444,7 +445,7 @@ fn encodeCopyOperation(allocator: Allocator, offset: usize, length: usize) ![]u8
 
     i = 0;
     while (i < 3) : (i += 1) {
-        const shift: u6 = @as(u6, i) * 8;
+        const shift: UsizeShift = @intCast(@as(u6, i) * 8);
         const f: usize = @as(usize, 0xff) << shift;
         if (length & f != 0) {
             try opcodes.append(allocator, @truncate((length & f) >> shift));

@@ -80,7 +80,9 @@ pub const entityAttachSubkey = entity_mod.entityAttachSubkey;
 pub const buildEd25519PublicBody = entity_mod.buildEd25519PublicBody;
 
 pub const armoredDetachSign = sign_mod.armoredDetachSign;
+pub const armoredDetachSignAt = sign_mod.armoredDetachSignAt;
 pub const buildV4SignaturePacket = sign_mod.buildV4SignaturePacket;
+pub const buildV4SignaturePacketAt = sign_mod.buildV4SignaturePacketAt;
 pub const selectSigningKey = sign_mod.selectSigningKey;
 pub const SigningSelection = sign_mod.SigningSelection;
 

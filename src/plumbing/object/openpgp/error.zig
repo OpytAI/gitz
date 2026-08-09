@@ -13,6 +13,8 @@ pub const Error = error{
     DecryptFailed,
     /// Entity has no private key material (public-only ring).
     NoPrivateKey,
+    /// Signing without an explicit creation time is unavailable on freestanding targets.
+    ClockUnavailable,
 };
 
 // Packet tags

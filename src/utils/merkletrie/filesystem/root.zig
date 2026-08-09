@@ -14,6 +14,8 @@ pub const newRootNode = node_mod.newRootNode;
 pub const newRootNodeWithOptions = node_mod.newRootNodeWithOptions;
 pub const newRootNodeMem = node_mod.newRootNodeMem;
 pub const newRootNodeMemWithOptions = node_mod.newRootNodeMemWithOptions;
+pub const newRootNodeFor = node_mod.newRootNodeFor;
+pub const newRootNodeForWithOptions = node_mod.newRootNodeForWithOptions;
 
 test {
     _ = @import("node.zig");

@@ -7,16 +7,13 @@
 const std = @import("std");
 const plumbing = @import("plumbing");
 const objpkg = @import("object");
-const storer = @import("storer");
-const memory = @import("memory");
 
-const worktree_mod = @import("worktree.zig");
 const options_mod = @import("options.zig");
+const util = @import("util.zig");
 const error_mod = @import("error.zig");
 const regex_mod = @import("regex.zig");
 
 const Allocator = std.mem.Allocator;
-const Worktree = worktree_mod.Worktree;
 const GrepOptions = options_mod.GrepOptions;
 const Hash = plumbing.Hash;
 const File = objpkg.File;
@@ -41,7 +38,7 @@ pub fn freeGrepResults(allocator: Allocator, results: []GrepResult) void {
 }
 
 /// go-git `(*Worktree).Grep`.
-pub fn grep(w: *Worktree, o: GrepOptions) ![]GrepResult {
+pub fn grep(w: anytype, o: GrepOptions) ![]GrepResult {
     return grepRepository(w.allocator, w.storer, o);
 }
 
@@ -49,7 +46,7 @@ pub fn grep(w: *Worktree, o: GrepOptions) ![]GrepResult {
 /// therefore valid for bare repositories.
 pub fn grepRepository(
     allocator: Allocator,
-    sto: *memory.Storage,
+    sto: anytype,
     o: GrepOptions,
 ) ![]GrepResult {
     var opts = o;
@@ -59,7 +56,8 @@ pub fn grepRepository(
     var tree_name: []const u8 = undefined;
 
     if (opts.reference_name.raw.len > 0) {
-        const ref = try storer.resolveReference(sto, opts.reference_name);
+        const ref = try util.resolveReference(sto, opts.reference_name);
+        defer sto.freeReference(ref);
         commit_hash = ref.hash;
         tree_name = try allocator.dupe(u8, opts.reference_name.raw);
     } else {

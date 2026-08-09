@@ -1,7 +1,7 @@
 //! Repository log — go-git `Repository.Log` / `LogOptions`.
 //!
-//! Free functions take `*memory.Storage`. History walk with order / all /
-//! file / path filter / since / until (unix seconds). No network.
+//! Compatible storage backends support history walk with order / all / file /
+//! path filter / since / until (unix seconds). No network.
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -77,7 +77,7 @@ var path_filter_dummy_ctx: u8 = 0;
 ///
 /// Path filter priority (one PathIter): `path_filter_ctx_fn` → `path_filter`
 /// → `file_name` exact equality.
-pub fn log(store: *memory.Storage, opts: LogOptions) !LogResult {
+pub fn log(store: anytype, opts: LogOptions) !LogResult {
     const gpa = store.allocator;
     var result = LogResult{
         .allocator = gpa,
@@ -151,7 +151,7 @@ pub fn log(store: *memory.Storage, opts: LogOptions) !LogResult {
 }
 
 fn initLogFrom(
-    store: *memory.Storage,
+    store: anytype,
     result: *LogResult,
     from_opt: Hash,
     order: LogOrder,
@@ -159,7 +159,8 @@ fn initLogFrom(
     const gpa = store.allocator;
     var from = from_opt;
     if (from.isZero()) {
-        const href = try storer.resolveReference(store, plumbing.HEAD);
+        const href = try resolveBackendReference(store, plumbing.HEAD);
+        defer store.freeReference(href);
         from = href.hash;
     }
 
@@ -212,13 +213,14 @@ fn attachOrderWalk(result: *LogResult, tip: *objpkg.Commit, order: LogOrder) !vo
     }
 }
 
-fn initLogAll(store: *memory.Storage, result: *LogResult) !void {
+fn initLogAll(store: anytype, result: *LogResult) !void {
     const gpa = store.allocator;
     var hashes: std.ArrayList(Hash) = .empty;
     defer hashes.deinit(gpa);
 
     // go-git NewCommitAllIter: HEAD first (if present), then every reference.
-    if (storer.resolveReference(store, plumbing.HEAD)) |href| {
+    if (resolveBackendReference(store, plumbing.HEAD)) |href| {
+        defer store.freeReference(href);
         try appendUniqueHash(&hashes, gpa, href.hash);
     } else |_| {}
 
@@ -228,16 +230,40 @@ fn initLogAll(store: *memory.Storage, result: *LogResult) !void {
         const ref = ref_it.next() catch |err| switch (err) {
             error.EndOfStream => break,
         };
-        const resolved = storer.resolveReferenceFrom(store, ref) catch continue;
-        try appendUniqueHash(&hashes, gpa, resolved.hash);
+        if (ref.type == .hash) {
+            try appendUniqueHash(&hashes, gpa, ref.hash);
+        } else {
+            const resolved = resolveBackendReference(store, ref.name) catch continue;
+            defer store.freeReference(resolved);
+            try appendUniqueHash(&hashes, gpa, resolved.hash);
+        }
     }
 
-    const getter = storer.ObjectGetter.from(memory.Storage, store);
+    const getter = storer.ObjectGetter.from(@TypeOf(store.*), store);
     const all_ptr = try gpa.create(objpkg.AllIter);
     errdefer gpa.destroy(all_ptr);
     all_ptr.* = try objpkg.newCommitAllIterFromHashes(gpa, getter, hashes.items);
     result.base = .{ .all = all_ptr };
     result.outer = all_ptr.asIter();
+}
+
+fn resolveBackendReference(store: anytype, name: plumbing.ReferenceName) !plumbing.Reference {
+    var current = try store.reference(name);
+    var recursion: usize = 0;
+    while (current.type == .symbolic) {
+        if (recursion > storer.MaxResolveRecursion) {
+            store.freeReference(current);
+            return error.MaxResolveRecursion;
+        }
+        const next = store.reference(current.target) catch |err| {
+            store.freeReference(current);
+            return err;
+        };
+        store.freeReference(current);
+        current = next;
+        recursion += 1;
+    }
+    return current;
 }
 
 fn appendUniqueHash(list: *std.ArrayList(Hash), allocator: Allocator, h: Hash) !void {

@@ -26,6 +26,7 @@ const module_mod = @import("module.zig");
 
 pub const Storage = storage_mod.Storage;
 pub const newStorage = storage_mod.newStorage;
+pub const newStorageWithClock = storage_mod.newStorageWithClock;
 pub const ShallowStorage = storage_mod.ShallowStorage;
 pub const ModuleStorage = module_mod.ModuleStorage;
 
@@ -44,6 +45,8 @@ pub const Error = error_mod.Error;
 
 pub const ReferenceStorage = reference_mod.ReferenceStorage;
 pub const ReferenceSliceIter = reference_mod.ReferenceSliceIter;
+pub const ReferenceUpdate = reference_mod.ReferenceUpdate;
+pub const ReferenceUpdateError = reference_mod.ReferenceUpdateError;
 
 pub const ConfigStorage = config_mod.ConfigStorage;
 pub const Config = config_mod.Config;
@@ -61,6 +64,7 @@ pub const IndexStorage = index_mod.IndexStorage;
 pub const Index = index_mod.Index;
 pub const Entry = index_mod.Entry;
 pub const Time = index_mod.Time;
+pub const Clock = index_mod.Clock;
 
 test {
     _ = error_mod;

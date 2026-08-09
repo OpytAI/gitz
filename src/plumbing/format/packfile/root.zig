@@ -91,6 +91,7 @@ const diff_delta_mod = @import("diff_delta.zig");
 const delta_selector_mod = @import("delta_selector.zig");
 const encoder_mod = @import("encoder.zig");
 const fsobject_mod = @import("fsobject.zig");
+const import_session_mod = @import("import_session.zig");
 
 pub const Error = error_mod.Error;
 
@@ -108,9 +109,12 @@ pub const applyDeltaFromReader = patch_delta_mod.applyDeltaFromReader;
 
 pub const Parser = parser_mod.Parser;
 pub const Observer = parser_mod.Observer;
+pub const EncodedObjectStore = parser_mod.EncodedObjectStore;
 pub const ObjectStore = parser_mod.ObjectStore;
 /// go-git `UpdateObjectStorage` (non-PackfileWriter path).
 pub const updateObjectStorage = parser_mod.updateObjectStorage;
+pub const ImportSession = import_session_mod.ImportSession;
+pub const ImportLimits = import_session_mod.ImportLimits;
 /// go-git `WritePackfileToObjectStorage` (raw writer copy + empty check).
 pub const writePackfileToObjectStorage = common_mod.writePackfileToObjectStorage;
 
@@ -160,6 +164,7 @@ test {
     _ = @import("thinpack_pack.zig");
     _ = @import("codecommit_pack.zig");
     _ = @import("thin_pack_tests.zig");
+    _ = @import("import_session.zig");
 }
 
 test "basic and ref-delta pack headers" {
