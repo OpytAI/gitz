@@ -11,10 +11,6 @@ common --enable_runfiles
 # Hermetic actions: declared env only (no ambient $PATH tools).
 common --incompatible_strict_action_env
 
-# Shared Bazel output root on the workspace disk (root FS is too small).
-# Matches AGENTS.md: every invocation uses this cache.
-startup --output_user_root=/mnt/workspace/gitz/bazel-cache
-
 # Zig compiler cache under /tmp (rules_zig default family). Mount /tmp so the
 # sandbox can write the shared Zig cache (same pattern as agent-os).
 # Prefer /tmp over a workspace path: pair-mounts of /mnt/workspace/* arrive RO
@@ -29,5 +25,6 @@ test --test_output=errors
 # BCR only for now.
 common --registry=https://bcr.bazel.build/
 
-# Optional local overrides (gitignored).
+# Optional machine-specific overrides (gitignored). Use this file to set an
+# alternate output_user_root when Bazel's platform default is not suitable.
 try-import %workspace%/user.bazelrc

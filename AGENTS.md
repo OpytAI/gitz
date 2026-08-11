@@ -50,29 +50,27 @@ Pin the go-git reference. Do not float on an untracked tip without a record.
 
 Build and test only with **Bazel** and **rules_zig**. Use the Zig **0.16** toolchain that Bazel provides. Do not use the system `zig` binary for project builds or tests.
 
-### Bazel cache
+### Bazel output root
 
-The root filesystem is too small for a large Bazel cache. All worktrees must share one cache on the workspace filesystem:
+Use Bazel's platform default output root unless the local filesystem requires a different location. Do not commit a machine-specific output path.
 
-```text
-/mnt/workspace/gitz/bazel-cache
+Set a local output root in `user.bazelrc` when necessary. This file is ignored by Git. Use an absolute path so Bazel commands from workspace subdirectories use the same location.
+
+```bazelrc
+startup --output_user_root=/path/to/local/bazel-cache
 ```
 
-- Every Bazel command must pass  
-  `--output_user_root=/mnt/workspace/gitz/bazel-cache`  
-  as a startup option immediately after `bazel`.
-- Never use the default output root for this repository.
-- Do not create per-task output roots under `/tmp`. That discards the shared warm cache and can fill the root filesystem.
-- Use the same option for lifecycle commands (`shutdown`, `clean`, `info`, `query`), not only for builds and tests.
-- Do not delete or expunge the shared cache unless the user requests it.
+The tracked `.bazelrc` imports `user.bazelrc` automatically. Do not add the startup option to each command.
 
 Examples:
 
 ```bash
-bazel --output_user_root=/mnt/workspace/gitz/bazel-cache build //...
-bazel --output_user_root=/mnt/workspace/gitz/bazel-cache test //...
-bazel --output_user_root=/mnt/workspace/gitz/bazel-cache shutdown
+bazel build //...
+bazel test //...
+bazel shutdown
 ```
+
+Do not delete or expunge a shared local cache unless the user requests it.
 
 ## Testing layout
 
@@ -346,7 +344,7 @@ Required classes of check:
 - Read go-git only from the sibling `go-git/` reference at the pinned revision.
 - Port go-git behavior. Do not redesign Git semantics.
 - Run concurrent tasks only when they own disjoint files.
-- Always build and test with Bazel, rules_zig, Zig 0.16, and the shared `--output_user_root`.
+- Always build and test with Bazel, rules_zig, and Zig 0.16. Honor the local `user.bazelrc` when it exists.
 - Do not use system Zig for project verification.
 - Do not treat markdown text as a substitute for failing Bazel checks.
 
