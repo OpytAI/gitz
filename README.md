@@ -69,8 +69,9 @@ Useful targets:
 | `//check:all` | Complete compatibility and regression suite |
 | `//examples/wasm:all` | Runnable `wasm32-freestanding` repository and pack gate |
 
-The repository `.bazelrc` selects the shared output cache and hermetic build
-settings.
+The repository `.bazelrc` selects hermetic build settings. Bazel uses its
+platform default output root. A developer can set a machine-specific output
+root in the ignored `user.bazelrc` file.
 
 The WebAssembly gate runs in both safety-enabled and release-optimized modes.
 See [`examples/wasm/README.md`](examples/wasm/README.md) for its artifact,
@@ -78,9 +79,27 @@ import-audit, ABI, memory, and size contracts.
 
 ## Project status
 
-gitz is under active development. The package and API inventories cover the
-full pinned go-git surface. Behavioral goldens and package tests protect Git
-compatibility as the implementation evolves.
+gitz is under active development. The acceptance gate passes all 86 Bazel test
+targets. The gate checks the following parity evidence against go-git v5.19.2:
+
+| Metric | Current result |
+| --- | ---: |
+| Required go-git package paths | 62 / 62 present |
+| Package API inventories | 62 / 62 valid |
+| Explicit API name mappings | 571 / 748 (76.34%) |
+| Behavioral goldens | 81 / 81 pass |
+| Bazel acceptance test targets | 86 / 86 pass |
+| Active compatibility allowlists | 0 |
+
+Package-surface parity is complete for the pinned revision. Explicit API-name
+mapping remains in progress. The behavioral goldens and native and WebAssembly
+tests protect compatibility as that mapping expands.
+
+Reproduce the results with:
+
+```sh
+bazel test --cache_test_results=no //check:all
+```
 
 Start with the documents that match your task:
 
