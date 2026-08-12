@@ -30,9 +30,10 @@ pub const ObjectToPack = struct {
     /// WantWrite (see `markWantWrite` / `wantWrite` / `isWritten`).
     offset: i64 = 0,
 
-    /// When true, `object` is an owned delta body allocated for this OTP
-    /// (e.g. by `getDeltaWithIndex`). Free it in `freeObjectsToPack` or
-    /// `backToOriginal` — never free store-owned objects.
+    /// When true, `object` is an **owned** delta body allocated for this OTP
+    /// (e.g. by `getDeltaWithIndex` / `setDelta`). Free via `releaseOwnedObject`,
+    /// `freeObjectsToPack`, or `backToOriginal(allocator)` — never free
+    /// store-owned originals or deltas attached with `setDeltaBorrowed`.
     owns_object: bool = false,
 
     // Metadata cached from `original` so Type/Hash/Size still work after
@@ -169,10 +170,11 @@ pub const ObjectToPack = struct {
         return self.base != null;
     }
 
-    /// go-git `SetDelta` — attach an **owned** delta body based on `base`.
+    /// go-git `SetDelta` — attach an **owned** heap delta body based on `base`.
     ///
-    /// Sets `owns_object = true`. Callers that attach a store-owned delta
-    /// should use `setDeltaBorrowed` instead.
+    /// Sets `owns_object = true`. The previous `object` is **not** freed here
+    /// (no allocator); call `releaseOwnedObject` first if replacing an owned
+    /// body. Store-owned / stack deltas must use `setDeltaBorrowed` instead.
     pub fn setDelta(self: *ObjectToPack, base: *ObjectToPack, delta: *MemoryObject) void {
         self.object = delta;
         self.base = base;
@@ -180,7 +182,8 @@ pub const ObjectToPack = struct {
         self.owns_object = true;
     }
 
-    /// Attach a store-owned delta (not freed by `freeObjectsToPack`).
+    /// Attach a **borrowed** delta (`owns_object = false`).
+    /// Not freed by `freeObjectsToPack` / `releaseOwnedObject` / `backToOriginal`.
     pub fn setDeltaBorrowed(self: *ObjectToPack, base: *ObjectToPack, delta: *MemoryObject) void {
         self.object = delta;
         self.base = base;
@@ -189,6 +192,7 @@ pub const ObjectToPack = struct {
     }
 
     /// Claim ownership of the current `object` pointer (heap delta body).
+    /// Prefer `setDelta` when attaching a newly allocated body.
     pub fn takeObjectOwnership(self: *ObjectToPack) void {
         self.owns_object = true;
     }
@@ -206,10 +210,14 @@ pub fn newObjectToPack(o: *MemoryObject) ObjectToPack {
 /// go-git `newDeltaObjectToPack` — delta against `base`, target `original`,
 /// delta body `delta`. Depth is `base.depth + 1`.
 ///
-/// Ownership: the delta body is **not** marked owned by default (matches
-/// go-git tests that allocate and free the delta separately). After a heap
-/// transfer into the selector/encoder pipeline, call `takeObjectOwnership` or
-/// use `setDelta` (which marks owned).
+/// Ownership flags:
+/// - Returns with `owns_object = false` (matches go-git tests that free the
+///   delta separately; store-backed bodies stay with the storer).
+/// - After transferring a **heap** delta into the selector/encoder pipeline,
+///   call `takeObjectOwnership` or attach via `setDelta` (`owns_object = true`)
+///   so `freeObjectsToPack` / `backToOriginal(allocator)` free the body.
+/// - For a store-owned or stack delta, leave borrowed (`setDeltaBorrowed` /
+///   default `newDeltaObjectToPack`).
 pub fn newDeltaObjectToPack(
     base: *ObjectToPack,
     original: *MemoryObject,
@@ -470,6 +478,50 @@ test "ObjectToPackSuite.setDelta" {
     // Original still the full target for Type/Size.
     try std.testing.expect(target_otp.original == &target);
     try std.testing.expect(target_otp.objectType() == .blob);
+}
+
+test "ObjectToPackSuite.setDelta owns heap delta GPA" {
+    const allocator = std.testing.allocator;
+    var base_obj = try makeBlob(allocator, "base-gpa");
+    defer base_obj.deinit();
+    var target = try makeBlob(allocator, "target-gpa");
+    defer target.deinit();
+
+    const delta = try allocator.create(MemoryObject);
+    delta.* = try makeBlob(allocator, "owned-delta-body");
+
+    var base = newObjectToPack(&base_obj);
+    var target_otp = newObjectToPack(&target);
+    target_otp.setDelta(&base, delta);
+    try std.testing.expect(target_otp.owns_object);
+    try std.testing.expect(target_otp.object == delta);
+    try std.testing.expectEqual(@as(i32, 1), target_otp.depth);
+
+    // releaseOwnedObject frees the heap delta under testing.allocator (GPA).
+    target_otp.releaseOwnedObject(allocator);
+    try std.testing.expect(!target_otp.owns_object);
+    try std.testing.expect(target_otp.object == null);
+}
+
+test "ObjectToPackSuite.setDeltaBorrowed does not free store body" {
+    const allocator = std.testing.allocator;
+    var base_obj = try makeBlob(allocator, "base-borrow");
+    defer base_obj.deinit();
+    var target = try makeBlob(allocator, "target-borrow");
+    defer target.deinit();
+    var delta = try makeBlob(allocator, "store-owned-delta");
+    defer delta.deinit();
+
+    var base = newObjectToPack(&base_obj);
+    var target_otp = newObjectToPack(&target);
+    target_otp.setDeltaBorrowed(&base, &delta);
+    try std.testing.expect(!target_otp.owns_object);
+
+    target_otp.releaseOwnedObject(allocator);
+    // Borrowed: release is a no-op; body still live for defer deinit.
+    try std.testing.expect(target_otp.object == &delta);
+    try std.testing.expect(!target_otp.owns_object);
+    try std.testing.expectEqual(@as(usize, 17), delta.content.items.len);
 }
 
 test "ObjectToPackSuite.Type fallback base" {

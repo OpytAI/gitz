@@ -189,10 +189,12 @@ pub const Packfile = struct {
 
     fn getNextMemoryObject(self: *Packfile, h: *const ObjectHeader) GetError!*MemoryObject {
         const obj = try self.allocator.create(MemoryObject);
-        errdefer {
+        // Cleared once cachePut takes ownership or frees a duplicate.
+        var cache_settled = false;
+        errdefer if (!cache_settled) {
             obj.deinit();
             self.allocator.destroy(obj);
-        }
+        };
         obj.* = MemoryObject.init(self.allocator);
         obj.setType(h.object_type);
         obj.setSize(h.length);
@@ -204,10 +206,11 @@ pub const Packfile = struct {
             else => return error.InvalidObject,
         }
 
-        try self.cachePut(obj);
+        const cached = try self.cachePut(obj);
+        cache_settled = true;
         // Type map for GetByType filters (resolved final type).
-        self.offset_to_type.put(self.allocator, h.offset, obj.object_type) catch {};
-        return obj;
+        self.offset_to_type.put(self.allocator, h.offset, cached.object_type) catch {};
+        return cached;
     }
 
     fn fillRegularObjectContent(self: *Packfile, obj: *MemoryObject) GetError!void {
@@ -255,27 +258,43 @@ pub const Packfile = struct {
         return self.cache.get(h);
     }
 
-    /// Insert `obj` into the cache. Propagates OOM so callers never return
-    /// an untracked heap object after a failed insert.
-    fn cachePut(self: *Packfile, obj: *MemoryObject) GetError!void {
+    /// Insert `obj` into the cache and return the cache-owned pointer.
+    ///
+    /// Ownership:
+    /// - New key: cache takes `obj` and returns it.
+    /// - `found_existing`: keep the existing entry, **destroy** `obj`, return existing.
+    /// - Zero hash: do not insert; return `error.InvalidObject` so the caller retains
+    ///   `obj` (never return a pointer that is neither cache-owned nor caller-owned).
+    /// - OOM on insert: caller retains `obj`.
+    fn cachePut(self: *Packfile, obj: *MemoryObject) GetError!*MemoryObject {
         const h = obj.hash();
-        if (h.isZero()) return;
+        if (h.isZero()) return error.InvalidObject;
         const gop = try self.cache.getOrPut(self.allocator, h);
-        if (gop.found_existing) return;
+        if (gop.found_existing) {
+            obj.deinit();
+            self.allocator.destroy(obj);
+            return gop.value_ptr.*;
+        }
         gop.value_ptr.* = obj;
+        return obj;
     }
 };
 
 /// go-git `objectIter` — walks index entries by offset, optionally type-filtered.
 ///
 /// Not thread-safe; use on the same thread as the parent `Packfile`.
-/// Returned objects are owned by the Packfile cache — do not free them.
+///
+/// Ownership: each `next()` yield is a **borrow** of a `*MemoryObject` owned by
+/// the parent `Packfile` object cache. Do not `deinit`/`destroy` yielded objects.
+/// `deinit` / close frees only iterator-local state (the sorted offset-entry list);
+/// cached objects are released by `Packfile.close`.
 pub const ObjectIterator = struct {
     p: *Packfile,
     typ: ObjectType,
     iter: OffsetEntryIterator,
 
     /// Next matching object, or `null` at end (go-git returns `io.EOF`).
+    /// Returned pointer is cache-owned — see struct ownership docs.
     pub fn next(self: *ObjectIterator) GetError!?*MemoryObject {
         while (true) {
             const e = self.iter.next() orelse return null;
@@ -314,7 +333,9 @@ pub const ObjectIterator = struct {
         }
     }
 
-    /// go-git `Close` — free the sorted entry list from `entriesByOffset`.
+    /// go-git `Close` — free iterator-local allocations only (sorted entry list
+    /// from `entriesByOffset`). Does **not** free yielded objects; those remain
+    /// owned by the parent `Packfile` cache until `Packfile.close`.
     pub fn deinit(self: *ObjectIterator) void {
         self.iter.deinit();
         self.* = undefined;
@@ -623,4 +644,70 @@ fn decodeRefDeltaIndex(allocator: Allocator) !MemoryIndex {
     var d = idxfile.Decoder.init(&r);
     try d.decode(&idx);
     return idx;
+}
+
+// --- WP-D cachePut ownership (found_existing / zero-hash) ---
+
+test "Packfile.cachePut found_existing keeps existing destroys new" {
+    const allocator = std.testing.allocator;
+    var idx = MemoryIndex.init(allocator);
+    defer idx.deinit();
+    var pf: Packfile = undefined;
+    pf.init(allocator, &idx, &.{});
+    defer pf.close();
+
+    const existing = try allocator.create(MemoryObject);
+    existing.* = MemoryObject.init(allocator);
+    existing.setType(.blob);
+    try existing.setContent("cache-put-a");
+    const kept = try pf.cachePut(existing);
+
+    const dup = try allocator.create(MemoryObject);
+    dup.* = MemoryObject.init(allocator);
+    dup.setType(.blob);
+    try dup.setContent("cache-put-a"); // same content → same hash
+    const returned = try pf.cachePut(dup);
+    try std.testing.expect(returned == kept);
+    try std.testing.expect(returned == existing);
+    // `dup` was destroyed inside cachePut; only `existing` remains until close.
+}
+
+test "Packfile.cachePut zero hash does not insert leaves caller ownership" {
+    const allocator = std.testing.allocator;
+    var idx = MemoryIndex.init(allocator);
+    defer idx.deinit();
+    var pf: Packfile = undefined;
+    pf.init(allocator, &idx, &.{});
+    defer pf.close();
+
+    const obj = try allocator.create(MemoryObject);
+    defer {
+        obj.deinit();
+        allocator.destroy(obj);
+    }
+    obj.* = MemoryObject.init(allocator);
+    obj.setType(.blob);
+    // size/content mismatch → MemoryObject.hash() returns ZeroHash.
+    obj.setSize(99);
+    try std.testing.expect(obj.hash().isZero());
+    try std.testing.expectError(error.InvalidObject, pf.cachePut(obj));
+    try std.testing.expect(pf.cache.count() == 0);
+}
+
+test "Packfile.ObjectIterator deinit does not free cache-owned objects" {
+    const allocator = std.testing.allocator;
+    var w = idxfile.Writer.init(allocator);
+    defer w.deinit();
+    const index = try finishTestIndex(&w);
+
+    var pf = openBasicPackfile(allocator, index);
+    defer pf.close();
+
+    var iter = try pf.getAll();
+    const first = (try iter.next()).?;
+    iter.deinit();
+    // Object remains valid via packfile cache after iterator close.
+    try std.testing.expect(first.hash().eql(first.hash()));
+    const again = try pf.get(first.hash());
+    try std.testing.expect(again == first);
 }

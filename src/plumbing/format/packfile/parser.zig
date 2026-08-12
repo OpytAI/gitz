@@ -415,6 +415,17 @@ pub const Parser = struct {
 
             var delta = false;
             var ota: *ObjectInfo = undefined;
+            // Parent that still needs `children.append` after ota is created.
+            var parent_for_append: ?*ObjectInfo = null;
+            // Thin-pack placeholder not yet keyed in `oi_by_hash` (free on error).
+            var pending_placeholder: ?*ObjectInfo = null;
+            // Placeholder whose children were moved onto ota; restore on error until
+            // the hash-map slot permanently points at ota and the placeholder is freed.
+            var reparented_placeholder: ?*ObjectInfo = null;
+            // Registration flags: reverse map/list keys before destroy on error.
+            var in_hash_map = false;
+            var in_offset_map = false;
+            var in_oi_list = false;
 
             switch (oh.object_type) {
                 .ofs_delta => {
@@ -423,16 +434,17 @@ pub const Parser = struct {
                         return error.ObjectNotFound;
                     };
                     ota = try newDeltaObject(self.allocator, oh.offset, oh.length, oh.object_type, parent);
-                    try parent.children.append(self.allocator, ota);
+                    parent_for_append = parent;
                 },
                 .ref_delta => {
                     delta = true;
-                    var parent: *ObjectInfo = undefined;
                     if (self.oi_by_hash.get(oh.reference)) |p| {
-                        parent = p;
+                        ota = try newDeltaObject(self.allocator, oh.offset, oh.length, oh.object_type, p);
+                        parent_for_append = p;
                     } else {
-                        // Thin pack: placeholder external reference.
-                        parent = try self.allocator.create(ObjectInfo);
+                        // Thin pack: create placeholder, link child, then map-put.
+                        // Never destroy a placeholder still keyed in oi_by_hash.
+                        const parent = try self.allocator.create(ObjectInfo);
                         parent.* = .{
                             .offset = 0,
                             .length = 0,
@@ -441,17 +453,43 @@ pub const Parser = struct {
                             .object_type = .any,
                             .disk_type = .any,
                         };
-                        try self.oi_by_hash.put(self.allocator, oh.reference, parent);
+                        ota = newDeltaObject(self.allocator, oh.offset, oh.length, oh.object_type, parent) catch |err| {
+                            parent.children.deinit(self.allocator);
+                            self.allocator.destroy(parent);
+                            return err;
+                        };
+                        parent_for_append = parent;
+                        pending_placeholder = parent;
                     }
-                    ota = try newDeltaObject(self.allocator, oh.offset, oh.length, oh.object_type, parent);
-                    try parent.children.append(self.allocator, ota);
                 },
                 else => {
                     ota = try newBaseObject(self.allocator, oh.offset, oh.length, oh.object_type);
                 },
             }
-            // Free ota if inflate or later steps fail before it is stored in `oi`.
+            // Reverse registration then destroy ota; free unmapped thin-pack placeholder.
             errdefer {
+                if (in_oi_list) {
+                    if (self.oi.items.len > 0 and self.oi.items[self.oi.items.len - 1] == ota) {
+                        _ = self.oi.pop();
+                    }
+                }
+                if (in_offset_map) {
+                    _ = self.oi_by_offset.remove(oh.offset);
+                }
+                if (reparented_placeholder) |ph| {
+                    // Restore children and map key so ph is never left unowned.
+                    ph.children = ota.children;
+                    ota.children = .empty;
+                    for (ph.children.items) |c| {
+                        c.parent = ph;
+                    }
+                    self.oi_by_hash.put(self.allocator, ota.sha1, ph) catch {};
+                    in_hash_map = false;
+                } else if (in_hash_map) {
+                    if (self.oi_by_hash.get(ota.sha1)) |v| {
+                        if (v == ota) _ = self.oi_by_hash.remove(ota.sha1);
+                    }
+                }
                 if (ota.parent) |p| {
                     var ci: usize = 0;
                     while (ci < p.children.items.len) {
@@ -462,6 +500,21 @@ pub const Parser = struct {
                 }
                 ota.children.deinit(self.allocator);
                 self.allocator.destroy(ota);
+                // Placeholder not yet map-keyed: free here. Map-keyed placeholders
+                // stay until Parser.deinit or successful base-object replacement.
+                if (pending_placeholder) |ph| {
+                    ph.children.deinit(self.allocator);
+                    self.allocator.destroy(ph);
+                }
+            }
+
+            if (parent_for_append) |p| {
+                try p.children.append(self.allocator, ota);
+            }
+            if (pending_placeholder) |ph| {
+                try self.oi_by_hash.put(self.allocator, oh.reference, ph);
+                // Map owns placeholder; cancel errdefer free of pending_placeholder.
+                pending_placeholder = null;
             }
 
             // Inflate object content into a buffer (also used for hashing / cache).
@@ -488,34 +541,57 @@ pub const Parser = struct {
                 var hasher = Hasher.init(oh.object_type, oh.length);
                 hasher.update(content);
                 const sha1 = hasher.sum();
+                ota.sha1 = sha1;
 
-                // Move children of placeholder parent into actual parent.
-                if (self.oi_by_hash.get(sha1)) |placeholder| {
-                    if (placeholder != ota) {
-                        ota.children = placeholder.children;
-                        placeholder.children = .empty;
+                // Fallible map/list registration first; free placeholder only after
+                // ota is permanently map-keyed (never destroy while map-keyed).
+                try self.oi_by_offset.put(self.allocator, oh.offset, ota);
+                in_offset_map = true;
+                try self.oi.append(self.allocator, ota);
+                in_oi_list = true;
+
+                const gop = try self.oi_by_hash.getOrPut(self.allocator, sha1);
+                if (gop.found_existing) {
+                    const prev = gop.value_ptr.*;
+                    if (prev != ota) {
+                        ota.children = prev.children;
+                        prev.children = .empty;
                         for (ota.children.items) |child| {
                             child.parent = ota;
                         }
-                        if (placeholder.external_ref and !self.oiContains(placeholder)) {
-                            placeholder.children.deinit(self.allocator);
-                            self.allocator.destroy(placeholder);
+                        gop.value_ptr.* = ota;
+                        in_hash_map = true;
+                        if (prev.external_ref and !self.oiContains(prev)) {
+                            // Keep ph alive until success of this iteration so errdefer
+                            // can restore it; free only after all registration is done.
+                            reparented_placeholder = prev;
                         }
+                    } else {
+                        in_hash_map = true;
                     }
+                } else {
+                    gop.value_ptr.* = ota;
+                    in_hash_map = true;
                 }
 
-                ota.sha1 = sha1;
-                try self.oi_by_hash.put(self.allocator, ota.sha1, ota);
-            }
+                // Iteration fully registered: safe to free replaced placeholder.
+                if (reparented_placeholder) |ph| {
+                    ph.children.deinit(self.allocator);
+                    self.allocator.destroy(ph);
+                    reparented_placeholder = null;
+                }
+            } else {
+                if (!self.scanner.is_seekable) {
+                    const copy = try self.allocator.dupe(u8, content);
+                    errdefer self.allocator.free(copy);
+                    try self.deltas.?.put(self.allocator, oh.offset, copy);
+                }
 
-            if (delta and !self.scanner.is_seekable) {
-                const copy = try self.allocator.dupe(u8, content);
-                errdefer self.allocator.free(copy);
-                try self.deltas.?.put(self.allocator, oh.offset, copy);
+                try self.oi_by_offset.put(self.allocator, oh.offset, ota);
+                in_offset_map = true;
+                try self.oi.append(self.allocator, ota);
+                in_oi_list = true;
             }
-
-            try self.oi_by_offset.put(self.allocator, oh.offset, ota);
-            try self.oi.append(self.allocator, ota);
         }
     }
 
@@ -557,6 +633,7 @@ pub const Parser = struct {
     fn resolveExternalRef(self: *Parser, o: *ObjectInfo) void {
         if (self.oi_by_hash.get(o.sha1)) |ref| {
             if (ref.external_ref) {
+                // Put replacement first so the placeholder is never destroyed while map-keyed.
                 self.oi_by_hash.put(self.allocator, o.sha1, o) catch return;
                 o.children = ref.children;
                 ref.children = .empty;
