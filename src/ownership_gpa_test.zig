@@ -1,9 +1,10 @@
 //! Cross-module ownership GPA suite (ownership program PR12 aggregator).
 //!
 //! Runs production-loader scenarios under `std.testing.allocator` so leaks and
-//! double-frees fail the test. Covers walker early-exit + diamond, isAncestor /
-//! merge-base free companions, EncodedObject new+discard on memory and FS,
-//! hash pad invariant, and process-pool drain via `deinitPools`.
+//! double-frees fail the test. Representative ownership paths: walker early-exit
+//! + BFS diamond, isAncestor/merge-base free, remote isFastForward free, memory
+//! walker/merge-base plus FS EncodedObject discard, ObjectLru non-owning deinit,
+//! hash pad, and `deinitPools`. Dual-backend walker GPA stays in package tests.
 //!
 //! Per-package GPA tests remain in their modules; this target is the visible
 //! acceptance aggregator counted by the README Ownership GPA suites row.
@@ -15,6 +16,8 @@ const memory = @import("memory");
 const filesystem = @import("filesystem");
 const fs_pkg = @import("fs");
 const sync = @import("utils/sync");
+const remote = @import("remote");
+const cache = @import("cache");
 
 const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
@@ -50,7 +53,7 @@ fn storeCommit(
 }
 
 // ---------------------------------------------------------------------------
-// Walker: early exit (R3 unyielded free) + diamond full walk (R2 skip free)
+// Walker: early exit (R3 unyielded free) + BFS diamond (R2 free on second load)
 // ---------------------------------------------------------------------------
 
 test "ownership GPA: walker early exit and diamond zero leaks (memory)" {
@@ -71,10 +74,12 @@ test "ownership GPA: walker early exit and diamond zero leaks (memory)" {
         const c = try iter.next();
         try std.testing.expect(c.hash.eql(h_tip));
         freeCommit(gpa, c);
-        // mid/root remain queued; deinit frees unyielded (R3).
+        // After yielding tip, only mid is enqueued (R3); root not yet loaded.
     }
 
     // diamond merge: tip → left/right → base
+    // BFS may enqueue base twice (from left and right); second load is freed on
+    // seen continue (R2 free-on-skip). R1 free each yield.
     const h_base = try storeCommit(gpa, &store, &.{}, 10);
     const h_left = try storeCommit(gpa, &store, &.{h_base}, 11);
     const h_right = try storeCommit(gpa, &store, &.{h_base}, 12);
@@ -82,7 +87,7 @@ test "ownership GPA: walker early exit and diamond zero leaks (memory)" {
 
     {
         const tip = try object.getCommit(gpa, &store, h_merge);
-        var iter = try object.newCommitPreorderIter(gpa, tip, null, &.{});
+        var iter = try object.newCommitIterBsf(gpa, tip, null, &.{});
         defer iter.deinit();
         var n: usize = 0;
         while (true) {
@@ -131,6 +136,25 @@ test "ownership GPA: isAncestor and mergeBase free results zero leaks (memory)" 
 }
 
 // ---------------------------------------------------------------------------
+// Remote FF consumer: isFastForward free-each-yield under production loads
+// ---------------------------------------------------------------------------
+
+test "ownership GPA: isFastForward walk free yields zero leaks (memory)" {
+    const gpa = std.testing.allocator;
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+
+    const h_root = try storeCommit(gpa, &store, &.{}, 1);
+    const h_mid = try storeCommit(gpa, &store, &.{h_root}, 2);
+    const h_tip = try storeCommit(gpa, &store, &.{h_mid}, 3);
+
+    try std.testing.expect(try remote.isFastForward(gpa, &store, h_root, h_tip, null));
+    try std.testing.expect(try remote.isFastForward(gpa, &store, h_mid, h_tip, null));
+    try std.testing.expect(!(try remote.isFastForward(gpa, &store, h_tip, h_root, null)));
+}
+
+// ---------------------------------------------------------------------------
 // EncodedObject: new + discard (never set) on memory and filesystem
 // ---------------------------------------------------------------------------
 
@@ -162,6 +186,32 @@ test "ownership GPA: EncodedObject new+discard both backends" {
         _ = try o.write("gpa-discard-fs");
         store.discardEncodedObject(o);
     }
+}
+
+// ---------------------------------------------------------------------------
+// ObjectLru: non-owning cache; deinit frees entries only, caller frees objects
+// ---------------------------------------------------------------------------
+
+test "ownership GPA: ObjectLru put deinit leaves caller ownership" {
+    const gpa = std.testing.allocator;
+
+    var lru = cache.ObjectLru.init(gpa, 64 * cache.Byte);
+    defer lru.deinit();
+
+    const obj = try gpa.create(plumbing.MemoryObject);
+    defer {
+        obj.deinit();
+        gpa.destroy(obj);
+    }
+    obj.* = plumbing.MemoryObject.init(gpa);
+    obj.setType(.blob);
+    try obj.setContent("gpa-lru-owner");
+
+    try lru.put(obj);
+    try std.testing.expect(lru.get(obj.hash()) == obj);
+    lru.clear();
+    try std.testing.expect(lru.get(obj.hash()) == null);
+    // obj still valid; caller free via defer after cache clear/deinit.
 }
 
 // ---------------------------------------------------------------------------

@@ -140,10 +140,12 @@ zig_test(
     deps = [
         "//src/plumbing",
         "//src/plumbing/object",
+        "//src/plumbing/cache",
         "//src/storage/memory",
         "//src/storage/filesystem",
         "//src/fs",
         "//src/utils/sync",
+        "//src/remote",
     ],
 )
 
