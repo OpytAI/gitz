@@ -91,11 +91,11 @@ paths)—not package-path counts or API-name mapping ratios.
 | Active compatibility allowlists | 0 |
 | Ownership GPA suites (memory + FS production loaders) | 1 / 1 pass |
 
-The ownership GPA aggregator is `//src:ownership_gpa_test`: memory production
-loaders for walker/merge-base/isFastForward, filesystem for EncodedObject
-discard, plus ObjectLru, hash pad, and `deinitPools`. Dual-backend walker GPA
-stays in package tests. Inventories remain package-surface hygiene and
-navigation aids; numeric API-name mapping is not a project success metric.
+The ownership GPA aggregator is `//src:ownership_gpa_test`: production loaders
+for walker (memory and filesystem), merge-base, isFastForward, EncodedObject
+new+discard on both backends, ObjectLru, hash pad via `fromBytes`, and
+`deinitPools`. Inventories remain package-surface hygiene and navigation aids;
+numeric API-name mapping is not a project success metric.
 
 Reproduce the results with:
 

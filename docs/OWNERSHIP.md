@@ -95,11 +95,6 @@ Memory and filesystem use one contract:
 | `discardEncodedObject(store, obj)` | Safe abandon of a caller-owned create that was never successfully set. Removes from any mid-migration registration then destroy. |
 | Storage `deinit` | Frees only objects the storage owns. |
 
-Capability intent after unify:
-
-- `set_encoded_object_takes_ownership = true` on memory, FS, and tx wrappers.
-- `new_encoded_object_storage_owned = false` (create does not register early).
-
 Transactional commit (both backends): **clone-on-commit** so base and temporal
 never free the same pointer. Rollback/temporal deinit free only temporal-owned
 objects.
@@ -114,7 +109,7 @@ repository facades (same discipline as `freeReference`).
 | Type / surface | Free API | Notes |
 | --- | --- | --- |
 | `*Tree` | `freeTree(allocator, t)` | Existing pattern. |
-| `*Commit` | `freeCommit(allocator, c)` | Public; no-op when `heap_owned == false`; matches `freeTree` shape. |
+| `*Commit` | `freeCommit(allocator, c)` | Pass the create allocator; no-op when `heap_owned == false` (same shape as `freeTree`). |
 | Reference | `freeReference` (backend-aware) | Always pair with the storer/facade that returned the ref. |
 | EncodedObject create | `discardEncodedObject` | Only for never-set creates; not for lookup borrows. |
 | Merge-base results | Caller free contract below | Optional helpers may free slice + owned elements. |

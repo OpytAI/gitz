@@ -14,10 +14,6 @@ const MemoryObject = plumbing.MemoryObject;
 
 /// go-git `transactional.ObjectStorage`.
 pub const ObjectStorage = struct {
-    /// Unified contract: set takes ownership (temporal owns after set).
-    pub const set_encoded_object_takes_ownership = true;
-    pub const new_encoded_object_storage_owned = false;
-
     base: *memory.Storage,
     temporal: *memory.Storage,
 

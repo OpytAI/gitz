@@ -97,10 +97,6 @@ pub fn Storage(comptime Fs: type) type {
         pub const set_index_can_fail = true;
         /// `reference()` returns owned name/target strings (free with freeRef pattern).
         pub const reference_returns_owned = true;
-        /// `setEncodedObject` takes ownership on success.
-        pub const set_encoded_object_takes_ownership = true;
-        /// `newEncodedObject` does not register storage ownership.
-        pub const new_encoded_object_storage_owned = false;
 
         pub const ObjectHashIter = ObjectHashIterT;
         pub const ReferenceIter = reference_mod.ReferenceSliceIter;

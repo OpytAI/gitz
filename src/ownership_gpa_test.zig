@@ -1,13 +1,10 @@
 //! Cross-module ownership GPA suite (visible acceptance aggregator).
 //!
 //! Runs production-loader scenarios under `std.testing.allocator` so leaks and
-//! double-frees fail the test. Representative ownership paths: walker early-exit
-//! + BFS diamond, isAncestor/merge-base free, remote isFastForward free, memory
-//! walker/merge-base plus FS EncodedObject discard, ObjectLru non-owning deinit,
-//! hash pad, and `deinitPools`. Dual-backend walker GPA stays in package tests.
-//!
-//! Per-package GPA tests remain in their modules; this target is counted by the
-//! README Ownership GPA suites row.
+//! double-frees fail the test: walker early-exit + BFS diamond on **memory and
+//! filesystem**, isAncestor/merge-base free, isFastForward free, EncodedObject
+//! new+discard on both backends, ObjectLru non-owning deinit, hash pad via
+//! `fromBytes`, and `deinitPools`.
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -53,40 +50,33 @@ fn storeCommit(
 }
 
 // ---------------------------------------------------------------------------
-// Walker: early exit (R3 unyielded free) + BFS diamond (R2 free on second load)
+// Walker: early exit (unyielded free on close) + BFS diamond (free on re-seen)
 // ---------------------------------------------------------------------------
 
-test "ownership GPA: walker early exit and diamond zero leaks (memory)" {
-    const gpa = std.testing.allocator;
-
-    var store = memory.Storage.init(gpa);
-    defer store.deinit();
-
+fn walkerEarlyExitAndDiamond(gpa: Allocator, store: anytype) !void {
     // linear: tip → mid → root
-    const h_root = try storeCommit(gpa, &store, &.{}, 1);
-    const h_mid = try storeCommit(gpa, &store, &.{h_root}, 2);
-    const h_tip = try storeCommit(gpa, &store, &.{h_mid}, 3);
+    const h_root = try storeCommit(gpa, store, &.{}, 1);
+    const h_mid = try storeCommit(gpa, store, &.{h_root}, 2);
+    const h_tip = try storeCommit(gpa, store, &.{h_mid}, 3);
 
     {
-        const tip = try object.getCommit(gpa, &store, h_tip);
+        const tip = try object.getCommit(gpa, store, h_tip);
         var iter = try object.newCommitIterBsf(gpa, tip, null, &.{});
         defer iter.deinit();
         const c = try iter.next();
         try std.testing.expect(c.hash.eql(h_tip));
         freeCommit(gpa, c);
-        // After yielding tip, only mid is enqueued (R3); root not yet loaded.
+        // After yield: mid still on queue until close frees unyielded.
     }
 
-    // diamond merge: tip → left/right → base
-    // BFS may enqueue base twice (from left and right); second load is freed on
-    // seen continue (R2 free-on-skip). R1 free each yield.
-    const h_base = try storeCommit(gpa, &store, &.{}, 10);
-    const h_left = try storeCommit(gpa, &store, &.{h_base}, 11);
-    const h_right = try storeCommit(gpa, &store, &.{h_base}, 12);
-    const h_merge = try storeCommit(gpa, &store, &.{ h_left, h_right }, 13);
+    // diamond: tip → left/right → base; BFS may load base twice — free on re-seen.
+    const h_base = try storeCommit(gpa, store, &.{}, 10);
+    const h_left = try storeCommit(gpa, store, &.{h_base}, 11);
+    const h_right = try storeCommit(gpa, store, &.{h_base}, 12);
+    const h_merge = try storeCommit(gpa, store, &.{ h_left, h_right }, 13);
 
     {
-        const tip = try object.getCommit(gpa, &store, h_merge);
+        const tip = try object.getCommit(gpa, store, h_merge);
         var iter = try object.newCommitIterBsf(gpa, tip, null, &.{});
         defer iter.deinit();
         var n: usize = 0;
@@ -100,6 +90,28 @@ test "ownership GPA: walker early exit and diamond zero leaks (memory)" {
         }
         try std.testing.expectEqual(@as(usize, 4), n);
     }
+}
+
+test "ownership GPA: walker early exit and diamond zero leaks (memory)" {
+    const gpa = std.testing.allocator;
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    try walkerEarlyExitAndDiamond(gpa, &store);
+}
+
+test "ownership GPA: walker early exit and diamond zero leaks (filesystem)" {
+    const gpa = std.testing.allocator;
+    defer sync.deinitPools(gpa);
+
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+    const store = try filesystem.newStorage(gpa, &mem, null);
+    defer {
+        store.deinit();
+        gpa.destroy(store);
+    }
+    try store.initLayout();
+    try walkerEarlyExitAndDiamond(gpa, store);
 }
 
 // ---------------------------------------------------------------------------
@@ -215,7 +227,7 @@ test "ownership GPA: ObjectLru put deinit leaves caller ownership" {
 }
 
 // ---------------------------------------------------------------------------
-// Hash pad: fromBytes clears dirty pad beyond active digest width (R7)
+// Hash pad: fromBytes clears dirty pad beyond active digest width
 // ---------------------------------------------------------------------------
 
 test "ownership GPA: hash fromBytes clears dirty pad" {
@@ -237,7 +249,7 @@ test "ownership GPA: hash fromBytes clears dirty pad" {
 }
 
 // ---------------------------------------------------------------------------
-// Process pools: deinitPools after get/put work (R8)
+// Process pools: deinitPools after get/put work
 // ---------------------------------------------------------------------------
 
 test "ownership GPA: deinitPools after work zero leaks" {

@@ -11,6 +11,8 @@
 //!   `isHashAny` for fixtures that mix widths.
 //! - Public construction: `fromBytes` / `fromHex` paths / `ZeroHash` / `Hasher.sum`.
 //!   `fromBytes` copies only active `digestSize()` so dirty pad under SHA-1 is cleared.
+//!   Do not write `Hash.bytes` by hand; re-canonicalize with `fromBytes(h.slice())`.
+//!   Digest-only equality is unnecessary when constructors keep pad zero.
 //! - Dual-format: a full SHA-256 OID (non-zero bytes[20..]) is only valid while the
 //!   active process format is SHA-256 (or inside `FormatScope(.sha256)`). Safety
 //!   builds assert pad-under-active-width on `eql`/`isZero`; re-canonicalize paths

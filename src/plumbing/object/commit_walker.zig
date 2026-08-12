@@ -147,11 +147,8 @@ pub fn loaderFromCommit(c: *Commit) CommitLoader {
     };
 }
 
-/// Free a heap-owned commit (R2 skip / R3 close / mid-next errdefer / R4).
-/// Thin alias of public `freeCommit`; no-op when `heap_owned == false`.
-///
-/// Invariant: when `heap_owned`, each load is a distinct allocation. Do not set
-/// `heap_owned` on identity-map aliases that may still be queued or yielded.
+/// Free a heap-owned production load (no-op for stack/map tips).
+/// Each `heap_owned` load is a distinct allocation — not an identity-map alias.
 fn freeOwnedCommit(c: *Commit) void {
     freeCommit(c.allocator, c);
 }

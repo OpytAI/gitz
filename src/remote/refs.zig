@@ -392,7 +392,7 @@ pub fn isFastForward(
     }
 
     // After successful construct, walker owns tip (start / free on deinit if unyielded).
-    // Mid-next OOM freeOwnedCommits the detached tip inside the walker — no tip_owned flag.
+    // Mid-next OOM frees the detached tip inside the walker.
     var walker = try objpkg.newCommitPreorderIter(allocator, tip, null, ignore);
     tip_for_walk = null;
     defer walker.deinit();

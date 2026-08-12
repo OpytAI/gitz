@@ -34,9 +34,6 @@ pub fn StorageFor(comptime Fs: type) type {
         modules: std.StringHashMapUnmanaged(*Self) = .empty,
 
         pub const implements_packfile_writer = true;
-        /// Unified EncodedObject contract (set adopts; new does not register).
-        pub const set_encoded_object_takes_ownership = true;
-        pub const new_encoded_object_storage_owned = false;
         /// FS refs return owned name/target strings (free with `freeReference`).
         pub const reference_returns_owned = Store.reference_returns_owned;
         pub const Index = Store.Index;

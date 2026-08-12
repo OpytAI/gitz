@@ -78,11 +78,6 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
     return struct {
         const Self = @This();
 
-        /// `setEncodedObject` adopts the pointer on success.
-        pub const set_encoded_object_takes_ownership = true;
-        /// `newEncodedObject` does not register storage ownership.
-        pub const new_encoded_object_storage_owned = false;
-
         allocator: Allocator,
         options: Options = .{},
         object_cache: ?*ObjectLru = null,

@@ -25,11 +25,6 @@ const ObjectMap = std.AutoHashMapUnmanaged(Hash, *MemoryObject);
 /// - pure `Allocator.Error` before the map insert: caller retains
 /// - `encodedObject` / lookup: borrow; store owns
 pub const ObjectStorage = struct {
-    /// `setEncodedObject` takes ownership on success / kept-but-error paths.
-    pub const set_encoded_object_takes_ownership = true;
-    /// `newEncodedObject` does not register storage ownership.
-    pub const new_encoded_object_storage_owned = false;
-
     allocator: Allocator,
     objects: ObjectMap = .empty,
     commits: ObjectMap = .empty,

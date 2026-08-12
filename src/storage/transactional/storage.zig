@@ -57,8 +57,6 @@ pub const Storage = struct {
 
     /// go-git: PackfileWriter iff temporal supports it (memory: false).
     pub const implements_packfile_writer = memory.Storage.implements_packfile_writer;
-    pub const set_encoded_object_takes_ownership = true;
-    pub const new_encoded_object_storage_owned = false;
 
     /// go-git `NewStorage(base, temporal)`.
     ///
