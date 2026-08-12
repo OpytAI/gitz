@@ -6,8 +6,10 @@ const object = @import("object");
 const plumbing = @import("plumbing");
 const repo = @import("repo");
 const worktree = @import("worktree");
+const sync = @import("utils/sync");
 const abi = @import("abi.zig");
 
+// Process allocator for this module. Pool get/put and `deinitPools` must share it.
 const allocator = std.heap.wasm_allocator;
 const fixed_clock = memory.Clock.fixedClock(memory.Time.unix(1_700_000_500, 0));
 
@@ -17,6 +19,8 @@ const Engine = struct {
 
     fn deinit(self: *Engine) void {
         self.restored.deinit(allocator);
+        // Engine close: drain process pools with the module allocator.
+        sync.deinitPools(allocator);
         self.* = undefined;
     }
 };
@@ -67,6 +71,9 @@ export fn gitz_buffer_capacity() u32 {
 }
 
 fn createImage() ![]u8 {
+    // One-shot session close (no long-lived Engine on the create path).
+    defer sync.deinitPools(allocator);
+
     const store = try memory.newStorageWithClock(allocator, fixed_clock);
     defer {
         store.deinit();

@@ -6,8 +6,10 @@ const object = @import("object");
 const plumbing = @import("plumbing");
 const remote = @import("remote");
 const repo = @import("repo");
+const sync = @import("utils/sync");
 const abi = @import("abi.zig");
 
+// Process allocator for this module. Pool get/put and `deinitPools` must share it.
 const allocator = std.heap.wasm_allocator;
 const clock = memory.Clock.fixedClock(memory.Time.unix(1_700_001_000, 0));
 
@@ -37,6 +39,10 @@ export fn gitz_result_buffer_capacity() u32 {
 }
 
 fn run() ![]u8 {
+    // Host/engine close: drain process pools with the same allocator as get/put.
+    // wasm_allocator does not GPA-check; native hosts still need this for leaks.
+    defer sync.deinitPools(allocator);
+
     const source_store = try memory.newStorageWithClock(allocator, clock);
     defer {
         source_store.deinit();

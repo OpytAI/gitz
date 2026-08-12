@@ -3,8 +3,10 @@ const memory = @import("memory");
 const packfile = @import("packfile");
 const plumbing = @import("plumbing");
 const remote = @import("remote");
+const sync = @import("utils/sync");
 const abi = @import("abi.zig");
 
+// Process allocator for this module. Pool get/put and `deinitPools` must share it.
 const allocator = std.heap.wasm_allocator;
 const Hash = plumbing.Hash;
 
@@ -17,6 +19,8 @@ const Fixture = struct {
     fn deinit(self: *Fixture) void {
         self.store.deinit();
         allocator.destroy(self.store);
+        // Host close for this fixture session: drain zlib/buffer free lists.
+        sync.deinitPools(allocator);
         self.* = undefined;
     }
 };

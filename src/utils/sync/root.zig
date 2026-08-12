@@ -25,7 +25,30 @@
 //! Zlib uses `std.compress.flate` with container `.zlib` (no `std.compress.zlib`
 //! in Zig 0.16).
 //!
-//! Call `deinitPools` when shutting down under a leak-checking allocator.
+//! # Process lifecycle (hosts)
+//!
+//! Free lists are **process-scoped**. `put*` returns nodes to package-level
+//! lists; nodes stay allocated until `deinitPools`.
+//!
+//! - Call `deinitPools(allocator)` once at host/engine shutdown (or end of a
+//!   leak-checked test), with the **same allocator** used for every get/put.
+//! - Do **not** call `deinitPools` from `Repository.deinit` /
+//!   `PlainRepository.deinit`: multi-repo hosts share one process pool, and
+//!   draining on each repo close thrashes free lists and races other repos.
+//! - After network use, also call transport `client.deinit()` (see
+//!   `//src/plumbing/transport/client`) so the protocol registry and default
+//!   clients are released. That is separate from pool drain.
+//!
+//! ## Allocator identity (native GPA vs freestanding wasm)
+//!
+//! | Host | Allocator | Leak checking |
+//! |------|-----------|---------------|
+//! | Native tests / tools | `std.testing.allocator` or a process GPA | `deinitPools` required for zero leaks |
+//! | Freestanding wasm examples | `std.heap.wasm_allocator` | No GPA; still drain on engine close so free-list nodes are not retained across module lifetime |
+//!
+//! Mixing allocators between get/put and `deinitPools` is undefined (nodes
+//! freed with the wrong allocator). Prefer one process allocator for all
+//! pool traffic.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -57,11 +80,28 @@ pub const getBufioReader = bufio_mod.getBufioReader;
 pub const putBufioReader = bufio_mod.putBufioReader;
 
 /// Release every free-list entry retained by this package.
+///
+/// Pass the same `allocator` used for get/put. Safe to call when pools are
+/// empty. See package docs for host shutdown rules.
 pub fn deinitPools(allocator: Allocator) void {
     bytes_mod.deinitBytesPools(allocator);
     zlib_mod.deinitZlibPools(allocator);
     bufio_mod.deinitBufioPools(allocator);
 }
+
+/// RAII helper for tests and short-lived hosts: `defer guard.deinit()`.
+pub const PoolGuard = struct {
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator) PoolGuard {
+        return .{ .allocator = allocator };
+    }
+
+    pub fn deinit(self: *PoolGuard) void {
+        deinitPools(self.allocator);
+        self.* = undefined;
+    }
+};
 
 test {
     _ = @import("free_list.zig");
@@ -99,4 +139,25 @@ test "smoke getZlibWriter putZlibWriter round trip" {
     const w2 = try getZlibWriter(gpa, &out2);
     try std.testing.expect(w == w2);
     putZlibWriter(w2);
+}
+
+test "PoolGuard drains free lists under testing allocator" {
+    const gpa = std.testing.allocator;
+    {
+        var guard = PoolGuard.init(gpa);
+        defer guard.deinit();
+        const buf = try getBytesBuffer(gpa);
+        try buf.appendSlice(gpa, "pool-guard");
+        putBytesBuffer(buf);
+    }
+    // Second guard must see an empty free list after the first drained.
+    {
+        var guard = PoolGuard.init(gpa);
+        defer guard.deinit();
+        const a = try getBytesBuffer(gpa);
+        const b = try getBytesBuffer(gpa);
+        try std.testing.expect(a != b);
+        putBytesBuffer(a);
+        putBytesBuffer(b);
+    }
 }

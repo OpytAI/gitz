@@ -74,6 +74,7 @@ zig_binary(
         "//src/plumbing/object",
         "//src/repo",
         "//src/storage/memory",
+        "//src/utils/sync",
         "//src/worktree",
     ],
 )
@@ -106,6 +107,7 @@ zig_binary(
         "//src/plumbing/format/packfile",
         "//src/remote",
         "//src/storage/memory",
+        "//src/utils/sync",
     ],
 )
 
@@ -163,6 +165,7 @@ zig_binary(
         "//src/remote",
         "//src/repo",
         "//src/storage/memory",
+        "//src/utils/sync",
         "//src/worktree",
     ],
 )
@@ -221,6 +224,7 @@ zig_binary(
         "//src/plumbing/object",
         "//src/repo",
         "//src/storage/memory",
+        "//src/utils/sync",
         "//src/worktree",
     ],
 )
@@ -280,6 +284,7 @@ zig_binary(
         "//src/remote",
         "//src/repo",
         "//src/storage/memory",
+        "//src/utils/sync",
         "//src/worktree",
     ],
 )

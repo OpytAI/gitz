@@ -51,3 +51,20 @@ The modules have no network, process, environment, thread, filesystem, random,
 or wall-clock imports. Native callers use the same `RepositoryFor` and
 `WorktreeFor` surface with filesystem storage and `fs.Os`; see
 `//src/repo:backend_test` for the on-disk proof.
+
+## Process lifecycle and allocators
+
+`utils/sync` free lists and (when used) the transport `client` registry are
+process-scoped. Each wasm example uses **one** process allocator
+(`std.heap.wasm_allocator`) for storage, pack work, and pool get/put. On engine
+or one-shot session close, the example calls `sync.deinitPools(allocator)` with
+that same allocator. `Repository` / store deinit does **not** drain pools.
+
+| Host | Allocator | Why drain |
+|------|-----------|-----------|
+| These freestanding wasm modules | `std.heap.wasm_allocator` | Free-list nodes stay live until drained; wasm has no GPA, so leaks are silent, but drain still keeps linear memory stable across repeated runs |
+| Native tests / tools | `std.testing.allocator` or a process GPA | Required for zero leaks under the GPA |
+
+These examples do not open network transports. Hosts that call
+`client.init` / `installDefaults` must also call `client.deinit()` once at
+process shutdown (after remotes/sessions are gone), then `deinitPools`.

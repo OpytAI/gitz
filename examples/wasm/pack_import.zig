@@ -5,8 +5,10 @@ const object = @import("object");
 const plumbing = @import("plumbing");
 const remote = @import("remote");
 const repo = @import("repo");
+const sync = @import("utils/sync");
 const abi = @import("abi.zig");
 
+// Process allocator for this module. Pool get/put and `deinitPools` must share it.
 const allocator = std.heap.wasm_allocator;
 
 const Engine = struct {
@@ -23,6 +25,8 @@ const Engine = struct {
         self.filesystem.deinit();
         self.store.deinit();
         allocator.destroy(self.store);
+        // Engine close: drain process pools (not Repository — none owns them).
+        sync.deinitPools(allocator);
         self.* = undefined;
     }
 };

@@ -58,6 +58,8 @@ pub const PlainOpenOptions = struct {
 ///
 /// Owns the storage and any chroot `Mem` created for `.git` / detect walks.
 /// Does **not** own the caller's original worktree / bare root `Mem`.
+/// Does **not** drain process-global `utils/sync` pools or the transport
+/// client registry — hosts call those once at process/engine shutdown.
 pub const PlainRepository = struct {
     allocator: Allocator,
     storer: *filesystem.StorageMem,
@@ -73,6 +75,8 @@ pub const PlainRepository = struct {
     /// Worktree FS; null when bare. May equal `owned_worktree` or caller's Mem.
     worktree: ?*Mem = null,
 
+    /// Frees owned storage and chroots only. Does not call `deinitPools` or
+    /// transport `client.deinit` (process-global; host shutdown).
     pub fn deinit(self: *PlainRepository) void {
         if (self.local_storer) |local| {
             local.deinit();

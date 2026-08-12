@@ -14,6 +14,24 @@
 //! `http`/`https`/`ssh`/`git`/`file` are registered like go-git's package-level
 //! `Protocols` map. Tests may still `installProtocol` to replace a scheme
 //! (e.g. MapLoader server).
+//!
+//! # Process lifecycle (hosts)
+//!
+//! The registry and default clients are **process-scoped**. After any network
+//! (or `init` / `installDefaults`) use, call `deinit()` at host/engine shutdown
+//! with the same process lifetime as `init`:
+//!
+//! 1. Tear down remotes / sessions that still borrow transports.
+//! 2. `client.deinit()` — frees scheme keys, default clients, and clears the map.
+//! 3. `utils/sync.deinitPools(allocator)` — drains zlib/buffer free lists used
+//!    during pack encode/decode (same allocator as get/put).
+//!
+//! Do **not** call `deinit` from `Repository.deinit` / `PlainRepository.deinit`:
+//! one registry serves the whole process. Multi-repo hosts shut the registry
+//! down once at process exit.
+//!
+//! Freestanding wasm examples in this tree do not register transports; native
+//! GPA tests that call `initWithDefaults` must `defer deinit()`.
 
 const std = @import("std");
 const testing = std.testing;
@@ -165,7 +183,10 @@ fn deinitDefaults(allocator: Allocator) void {
     defaults_installed = false;
 }
 
-/// Free all registered scheme keys and clear the map.
+/// Free default clients, registered scheme keys, and clear the map.
+///
+/// Host/process shutdown hook (not `Repository.deinit`). Safe when `init` was
+/// never called. After this, call `init` again before further registry use.
 pub fn deinit() void {
     const a = protocols_allocator orelse return;
     deinitDefaults(a);
