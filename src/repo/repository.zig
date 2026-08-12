@@ -292,12 +292,14 @@ pub fn RepositoryFor(comptime Storage: type, comptime Fs: type) type {
         // Object getters, Log, ResolveRevision, ref filters
         // -----------------------------------------------------------------------
 
+        /// Caller owns `*Commit`; free with `objpkg.freeCommit`.
         pub fn commitObject(self: *Self, h: plumbing.Hash) !*objpkg.Commit {
             return facade.commitObject(self.storer, h);
         }
         pub fn blobObject(self: *Self, h: plumbing.Hash) !objpkg.Blob {
             return facade.blobObject(self.storer, h);
         }
+        /// Caller owns `*Tree`; free with `objpkg.freeTree`.
         pub fn treeObject(self: *Self, h: plumbing.Hash) !*objpkg.Tree {
             return facade.treeObject(self.storer, h);
         }

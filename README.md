@@ -89,7 +89,7 @@ paths)—not package-path counts or API-name mapping ratios.
 | Behavioral goldens | 81 / 81 pass |
 | Bazel acceptance test targets | 86 / 86 pass |
 | Active compatibility allowlists | 0 |
-| Ownership GPA suites (memory + FS production loaders) | M / M pass |
+| Ownership GPA suites (memory + FS production loaders) | M / M (placeholder) |
 
 Ownership GPA suite counts are placeholders until the aggregator suite lands
 (PR12 of the ownership program). Inventories remain package-surface hygiene and

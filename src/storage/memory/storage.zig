@@ -246,7 +246,8 @@ pub const Storage = struct {
         return self.object_storage.forEachObjectHash(ctx, fun);
     }
 
-    /// Memory has no packs: always a static empty slice — do not free.
+    /// Memory has no packs: always a static empty slice. Never bare-free it;
+    /// `dotgit.freeHashes` is a no-op on empty if a shared free path is used.
     pub fn objectPacks(self: *const Storage) []const Hash {
         return self.object_storage.objectPacks();
     }

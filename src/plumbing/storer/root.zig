@@ -36,9 +36,9 @@
 //!   `deleteLooseObject`. `forEachObjectHash` takes an explicit context plus a
 //!   callback `fn (ctx, Hash) !void` (no process-local static bridges).
 //! - **PackedObjectStorer:** `objectPacks`, `deleteOldObjectPackAndIndex`.
-//!   **`objectPacks` ownership:** a non-empty heap slice transfers to the
-//!   caller (free with the storer allocator / `dotgit.freeHashes`); a
-//!   zero-length static empty (`&.{}`, memory backend) must **not** be freed.
+//!   **`objectPacks` ownership:** always free FS results with `dotgit.freeHashes`
+//!   (no-op on empty static). Never bare-free a zero-length static empty
+//!   (`&.{}`, memory backend). Non-empty heap slices transfer to the caller.
 //! - **PackfileWriter:** `packfileWriter()` when the backend supports direct pack ingest.
 //!   Callers type-assert (capability flag). If absent, write objects via `setEncodedObject`.
 //!   This package documents the method set only — no trait or stub.

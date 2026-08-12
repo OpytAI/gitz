@@ -87,8 +87,8 @@ pub const newReferenceUpdateRequestFromCapabilities = updreq_mod.newReferenceUpd
 /// |--------------|-------|-----------|
 /// | Stack `AdvRefs.init` | Caller | `deinit` only (no destroy) |
 /// | `allocAdvRefs` | Caller | `freeAdvRefs` |
-/// | Server / remote session `advertisedReferences` that **transfer** | Caller | `freeAdvRefs` |
-/// | HTTP `Session.advertisedReferences` (cached on session) | Session | `Session.close` only — **do not** `freeAdvRefs` |
+/// | Server / type-erased session that **transfers** (or clones) | Caller | `freeAdvRefs` |
+/// | Concrete session caches: HTTP `Session`, `transport/internal/common.Session` | Session | `Session.close` only — **do not** `freeAdvRefs` |
 ///
 /// Never free a session-cached pointer; never leave a transferred heap pointer
 /// unfreed. Call-site docs state which rule applies.
@@ -101,7 +101,7 @@ pub fn allocAdvRefs(allocator: std.mem.Allocator) std.mem.Allocator.Error!*AdvRe
 }
 
 /// Free a heap `*AdvRefs` from `allocAdvRefs` or a transferring session.
-/// Do not use for HTTP session-cached returns (session owns those).
+/// Do not use for concrete session-cached returns (HTTP / common.Session).
 pub fn freeAdvRefs(allocator: std.mem.Allocator, ar: *AdvRefs) void {
     ar.deinit();
     allocator.destroy(ar);

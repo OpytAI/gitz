@@ -8,8 +8,8 @@
 //! |--------------|-------|-----------|
 //! | Stack `AdvRefs.init` | Caller | `deinit` only |
 //! | `allocAdvRefs` | Caller | `freeAdvRefs` |
-//! | Transferring session return | Caller | `freeAdvRefs` |
-//! | HTTP session cache (`Session.adv_refs`) | Session | `Session.close` — do not `freeAdvRefs` |
+//! | Transferring / type-erased session return | Caller | `freeAdvRefs` |
+//! | Session caches: HTTP `Session`, `transport/internal/common.Session` | Session | `Session.close` — do not `freeAdvRefs` |
 //!
 //! See `packp.root` heap helpers for the dual rule summary.
 

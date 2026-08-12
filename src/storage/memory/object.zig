@@ -268,7 +268,7 @@ pub const ObjectStorage = struct {
     }
 
     /// Memory backend has no packs (go-git `ObjectPacks` → nil).
-    /// Returns a zero-length slice; do not free.
+    /// Returns a zero-length static slice; never bare-free it.
     pub fn objectPacks(self: *const ObjectStorage) []const Hash {
         _ = self;
         return &.{};
