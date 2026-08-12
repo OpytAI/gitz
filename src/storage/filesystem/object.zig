@@ -1064,6 +1064,8 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             return self.dir.forEachObjectHash(ctx, fun);
         }
 
+        /// List pack hashes. Non-empty: caller frees with `dotgit.freeHashes`.
+        /// Empty: static zero-length slice — do not free.
         pub fn objectPacks(self: *Self) (Allocator.Error || fs_pkg.Error)![]Hash {
             return self.dir.objectPacks();
         }

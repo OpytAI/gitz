@@ -37,10 +37,10 @@ The workspace `.bazelrc` configures the shared output root.
 Valid package statuses are `required`, `deferred`, `excluded`, and `test_only`.
 Inventories are **navigation and package-surface hygiene**: they map the pinned
 go-git tree to gitz paths and exports so hollow or missing packages fail CI.
-The inventory's numeric fields (including API-name mapping ratios) are legacy
-compatibility data used by existing checkers. They are **not** a project success
-metric or roadmap. Prefer behavioral goldens, Bazel gate health, allowlists, and
-ownership GPA cleanliness (see [`docs/OWNERSHIP.md`](OWNERSHIP.md)).
+Numeric API-name mapping fields (`zig_map` coverage, `min_mapped_ratio`) are
+legacy compatibility data used by existing checkers; they are **not** a project
+success metric or roadmap driver. Prefer behavioral goldens, Bazel gate health,
+allowlists, and ownership GPA suites (see [`docs/OWNERSHIP.md`](OWNERSHIP.md)).
 
 ## Add a golden
 

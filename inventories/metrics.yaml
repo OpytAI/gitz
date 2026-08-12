@@ -16,8 +16,10 @@ packages:
 api:
   # Count of inventories/api/*.yaml.
   min_files: 62
-  # zig_map coverage of required API names.
-  min_mapped_ratio: 0.5
+  # Mapped-ratio growth is not a roadmap driver. Keep the field so checkers
+  # still report the ratio; floor 0.0 so the gate cannot enforce signature
+  # parity pressure.
+  min_mapped_ratio: 0.0
 
 goldens:
   # Number of golden case directories under data/goldens.

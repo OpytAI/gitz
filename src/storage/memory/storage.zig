@@ -246,6 +246,7 @@ pub const Storage = struct {
         return self.object_storage.forEachObjectHash(ctx, fun);
     }
 
+    /// Memory has no packs: always a static empty slice — do not free.
     pub fn objectPacks(self: *const Storage) []const Hash {
         return self.object_storage.objectPacks();
     }

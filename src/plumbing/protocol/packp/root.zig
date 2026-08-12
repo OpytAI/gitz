@@ -81,6 +81,18 @@ pub const newReferenceUpdateRequestFromCapabilities = updreq_mod.newReferenceUpd
 // Heap helpers (go-git returns pointers)
 // ---------------------------------------------------------------------------
 
+/// AdvRefs ownership (dual rule):
+///
+/// | How obtained | Owner | Free with |
+/// |--------------|-------|-----------|
+/// | Stack `AdvRefs.init` | Caller | `deinit` only (no destroy) |
+/// | `allocAdvRefs` | Caller | `freeAdvRefs` |
+/// | Server / remote session `advertisedReferences` that **transfer** | Caller | `freeAdvRefs` |
+/// | HTTP `Session.advertisedReferences` (cached on session) | Session | `Session.close` only — **do not** `freeAdvRefs` |
+///
+/// Never free a session-cached pointer; never leave a transferred heap pointer
+/// unfreed. Call-site docs state which rule applies.
+
 /// Heap-allocate AdvRefs. Free with `freeAdvRefs`.
 pub fn allocAdvRefs(allocator: std.mem.Allocator) std.mem.Allocator.Error!*AdvRefs {
     const ar = try allocator.create(AdvRefs);
@@ -88,6 +100,8 @@ pub fn allocAdvRefs(allocator: std.mem.Allocator) std.mem.Allocator.Error!*AdvRe
     return ar;
 }
 
+/// Free a heap `*AdvRefs` from `allocAdvRefs` or a transferring session.
+/// Do not use for HTTP session-cached returns (session owns those).
 pub fn freeAdvRefs(allocator: std.mem.Allocator, ar: *AdvRefs) void {
     ar.deinit();
     allocator.destroy(ar);

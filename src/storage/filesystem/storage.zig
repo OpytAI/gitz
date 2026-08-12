@@ -263,6 +263,7 @@ pub fn Storage(comptime Fs: type) type {
             return self.object_storage.deleteOldObjectPackAndIndex(h, t);
         }
 
+        /// Non-empty heap list: free with `dotgit.freeHashes`. Empty: do not free.
         pub fn objectPacks(self: *Self) (Allocator.Error || fs_pkg.Error)![]Hash {
             return self.object_storage.objectPacks();
         }

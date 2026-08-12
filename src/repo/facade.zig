@@ -33,7 +33,7 @@ pub const log = log_mod.log;
 
 // --- Object getters ---
 
-/// go-git `CommitObject`. Caller owns `*Commit` (`deinit` + `destroy`).
+/// go-git `CommitObject`. Caller owns `*Commit`; free with `objpkg.freeCommit`.
 pub fn commitObject(store: anytype, h: Hash) !*objpkg.Commit {
     return objpkg.getCommit(store.allocator, store, h);
 }

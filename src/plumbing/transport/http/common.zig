@@ -874,6 +874,10 @@ pub const Session = struct {
     }
 
     /// go-git `advertisedReferences`.
+    ///
+    /// **Session-owned:** the returned pointer is cached on `self.adv_refs` and
+    /// freed only in `close`. Callers must **not** `freeAdvRefs` it (contrast
+    /// with server/remote sessions that transfer ownership to the caller).
     pub fn advertisedReferences(self: *Session, service_name: []const u8) !*packp.AdvRefs {
         if (self.adv_refs) |ar| return ar;
 

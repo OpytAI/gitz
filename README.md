@@ -80,20 +80,20 @@ import-audit, ABI, memory, and size contracts.
 ## Project status
 
 gitz is under active development. The acceptance gate passes all 86 Bazel test
-targets. The gate checks the following parity evidence against go-git v5.19.2:
+targets. Evidence of progress is **behavioral goldens versus the pinned go-git
+revision** and **ownership under Zig contracts** (free companions, GPA-clean
+paths)—not package-path counts or API-name mapping ratios.
 
 | Metric | Current result |
 | --- | ---: |
-| Required go-git package paths | 62 / 62 present |
-| Package API inventories | 62 / 62 valid |
-| Explicit API name mappings | 571 / 748 (76.34%) |
 | Behavioral goldens | 81 / 81 pass |
 | Bazel acceptance test targets | 86 / 86 pass |
 | Active compatibility allowlists | 0 |
+| Ownership GPA suites (memory + FS production loaders) | M / M pass |
 
-Package-surface parity is complete for the pinned revision. Explicit API-name
-mapping remains in progress. The behavioral goldens and native and WebAssembly
-tests protect compatibility as that mapping expands.
+Ownership GPA suite counts are placeholders until the aggregator suite lands
+(PR12 of the ownership program). Inventories remain package-surface hygiene and
+navigation aids; numeric API-name mapping is not a project success metric.
 
 Reproduce the results with:
 
