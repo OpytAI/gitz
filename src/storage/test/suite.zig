@@ -189,6 +189,7 @@ pub fn testDiscardEncodedObjectNeverSet(s: anytype) !void {
 }
 
 /// GPA: lookup returns a borrow; consumer must not destroy; storage deinit frees.
+/// Proof is fixture deinit under testing.allocator (leak if consumer destroyed).
 pub fn testEncodedObjectLookupIsBorrow(s: anytype) !void {
     const obj = try s.newTypedObject(.blob);
     _ = try obj.write("borrow-me");
@@ -196,7 +197,7 @@ pub fn testEncodedObjectLookupIsBorrow(s: anytype) !void {
     const got = try s.storer.encodedObject(.blob, h);
     try objectEquals(got, obj);
     // Memory reuses the set pointer; FS may reload a storage-owned clone from disk.
-    // Either way the consumer must not destroy — storage deinit owns cleanup.
+    // Intentionally do not destroy `got` — suite GPA deinit of the store is the proof.
 }
 
 pub fn testIterEncodedObjects(s: anytype) !void {

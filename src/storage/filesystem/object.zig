@@ -249,11 +249,16 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
         /// go-git `SetEncodedObject` — write loose object; storage takes ownership on success.
         ///
         /// Delta types fail before any write (`error.InvalidType`); caller retains.
-        /// On successful write, `obj` is registered in `owned` and must not be freed by the caller.
+        /// Ownership slot is reserved **before** durable install so `OutOfMemory` cannot
+        /// leave an on-disk object without storage bookkeeping. On success, `obj` is in
+        /// `owned` and must not be freed by the caller.
         pub fn setEncodedObject(self: *Self, obj: *MemoryObject) Error!Hash {
             if (obj.object_type == .ofs_delta or obj.object_type == .ref_delta) {
                 return error.InvalidType;
             }
+
+            // Reserve adopt capacity before close so durable write ⇔ bookkeeping succeed together.
+            try prepareAdopt(self, obj);
 
             var ow = try self.dir.newObject();
             errdefer ow.abandon();
@@ -264,25 +269,39 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
                 _ = try ow.write(content);
             }
             try ow.close();
-            // Adopt after durable write so pure write failures leave caller ownership.
-            try ensureOwned(self, obj);
+            adoptPrepared(self, obj);
             return obj.hash();
         }
 
-        /// Abandon a caller-owned create that was never successfully set.
-        /// Safe if `obj` is not in `owned`; removes then destroys if present.
+        /// Abandon a never-set create. Removes from `owned` if present; frees with `obj.allocator`.
+        /// For never-set creates only — do not discard lookup borrows or post-set objects.
         pub fn discardEncodedObject(self: *Self, obj: *MemoryObject) void {
             removeOwned(self, obj);
+            const a = obj.allocator;
             obj.deinit();
-            self.allocator.destroy(obj);
+            a.destroy(obj);
         }
 
-        /// Register `obj` in `owned` if not already tracked (set / adopt paths).
-        fn ensureOwned(self: *Self, obj: *MemoryObject) Allocator.Error!void {
+        /// Ensure room to adopt `obj` (no-op if already tracked). Call before durable write.
+        fn prepareAdopt(self: *Self, obj: *MemoryObject) Allocator.Error!void {
             for (self.owned.items) |o| {
                 if (o == obj) return;
             }
-            try self.owned.append(self.allocator, obj);
+            try self.owned.ensureUnusedCapacity(self.allocator, 1);
+        }
+
+        /// Record ownership after `prepareAdopt` (no allocation).
+        fn adoptPrepared(self: *Self, obj: *MemoryObject) void {
+            for (self.owned.items) |o| {
+                if (o == obj) return;
+            }
+            self.owned.appendAssumeCapacity(obj);
+        }
+
+        /// Register `obj` in `owned` if not already tracked (load / adopt paths).
+        fn ensureOwned(self: *Self, obj: *MemoryObject) Allocator.Error!void {
+            try prepareAdopt(self, obj);
+            adoptPrepared(self, obj);
         }
 
         /// go-git `ObjectStorage.LazyWriter` result.

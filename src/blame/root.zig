@@ -1031,6 +1031,7 @@ fn storeCommitWithFile(
     const storer_getter = storer.ObjectGetter.from(@TypeOf(store.*), store);
 
     const blob_obj = try store.newEncodedObject();
+    errdefer store.discardEncodedObject(blob_obj);
     blob_obj.setType(.blob);
     try blob_obj.setContent(content);
     const blob_h = try store.setEncodedObject(blob_obj);
@@ -1047,6 +1048,7 @@ fn storeCommitWithFile(
         try sub.appendEntry(base, filemode.Regular, blob_h);
         sub.sortEntries();
         const sub_obj = try store.newEncodedObject();
+        errdefer store.discardEncodedObject(sub_obj);
         try sub.encode(sub_obj);
         const sub_h = try store.setEncodedObject(sub_obj);
         try tree.appendEntry(dir_name, filemode.Dir, sub_h);
@@ -1055,6 +1057,7 @@ fn storeCommitWithFile(
     }
     tree.sortEntries();
     const tree_obj = try store.newEncodedObject();
+    errdefer store.discardEncodedObject(tree_obj);
     try tree.encode(tree_obj);
     const tree_h = try store.setEncodedObject(tree_obj);
 
@@ -1074,6 +1077,7 @@ fn storeCommitWithFile(
     , .{ author_name, author_email, when, author_name, author_email, when, message });
 
     var commit_obj = try store.newEncodedObject();
+    errdefer store.discardEncodedObject(commit_obj);
     commit_obj.setType(.commit);
     try commit_obj.setContent(body.written());
     return try store.setEncodedObject(commit_obj);

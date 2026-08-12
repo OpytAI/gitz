@@ -280,6 +280,7 @@ fn createAnnotatedTagObject(
     }
 
     const out = try store.newEncodedObject();
+    errdefer store.discardEncodedObject(out);
     try tag_obj.encode(out);
     return try store.setEncodedObject(out);
 }

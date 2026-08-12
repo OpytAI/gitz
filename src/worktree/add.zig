@@ -292,8 +292,8 @@ pub fn copyFileToStorage(w: anytype, path: []const u8) !Hash {
         }
     }
 
-    // setEncodedObject takes ownership of obj on success (and on
-    // UnsupportedObjectType). Blob type always succeeds ownership transfer.
+    // setEncodedObject takes ownership of obj on success (blob always succeeds).
+    // Do not pair errdefer discard with UnsupportedObjectType keep-but-error paths.
     return try w.storer.setEncodedObject(obj);
 }
 

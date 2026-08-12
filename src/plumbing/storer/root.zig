@@ -15,9 +15,14 @@
 //! | Method | Role |
 //! |--------|------|
 //! | `newEncodedObject()` | Return a new empty `*MemoryObject` (heap; caller owns until set or discard) |
-//! | `setEncodedObject(obj)` | Save object; storage takes ownership on success; return `plumbing.Hash` |
-//! | `discardEncodedObject(obj)` | Abandon a never-set create (safe with storage deinit) |
+//! | `setEncodedObject(obj)` | Save object; storage takes ownership on success (and memory `UnsupportedObjectType` keep-but-error); return `plumbing.Hash` |
+//! | `discardEncodedObject(obj)` | Abandon a never-set create only — not after set, not for lookup borrows |
 //! | `encodedObject(object_type, hash)` | Load by type + hash (borrow; storage owns); `AnyObject` matches any type |
+//!
+//! **errdefer note:** `errdefer store.discardEncodedObject(obj)` is valid when set
+//! either fully fails without adopt or the call site only sets types that cannot
+//! yield memory `UnsupportedObjectType`. On that keep-but-error path, mark the
+//! object transferred and do not discard.
 //! | `iterEncodedObjects(object_type)` | Iterator over objects of the given type |
 //! | `hasEncodedObject(hash)` | `error.ObjectNotFound` if missing, else success |
 //! | `encodedObjectSize(hash)` | Plaintext size of the encoded object body |

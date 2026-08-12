@@ -165,11 +165,14 @@ pub const RepoStorer = struct {
 
     /// Build from a concrete EncodedObjectStorer + ReferenceStorer type.
     ///
-    /// `T` must expose `.allocator` and the usual storage methods. If
-    /// `T.reference_returns_owned` is true (filesystem), values from
+    /// `T` must expose `.allocator`, `discardEncodedObject`, and the usual storage
+    /// methods. If `T.reference_returns_owned` is true (filesystem), values from
     /// `reference` are already owned; otherwise they are duplicated so the
     /// free contract is uniform.
     pub fn from(comptime T: type, impl: *T) RepoStorer {
+        if (comptime !@hasDecl(T, "discardEncodedObject")) {
+            @compileError(@typeName(T) ++ " must implement discardEncodedObject for RepoStorer");
+        }
         const gen = struct {
             fn encodedObjectFn(ptr: *anyopaque, t: ObjectType, h: Hash) anyerror!*MemoryObject {
                 const s: *T = @ptrCast(@alignCast(ptr));
@@ -185,12 +188,7 @@ pub const RepoStorer = struct {
             }
             fn discardEncodedObjectFn(ptr: *anyopaque, obj: *MemoryObject) void {
                 const s: *T = @ptrCast(@alignCast(ptr));
-                if (comptime @hasDecl(T, "discardEncodedObject")) {
-                    s.discardEncodedObject(obj);
-                } else {
-                    obj.deinit();
-                    s.allocator.destroy(obj);
-                }
+                s.discardEncodedObject(obj);
             }
             fn setReferenceFn(ptr: *anyopaque, ref: Reference) anyerror!void {
                 const s: *T = @ptrCast(@alignCast(ptr));

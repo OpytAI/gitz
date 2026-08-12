@@ -68,9 +68,12 @@ pub const ObjectStorage = struct {
         return self.base.newEncodedObject();
     }
 
-    /// Discard a never-set create. New objects are not registered on base/temporal.
+    /// Discard a never-set create from `newEncodedObject` (via base factory).
+    ///
+    /// Frees with `obj.allocator`. If the pointer is in temporal maps (post-set
+    /// misuse), removes it first. Do not discard lookup borrows from base/temporal.
+    /// Requires base and temporal to share the same allocator as the object (usual).
     pub fn discardEncodedObject(self: *ObjectStorage, obj: *MemoryObject) void {
-        // Prefer temporal remove (if incorrectly discarded after set); else base; else free.
         self.temporal.discardEncodedObject(obj);
     }
 
@@ -90,10 +93,19 @@ pub const ObjectStorage = struct {
             const obj = iter.next() catch |err| switch (err) {
                 error.EndOfStream => return,
             };
-            const copy = try cloneMemoryObject(self.base.allocator, obj);
+            const copy = try obj.cloneHeap(self.base.allocator);
             // Ownership of `copy` transfers to base on success and on
             // UnsupportedObjectType (memory stores then returns the error).
-            _ = try self.base.setEncodedObject(copy);
+            var transferred = false;
+            errdefer if (!transferred) {
+                copy.deinit();
+                self.base.allocator.destroy(copy);
+            };
+            _ = self.base.setEncodedObject(copy) catch |err| {
+                if (err == error.UnsupportedObjectType) transferred = true;
+                return err;
+            };
+            transferred = true;
         }
     }
 };
@@ -149,25 +161,6 @@ pub const MultiObjectIter = struct {
         }
     }
 };
-
-fn cloneMemoryObject(allocator: Allocator, src: *const MemoryObject) Allocator.Error!*MemoryObject {
-    const obj = try allocator.create(MemoryObject);
-    errdefer allocator.destroy(obj);
-    obj.* = MemoryObject.init(allocator);
-    errdefer obj.deinit();
-    obj.setType(src.object_type);
-    if (src.content.items.len > 0) {
-        _ = try obj.write(src.content.items);
-    } else {
-        obj.size = src.size;
-    }
-    // Preserve cached hash when content matches (content-addressed objects).
-    if (!src.cached_hash.isZero() and obj.content.items.len == src.content.items.len) {
-        obj.cached_hash = src.cached_hash;
-    }
-    obj.delta = src.delta;
-    return obj;
-}
 
 // ---------------------------------------------------------------------------
 // Tests (go-git object_test.go)

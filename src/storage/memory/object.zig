@@ -64,9 +64,8 @@ pub const ObjectStorage = struct {
         return obj;
     }
 
-    /// Abandon a caller-owned create that was never successfully set.
-    /// If `obj` is already in the store maps (incorrect double-discard after set),
-    /// remove it first so deinit cannot double-free.
+    /// Abandon a never-set create (or remove+free if present in maps).
+    /// Frees with `obj.allocator`. Do not discard lookup borrows or post-set objects.
     pub fn discardEncodedObject(self: *ObjectStorage, obj: *MemoryObject) void {
         const h = obj.hash();
         if (self.objects.get(h)) |stored| {
@@ -75,8 +74,9 @@ pub const ObjectStorage = struct {
                 self.removeFromTypeMaps(h, obj.object_type);
             }
         }
+        const a = obj.allocator;
         obj.deinit();
-        self.allocator.destroy(obj);
+        a.destroy(obj);
     }
 
     /// Store `obj` and take ownership (go-git `SetEncodedObject`).
@@ -84,13 +84,29 @@ pub const ObjectStorage = struct {
     /// Always inserts into `objects`. Type maps get commit/tree/blob/tag only.
     /// OFS/REF delta and other types still land in `objects` but return
     /// `error.UnsupportedObjectType` (go-git keeps the object and returns the error).
+    ///
+    /// Capacity for `objects` and the matching type map is reserved **before** any
+    /// insert, so `Allocator.Error` never follows ownership transfer. The only
+    /// post-adopt error is `UnsupportedObjectType` (object retained).
+    ///
+    /// Callers using `errdefer discard` must treat `UnsupportedObjectType` as
+    /// transferred (do not discard), or only set types that cannot yield that error.
     pub fn setEncodedObject(self: *ObjectStorage, obj: *MemoryObject) (Allocator.Error || Error)!Hash {
         const h = obj.hash();
 
-        // Peek previous without removing so a failed `put` cannot drop it.
-        const previous = self.objects.get(h);
+        // Reserve all map capacity before adopting so OOM cannot leave a half-inserted object.
+        try self.objects.ensureUnusedCapacity(self.allocator, 1);
+        switch (obj.object_type) {
+            .commit => try self.commits.ensureUnusedCapacity(self.allocator, 1),
+            .tree => try self.trees.ensureUnusedCapacity(self.allocator, 1),
+            .blob => try self.blobs.ensureUnusedCapacity(self.allocator, 1),
+            .tag => try self.tags.ensureUnusedCapacity(self.allocator, 1),
+            else => {},
+        }
 
-        try self.objects.put(self.allocator, h, obj);
+        // Peek previous without removing so we can free it after adopt.
+        const previous = self.objects.get(h);
+        self.objects.putAssumeCapacity(h, obj);
 
         // Ownership transferred. Free the displaced object (if different).
         if (previous) |old| {
@@ -105,10 +121,10 @@ pub const ObjectStorage = struct {
         }
 
         switch (obj.object_type) {
-            .commit => try self.commits.put(self.allocator, h, obj),
-            .tree => try self.trees.put(self.allocator, h, obj),
-            .blob => try self.blobs.put(self.allocator, h, obj),
-            .tag => try self.tags.put(self.allocator, h, obj),
+            .commit => self.commits.putAssumeCapacity(h, obj),
+            .tree => self.trees.putAssumeCapacity(h, obj),
+            .blob => self.blobs.putAssumeCapacity(h, obj),
+            .tag => self.tags.putAssumeCapacity(h, obj),
             else => return error.UnsupportedObjectType,
         }
         return h;
@@ -304,10 +320,12 @@ pub const TxObjectStorage = struct {
     }
 
     /// Buffer `obj` for this transaction; takes ownership (go-git `SetEncodedObject`).
+    /// Capacity is reserved before insert so `Allocator.Error` never follows adopt.
     pub fn setEncodedObject(self: *TxObjectStorage, obj: *MemoryObject) Allocator.Error!Hash {
         const h = obj.hash();
+        try self.objects.ensureUnusedCapacity(self.storage.allocator, 1);
         const previous = self.objects.get(h);
-        try self.objects.put(self.storage.allocator, h, obj);
+        self.objects.putAssumeCapacity(h, obj);
         if (previous) |old| {
             if (old != obj) {
                 old.deinit();
@@ -315,6 +333,17 @@ pub const TxObjectStorage = struct {
             }
         }
         return h;
+    }
+
+    /// Abandon a never-set create buffered only by the caller (or remove from tx maps).
+    pub fn discardEncodedObject(self: *TxObjectStorage, obj: *MemoryObject) void {
+        const h = obj.hash();
+        if (self.objects.get(h)) |stored| {
+            if (stored == obj) _ = self.objects.remove(h);
+        }
+        const a = obj.allocator;
+        obj.deinit();
+        a.destroy(obj);
     }
 
     /// Look up only in the transaction buffer (go-git `EncodedObject`).

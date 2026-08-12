@@ -126,4 +126,26 @@ pub const MemoryObject = struct {
     pub fn readerBytes(self: *const MemoryObject) []const u8 {
         return self.content.items;
     }
+
+    /// Heap clone for transactional / pack publish paths.
+    ///
+    /// Copies `object_type`, `hash_algo`, content (or declared `size`), `cached_hash`,
+    /// and `delta`. Caller owns until successful `setEncodedObject` or discard.
+    pub fn cloneHeap(self: *const MemoryObject, allocator: std.mem.Allocator) std.mem.Allocator.Error!*MemoryObject {
+        const obj = try allocator.create(MemoryObject);
+        errdefer allocator.destroy(obj);
+        obj.* = MemoryObject.initAlgo(allocator, self.hash_algo);
+        errdefer obj.deinit();
+        obj.setType(self.object_type);
+        if (self.content.items.len > 0) {
+            try obj.setContent(self.content.items);
+        } else {
+            obj.size = self.size;
+        }
+        if (!self.cached_hash.isZero()) {
+            obj.cached_hash = self.cached_hash;
+        }
+        obj.delta = self.delta;
+        return obj;
+    }
 };

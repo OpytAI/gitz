@@ -97,12 +97,18 @@ const ImportTarget = struct {
 
     pub fn putContent(self: *ImportTarget, t: plumbing.ObjectType, content: []const u8) !Hash {
         const obj = try self.allocator.create(plumbing.MemoryObject);
-        errdefer self.allocator.destroy(obj);
         obj.* = plumbing.MemoryObject.init(self.allocator);
         obj.hash_algo = self.base.hashAlgo();
-        errdefer obj.deinit();
+        // Tx set only fails with Allocator.Error before adopt (capacity reserved first).
+        var transferred = false;
+        errdefer if (!transferred) {
+            obj.deinit();
+            self.allocator.destroy(obj);
+        };
         obj.setType(t);
         try obj.setContent(content);
-        return self.transaction.setEncodedObject(obj);
+        const h = try self.transaction.setEncodedObject(obj);
+        transferred = true;
+        return h;
     }
 };

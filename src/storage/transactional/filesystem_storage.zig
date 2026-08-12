@@ -59,9 +59,9 @@ pub fn StorageFor(comptime Fs: type) type {
             return self.base.newEncodedObject();
         }
 
-        /// Discard a never-set create (new does not register on base/temporal).
+        /// Discard a never-set create from `newEncodedObject` (via base factory).
+        /// Frees with `obj.allocator`; removes from temporal if present. Never-set only.
         pub fn discardEncodedObject(self: *Self, obj: *MemoryObject) void {
-            // Prefer temporal (post-set mis-use); never-set objects free either way.
             self.temporal.discardEncodedObject(obj);
         }
 
@@ -247,7 +247,7 @@ pub fn StorageFor(comptime Fs: type) type {
             var objects = try self.temporal.iterEncodedObjects(.any);
             defer objects.deinit();
             while (objects.next()) |obj| {
-                const copy = try cloneMemoryObject(self.base.allocator, obj);
+                const copy = try obj.cloneHeap(self.base.allocator);
                 // Base takes ownership of `copy` on success; free on pure failure.
                 var transferred = false;
                 errdefer if (!transferred) {
@@ -293,25 +293,6 @@ pub fn StorageFor(comptime Fs: type) type {
 
 pub const StorageMem = StorageFor(fs_pkg.Mem);
 pub const StorageOs = StorageFor(fs_pkg.Os);
-
-fn cloneMemoryObject(allocator: Allocator, src: *const MemoryObject) Allocator.Error!*MemoryObject {
-    const obj = try allocator.create(MemoryObject);
-    errdefer allocator.destroy(obj);
-    obj.* = MemoryObject.init(allocator);
-    errdefer obj.deinit();
-    obj.setType(src.object_type);
-    obj.hash_algo = src.hash_algo;
-    if (src.content.items.len > 0) {
-        _ = try obj.write(src.content.items);
-    } else {
-        obj.size = src.size;
-    }
-    if (!src.cached_hash.isZero() and obj.content.items.len == src.content.items.len) {
-        obj.cached_hash = src.cached_hash;
-    }
-    obj.delta = src.delta;
-    return obj;
-}
 
 fn cloneConfig(allocator: Allocator, src: *const filesystem.Config) Allocator.Error!*filesystem.Config {
     const dst = try allocator.create(filesystem.Config);

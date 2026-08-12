@@ -126,13 +126,17 @@ fn readStorage(reader: *ImageReader, store: *memory.Storage) !void {
         const object_type: plumbing.ObjectType = @enumFromInt(@as(i8, @bitCast(try reader.byte())));
         const content = try reader.bytes();
         const obj = try store.newEncodedObject();
-        errdefer {
-            obj.deinit();
-            store.allocator.destroy(obj);
-        }
+        // discard is map-safe; after adopt only UnsupportedObjectType returns error
+        // and retains the object — mark transferred so we do not undo keep-but-error.
+        var transferred = false;
+        errdefer if (!transferred) store.discardEncodedObject(obj);
         obj.setType(object_type);
         try obj.setContent(content);
-        _ = try store.setEncodedObject(obj);
+        _ = store.setEncodedObject(obj) catch |err| {
+            if (err == error.UnsupportedObjectType) transferred = true;
+            return err;
+        };
+        transferred = true;
     }
 
     const ref_count = try reader.int(u32);

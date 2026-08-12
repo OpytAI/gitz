@@ -77,7 +77,7 @@ pub fn FilesystemPackImportSessionFor(comptime Fs: type) type {
             var objects = try self.staging.iterEncodedObjects(.any);
             defer objects.deinit();
             while (objects.next()) |obj| {
-                const copy = try cloneMemoryObject(self.allocator, obj);
+                const copy = try obj.cloneHeap(self.allocator);
                 var transferred = false;
                 errdefer if (!transferred) {
                     copy.deinit();
@@ -120,32 +120,22 @@ fn FilesystemImportTarget(comptime Fs: type) type {
 
         pub fn putContent(self: *Self, t: plumbing.ObjectType, content: []const u8) !Hash {
             const obj = try self.allocator.create(plumbing.MemoryObject);
-            errdefer self.allocator.destroy(obj);
             obj.* = plumbing.MemoryObject.init(self.allocator);
             obj.hash_algo = self.base.hashAlgo();
-            errdefer obj.deinit();
+            var transferred = false;
+            errdefer if (!transferred) {
+                obj.deinit();
+                self.allocator.destroy(obj);
+            };
             obj.setType(t);
             try obj.setContent(content);
-            return self.staging.setEncodedObject(obj);
+            // Memory set adopts before UnsupportedObjectType; mark transferred on that path.
+            const h = self.staging.setEncodedObject(obj) catch |err| {
+                if (err == error.UnsupportedObjectType) transferred = true;
+                return err;
+            };
+            transferred = true;
+            return h;
         }
     };
-}
-
-fn cloneMemoryObject(allocator: Allocator, src: *const plumbing.MemoryObject) Allocator.Error!*plumbing.MemoryObject {
-    const obj = try allocator.create(plumbing.MemoryObject);
-    errdefer allocator.destroy(obj);
-    obj.* = plumbing.MemoryObject.init(allocator);
-    errdefer obj.deinit();
-    obj.setType(src.object_type);
-    obj.hash_algo = src.hash_algo;
-    if (src.content.items.len > 0) {
-        _ = try obj.write(src.content.items);
-    } else {
-        obj.size = src.size;
-    }
-    if (!src.cached_hash.isZero() and obj.content.items.len == src.content.items.len) {
-        obj.cached_hash = src.cached_hash;
-    }
-    obj.delta = src.delta;
-    return obj;
 }

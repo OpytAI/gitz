@@ -289,12 +289,18 @@ const PackImportTarget = struct {
 
     pub fn putContent(self: *PackImportTarget, t: plumbing.ObjectType, content: []const u8) !Hash {
         const obj = try self.allocator.create(plumbing.MemoryObject);
-        errdefer self.allocator.destroy(obj);
         obj.* = plumbing.MemoryObject.init(self.allocator);
-        errdefer obj.deinit();
+        var transferred = false;
+        errdefer if (!transferred) {
+            obj.deinit();
+            self.allocator.destroy(obj);
+        };
         obj.setType(t);
         try obj.setContent(content);
-        return self.tx.setEncodedObject(obj);
+        // Tx set only fails with Allocator.Error before adopt.
+        const h = try self.tx.setEncodedObject(obj);
+        transferred = true;
+        return h;
     }
 };
 

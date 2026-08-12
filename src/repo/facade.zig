@@ -673,6 +673,7 @@ fn messageMatches(message: []const u8, pattern: []const u8) bool {
 
 fn storeBlob(s: *memory.Storage, content: []const u8) !Hash {
     const obj = try s.newEncodedObject();
+    errdefer s.discardEncodedObject(obj);
     obj.setType(.blob);
     _ = try obj.write(content);
     return s.setEncodedObject(obj);
@@ -686,6 +687,7 @@ fn storeTree(s: *memory.Storage, allocator: Allocator, blob: Hash, name: []const
     try buf.append(allocator, 0);
     try buf.appendSlice(allocator, blob.slice());
     const obj = try s.newEncodedObject();
+    errdefer s.discardEncodedObject(obj);
     obj.setType(.tree);
     _ = try obj.write(buf.items);
     return s.setEncodedObject(obj);
@@ -715,6 +717,7 @@ fn storeCommit(
     try buf.append(allocator, '\n');
     try buf.appendSlice(allocator, msg);
     const obj = try s.newEncodedObject();
+    errdefer s.discardEncodedObject(obj);
     obj.setType(.commit);
     _ = try obj.write(buf.items);
     return s.setEncodedObject(obj);
