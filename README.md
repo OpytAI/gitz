@@ -79,7 +79,7 @@ import-audit, ABI, memory, and size contracts.
 
 ## Project status
 
-gitz is under active development. The acceptance gate passes all 86 Bazel test
+gitz is under active development. The acceptance gate passes all 87 Bazel test
 targets. Evidence of progress is **behavioral goldens versus the pinned go-git
 revision** and **ownership under Zig contracts** (free companions, GPA-clean
 paths)—not package-path counts or API-name mapping ratios.
@@ -87,12 +87,13 @@ paths)—not package-path counts or API-name mapping ratios.
 | Metric | Current result |
 | --- | ---: |
 | Behavioral goldens | 81 / 81 pass |
-| Bazel acceptance test targets | 86 / 86 pass |
+| Bazel acceptance test targets | 87 / 87 pass |
 | Active compatibility allowlists | 0 |
-| Ownership GPA suites (memory + FS production loaders) | M / M (placeholder) |
+| Ownership GPA suites (memory + FS production loaders) | 1 / 1 pass |
 
-Ownership GPA suite counts are placeholders until the aggregator suite lands
-(PR12 of the ownership program). Inventories remain package-surface hygiene and
+The ownership GPA aggregator is `//src:ownership_gpa_test` (walker early-exit +
+diamond, isAncestor/merge-base free, EncodedObject new+discard both backends,
+hash pad, `deinitPools`). Inventories remain package-surface hygiene and
 navigation aids; numeric API-name mapping is not a project success metric.
 
 Reproduce the results with:

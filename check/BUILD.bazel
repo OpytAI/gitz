@@ -101,6 +101,7 @@ test_suite(
         ":file_inventory_fail_forward",
         ":api_inventory_fail_forward",
         "//src:gitz_test",
+        "//src:ownership_gpa_test",
         "//src/plumbing:plumbing_test",
         "//src/plumbing/hash:hash_test",
         "//src/plumbing/filemode:filemode_test",

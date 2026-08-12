@@ -132,6 +132,21 @@ zig_test(
     ],
 )
 
+# Cross-module ownership GPA aggregator (PR12). Counted in README Ownership GPA suites.
+zig_test(
+    name = "ownership_gpa_test",
+    size = "small",
+    main = "ownership_gpa_test.zig",
+    deps = [
+        "//src/plumbing",
+        "//src/plumbing/object",
+        "//src/storage/memory",
+        "//src/storage/filesystem",
+        "//src/fs",
+        "//src/utils/sync",
+    ],
+)
+
 # Full src tree for file/API inventory checkers.
 # Note: Bazel package borders mean parent globs do not see child packages.
 filegroup(
