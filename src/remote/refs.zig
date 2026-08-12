@@ -320,7 +320,7 @@ fn getHavesFromRef(
     };
     // Free tip if the walker never yields it (init failure / immediate stop).
     var tip_owned = true;
-    defer if (tip_owned) freeHeapCommit(commit);
+    defer if (tip_owned) objpkg.freeCommit(allocator, commit);
 
     var to_visit: i32 = max_haves_to_visit_per_ref;
     if (depth > 0 and depth < max_haves_to_visit_per_ref) {
@@ -335,15 +335,11 @@ fn getHavesFromRef(
     while (true) {
         const c = walker.next() catch break;
         if (c == commit) tip_owned = false;
-        defer freeHeapCommit(c);
+        defer objpkg.freeCommit(allocator, c);
         haves.put(allocator, c.hash, {}) catch break;
         to_visit -= 1;
         if (to_visit == 0 or remote_refs.contains(c.hash)) break;
     }
-}
-
-fn freeHeapCommit(c: *objpkg.Commit) void {
-    objpkg.freeCommit(c.allocator, c);
 }
 
 // ---------------------------------------------------------------------------
@@ -383,7 +379,7 @@ pub fn isFastForward(
 
     const tip = try objpkg.getCommit(allocator, sto, new_h);
     var tip_owned = true;
-    defer if (tip_owned) freeHeapCommit(tip);
+    defer if (tip_owned) objpkg.freeCommit(allocator, tip);
 
     var ignore: []const Hash = &.{};
     var ignore_owned: ?[]Hash = null;
@@ -391,7 +387,7 @@ pub fn isFastForward(
 
     if (earliest_shallow) |es| {
         const shallow_c = try objpkg.getCommit(allocator, sto, es);
-        defer freeHeapCommit(shallow_c);
+        defer objpkg.freeCommit(allocator, shallow_c);
         ignore_owned = try allocator.dupe(Hash, shallow_c.parent_hashes);
         ignore = ignore_owned.?;
     }
@@ -405,7 +401,7 @@ pub fn isFastForward(
             return err;
         };
         if (c == tip) tip_owned = false;
-        defer freeHeapCommit(c);
+        defer objpkg.freeCommit(allocator, c);
         if (c.hash.eql(old)) return true;
     }
     return false;
@@ -421,4 +417,44 @@ test "isFastForward equal hashes" {
     const h = plumbing.newHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     try std.testing.expect(try isFastForward(gpa, sto, h, h, null));
     try std.testing.expect(try isFastForward(gpa, sto, plumbing.ZeroHash, h, null));
+}
+
+test "isFastForward production walk free yields zero leaks" {
+    const gpa = std.testing.allocator;
+    const sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+
+    const empty_tree = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+    const storeCommit = struct {
+        fn call(alloc: Allocator, store: *memory.Storage, parents: []const Hash, when: i64) !Hash {
+            var body: std.Io.Writer.Allocating = .init(alloc);
+            defer body.deinit();
+            try body.writer.print("tree {s}\n", .{empty_tree});
+            for (parents) |p| {
+                var hex: [plumbing.MaxHexSize]u8 = undefined;
+                try body.writer.print("parent {s}\n", .{p.string(&hex)});
+            }
+            try body.writer.print(
+                \\author W <w@w> {d} +0000
+                \\committer W <w@w> {d} +0000
+                \\
+                \\m
+            , .{ when, when });
+            const obj = try store.newEncodedObject();
+            obj.setType(.commit);
+            try obj.setContent(body.written());
+            return try store.setEncodedObject(obj);
+        }
+    }.call;
+
+    const h_root = try storeCommit(gpa, sto, &.{}, 1);
+    const h_mid = try storeCommit(gpa, sto, &.{h_root}, 2);
+    const h_tip = try storeCommit(gpa, sto, &.{h_mid}, 3);
+
+    try std.testing.expect(try isFastForward(gpa, sto, h_root, h_tip, null));
+    try std.testing.expect(try isFastForward(gpa, sto, h_mid, h_tip, null));
+    try std.testing.expect(!(try isFastForward(gpa, sto, h_tip, h_root, null)));
 }

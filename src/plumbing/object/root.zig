@@ -122,6 +122,7 @@ pub const newCommitAllIter = walker_mod.newCommitAllIterFromTips;
 pub const mergeBase = merge_base_mod.mergeBase;
 pub const isAncestor = merge_base_mod.isAncestor;
 pub const independents = merge_base_mod.independents;
+pub const freeMergeBaseResult = merge_base_mod.freeMergeBaseResult;
 
 pub const Change = change_mod.Change;
 pub const ChangeEntry = change_mod.ChangeEntry;

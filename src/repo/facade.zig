@@ -231,6 +231,11 @@ pub fn resolveRevision(store: anytype, rev: []const u8) !Hash {
             },
             .caret_reg => |cr| {
                 const cur = commit orelse return error.ReferenceNotFound;
+                // Take ownership from outer `commit` while walking.
+                commit = null;
+                var tip_owned = true;
+                errdefer if (tip_owned) objpkg.freeCommit(gpa, cur);
+
                 var history = try objpkg.newCommitPreorderIter(gpa, cur, null, &.{});
                 defer history.deinit();
 
@@ -241,24 +246,20 @@ pub fn resolveRevision(store: anytype, rev: []const u8) !Hash {
                         if (e == error.EndOfStream) break;
                         return e;
                     };
+                    if (hc == cur) tip_owned = false;
                     const matches = messageMatches(hc.message, cr.pattern);
                     const ok = if (cr.negate) !matches else matches;
                     if (ok) {
                         found = hc;
+                        tip_owned = false; // retained as result (or was tip)
                         break;
                     }
-                    if (hc != cur) {
-                        hc.deinit();
-                        gpa.destroy(hc);
-                    }
+                    // Free every non-retained yield (including tip when it does not match).
+                    objpkg.freeCommit(gpa, hc);
                 }
 
                 if (found) |fc| {
-                    if (fc != cur) {
-                        cur.deinit();
-                        gpa.destroy(cur);
-                        commit = fc;
-                    }
+                    commit = fc;
                 } else {
                     return error.NoCommitMessageMatch;
                 }

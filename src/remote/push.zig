@@ -652,26 +652,21 @@ fn addReachableTags(
         if (tag.target_type != .commit) continue;
 
         const tag_commit = objpkg.getCommit(allocator, sto, tag.target) catch continue;
-        defer freeHeapCommit(tag_commit);
+        defer objpkg.freeCommit(allocator, tag_commit);
 
         for (req.commands.items) |cmd| {
             if (cmd.name.eql(ref.name)) continue;
             if (std.mem.startsWith(u8, cmd.name.raw, "refs/tags")) continue;
             if (cmd.new.isZero()) continue;
 
+            // isAncestor walks from tip and freeCommits every yield (including tip).
             const tip = objpkg.getCommit(allocator, sto, cmd.new) catch continue;
-            defer freeHeapCommit(tip);
-
             if (try objpkg.isAncestor(tag_commit, tip)) {
                 try req.appendCommandOwnedName(ref.name.raw, ZeroHash, ref.hash);
                 break;
             }
         }
     }
-}
-
-fn freeHeapCommit(c: *objpkg.Commit) void {
-    objpkg.freeCommit(c.allocator, c);
 }
 
 test "objectsToPush skips deletes" {

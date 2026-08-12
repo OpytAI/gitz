@@ -9,9 +9,23 @@
 //!
 //! # Ownership
 //!
-//! `mergeBase` / `independents` return a caller-owned slice of `*Commit`
-//! (`allocator.free`). Pointers are borrowed from the walk / input set; the
-//! caller does not free the commits through this slice.
+//! Walker yields under production loaders (`heap_owned=true`) are owned transfers
+//! (R1). Free every non-retained yield with `freeCommit` on continue and break.
+//!
+//! **mergeBase / mergeBaseWithLoader**
+//! - Never freeCommits the `self` / `other` inputs.
+//! - During the walk: free every non-retained yield.
+//! - IsReachable: return a **cloned** `*Commit` in a 1-slice (caller
+//!   `freeCommit` each element, then free the slice). Prefer `freeMergeBaseResult`.
+//! - Normal path: returned elements are walk-derived; caller freeCommits each,
+//!   then frees the slice.
+//!
+//! **independents / independentsWithLoader**
+//! - Never freeCommits original input tips.
+//! - Walk yields while testing reachability: freeCommit every yield that is not
+//!   pointer-equal to a still-needed candidate.
+//! - Returned slice is a subset of input pointers; caller frees the slice only
+//!   (elements remain caller-owned tips).
 
 const std = @import("std");
 const plumbing = @import("plumbing");
@@ -22,9 +36,11 @@ const walker = @import("commit_walker.zig");
 const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
 const Commit = commit_mod.Commit;
+const freeCommit = commit_mod.freeCommit;
 const HashSet = walker.HashSet;
 const CommitLoader = walker.CommitLoader;
 const CommitFilterCtx = walker.CommitFilterCtx;
+const MemoryObject = plumbing.MemoryObject;
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -33,10 +49,18 @@ const CommitFilterCtx = walker.CommitFilterCtx;
 /// go-git `errIsReachable` — first commit is reachable from the second.
 pub const IsReachable = error{IsReachable};
 
+/// Free merge-base results: `freeCommit` each element, then free the slice.
+/// Safe for IsReachable clones and walk-derived survivors.
+pub fn freeMergeBaseResult(allocator: Allocator, results: []*Commit) void {
+    for (results) |c| freeCommit(allocator, c);
+    allocator.free(results);
+}
+
 /// go-git `(*Commit).MergeBase`.
 ///
 /// Best common ancestors of `self` and `other` that are not reachable from
-/// other common ancestors. Caller frees the returned slice.
+/// other common ancestors. Caller owns the slice and each walk-derived /
+/// cloned element (`freeMergeBaseResult` or freeCommit each + free slice).
 pub fn mergeBase(self: *Commit, allocator: Allocator, other: *Commit) ![]*Commit {
     return mergeBaseWithLoader(self, allocator, other, walker.loaderFromCommit(self));
 }
@@ -55,8 +79,11 @@ pub fn mergeBaseWithLoader(
 
     var newer_history = ancestorsIndex(allocator, older, newer, loader) catch |err| {
         if (err == error.IsReachable) {
+            // Uniform free path: clone so caller always freeCommits results.
+            const cloned = try cloneCommit(allocator, older);
+            errdefer freeCommit(allocator, cloned);
             const out = try allocator.alloc(*Commit, 1);
-            out[0] = older;
+            out[0] = cloned;
             return out;
         }
         return err;
@@ -64,12 +91,18 @@ pub fn mergeBaseWithLoader(
     defer newer_history.deinit(allocator);
 
     var res: std.ArrayList(*Commit) = .empty;
-    defer res.deinit(allocator);
+    errdefer {
+        for (res.items) |c| freeCommit(allocator, c);
+        res.deinit(allocator);
+    }
+
+    // Reload walk root so FilterCommitIter invalid free never destroys inputs.
+    const walk_from = try loader.get(older.hash);
 
     const idx_ctx: *anyopaque = @ptrCast(&newer_history);
     var res_iter = try walker.newFilterCommitIterWithCtx(
         allocator,
-        older,
+        walk_from,
         loader,
         idx_ctx,
         isInIndexCommitFilter,
@@ -86,11 +119,25 @@ pub fn mergeBaseWithLoader(
         try res.append(allocator, c);
     }
 
-    return independentsWithLoader(allocator, res.items, loader);
+    // Transfer walk-derived candidates into independents (owns elements).
+    const items = try res.toOwnedSlice(allocator);
+    res = .empty;
+    const owned = independentsOwnedWithLoader(allocator, items, loader) catch |err| {
+        // On error independentsOwned freeCommits remaining candidates; free buffer only.
+        allocator.free(items);
+        return err;
+    };
+    allocator.free(items);
+    return owned;
 }
 
 /// go-git `(*Commit).IsAncestor` — true if `self` is an ancestor of `other`
 /// (including when hashes are equal). Uses `other.allocator` for the walk.
+///
+/// Frees every walker yield including the tip when `heap_owned`. After a
+/// successful return, do not free `other` again if it was the walk tip and
+/// heap-owned (it was freed as a yield). Prefer reloading tips for production
+/// callers so input ownership stays clear.
 pub fn isAncestor(self: *const Commit, other: *Commit) !bool {
     return isAncestorWithLoader(self, other.allocator, other, walker.loaderFromCommit(other));
 }
@@ -111,15 +158,19 @@ pub fn isAncestorWithLoader(
             if (err == error.EndOfStream) break;
             return err;
         };
-        if (!comm.hash.eql(self.hash)) continue;
+        if (!comm.hash.eql(self.hash)) {
+            freeCommit(allocator, comm);
+            continue;
+        }
+        freeCommit(allocator, comm);
         found = true;
-        break; // go-git: return storer.ErrStop from ForEach
+        break;
     }
     return found;
 }
 
 /// go-git `Independents` — subset of commits not reachable from the others.
-/// Caller frees the returned slice.
+/// Caller frees the returned slice only; elements are borrows of the inputs.
 pub fn independents(allocator: Allocator, commits: []*Commit) ![]*Commit {
     if (commits.len == 0) {
         return try allocator.alloc(*Commit, 0);
@@ -133,11 +184,48 @@ pub fn independentsWithLoader(
     commits: []*Commit,
     loader: CommitLoader,
 ) ![]*Commit {
-    var candidates = try sortByCommitDateDesc(allocator, commits);
-    errdefer allocator.free(candidates);
+    return independentsImpl(allocator, commits, loader, false);
+}
+
+/// Independents over **owned** candidates (mergeBase walk-derived results).
+/// Eliminated candidates are freeCommit'd; survivors remain owned by the caller.
+fn independentsOwnedWithLoader(
+    allocator: Allocator,
+    commits: []*Commit,
+    loader: CommitLoader,
+) ![]*Commit {
+    return independentsImpl(allocator, commits, loader, true);
+}
+
+fn independentsImpl(
+    allocator: Allocator,
+    commits: []*Commit,
+    loader: CommitLoader,
+    free_eliminated: bool,
+) ![]*Commit {
+    var candidates = sortByCommitDateDesc(allocator, commits) catch |err| {
+        if (free_eliminated) {
+            for (commits) |c| freeCommit(allocator, c);
+        }
+        return err;
+    };
+    errdefer {
+        if (free_eliminated) {
+            for (candidates) |c| freeCommit(allocator, c);
+        }
+        allocator.free(candidates);
+    }
 
     {
-        const deduped = try removeDuplicated(allocator, candidates);
+        const deduped = removeDuplicated(allocator, candidates) catch |err| {
+            return err; // errdefer frees candidates when free_eliminated
+        };
+        if (free_eliminated) {
+            // Duplicates dropped from the slice are still owned walk-derived commits.
+            for (candidates) |c| {
+                if (!containsPtr(deduped, c)) freeCommit(allocator, c);
+            }
+        }
         allocator.free(candidates);
         candidates = deduped;
     }
@@ -166,9 +254,12 @@ pub fn independentsWithLoader(
         var others = try remove(allocator, candidates, from);
         defer allocator.free(others);
 
+        // Reload walk root so filter invalid/seen free never destroys candidates.
+        const walk_from = try loader.get(from.hash);
+
         var from_iter = try walker.newFilterCommitIterWithCtx(
             allocator,
-            from,
+            walk_from,
             loader,
             null,
             null,
@@ -185,15 +276,21 @@ pub fn independentsWithLoader(
 
             // Find at most one match (candidates are de-duplicated). Do not
             // free/rebuild `others` while iterating it.
+            const yield_hash = from_ancestor.hash;
             var matched: ?*Commit = null;
             for (others) |other| {
-                if (from_ancestor.hash.eql(other.hash)) {
+                if (yield_hash.eql(other.hash)) {
                     matched = other;
                     break;
                 }
             }
+            var freed_matched_as_yield = false;
             if (matched) |other| {
                 const next_cand = try remove(allocator, candidates, other);
+                if (free_eliminated) {
+                    freeCommit(allocator, other);
+                    if (from_ancestor == other) freed_matched_as_yield = true;
+                }
                 allocator.free(candidates);
                 candidates = next_cand;
 
@@ -202,9 +299,16 @@ pub fn independentsWithLoader(
                 others = next_others;
             }
 
+            // Free non-retained walk yield. Skip pointer still held as a candidate
+            // (identity-map loaders may yield the tip itself). Avoid double-free
+            // when the yield is the eliminated candidate under free_eliminated.
+            if (!freed_matched_as_yield and !containsPtr(candidates, from_ancestor)) {
+                freeCommit(allocator, from_ancestor);
+            }
+
             if (candidates.len == 1) break; // go-git: storer.ErrStop
 
-            try seen.put(allocator, from_ancestor.hash, {});
+            try seen.put(allocator, yield_hash, {});
         }
 
         const idx = indexOf(candidates, from);
@@ -233,7 +337,10 @@ fn ancestorsIndex(
     var starting_history: HashSet = .empty;
     errdefer starting_history.deinit(allocator);
 
-    var iter = try walker.newCommitIterBsfWithLoader(allocator, starting, loader, null, &.{});
+    // Reload so BFS free never destroys the public `starting` tip.
+    const walk_start = try loader.get(starting.hash);
+
+    var iter = try walker.newCommitIterBsfWithLoader(allocator, walk_start, loader, null, &.{});
     defer iter.deinit();
 
     while (true) {
@@ -241,8 +348,12 @@ fn ancestorsIndex(
             if (err == error.EndOfStream) break;
             return err;
         };
-        if (commit.hash.eql(excluded.hash)) return error.IsReachable;
+        if (commit.hash.eql(excluded.hash)) {
+            freeCommit(allocator, commit);
+            return error.IsReachable;
+        }
         try starting_history.put(allocator, commit.hash, {});
+        freeCommit(allocator, commit);
     }
 
     return starting_history;
@@ -252,6 +363,32 @@ fn ancestorsIndex(
 fn isInIndexCommitFilter(ctx: *anyopaque, c: *Commit) bool {
     const index: *const HashSet = @ptrCast(@alignCast(ctx));
     return index.get(c.hash) != null;
+}
+
+/// Clone `src` into a new heap-owned `*Commit` for uniform mergeBase free.
+fn cloneCommit(allocator: Allocator, src: *const Commit) !*Commit {
+    var tmp = MemoryObject.init(allocator);
+    defer tmp.deinit();
+    try src.encode(&tmp);
+
+    const c = try allocator.create(Commit);
+    errdefer {
+        c.deinit();
+        allocator.destroy(c);
+    }
+    c.* = Commit.init(allocator);
+    c.heap_owned = true;
+    c.storer = src.storer;
+    try c.decode(&tmp);
+    c.hash = src.hash;
+    return c;
+}
+
+fn containsPtr(haystack: []const *Commit, needle: *Commit) bool {
+    for (haystack) |c| {
+        if (c == needle) return true;
+    }
+    return false;
 }
 
 /// go-git `sortByCommitDateDesc` — committer.When descending.
@@ -409,25 +546,29 @@ test "mergeBase linear history returns older ancestor" {
     // merge-base(C1, C2) == C2 (ancestor case → errIsReachable path)
     {
         const bases = try mergeBaseWithLoader(&c1, gpa, &c2, loader);
-        defer gpa.free(bases);
+        defer freeMergeBaseResult(gpa, bases);
         try std.testing.expectEqual(@as(usize, 1), bases.len);
         try std.testing.expect(bases[0].hash.eql(h2));
+        try std.testing.expect(bases[0].heap_owned); // clone
+        try std.testing.expect(bases[0] != &c2);
     }
 
     // merge-base(C1, C3) == C3
     {
         const bases = try mergeBaseWithLoader(&c1, gpa, &c3, loader);
-        defer gpa.free(bases);
+        defer freeMergeBaseResult(gpa, bases);
         try std.testing.expectEqual(@as(usize, 1), bases.len);
         try std.testing.expect(bases[0].hash.eql(h3));
+        try std.testing.expect(bases[0].heap_owned);
     }
 
     // merge-base with self
     {
         const bases = try mergeBaseWithLoader(&c1, gpa, &c1, loader);
-        defer gpa.free(bases);
+        defer freeMergeBaseResult(gpa, bases);
         try std.testing.expectEqual(@as(usize, 1), bases.len);
         try std.testing.expect(bases[0].hash.eql(h1));
+        try std.testing.expect(bases[0].heap_owned);
     }
 }
 
@@ -462,7 +603,7 @@ test "mergeBase divergent branches" {
     const loader = graph.loader();
 
     const bases = try mergeBaseWithLoader(&c1, gpa, &c2, loader);
-    defer gpa.free(bases);
+    defer freeMergeBaseResult(gpa, bases);
     try std.testing.expectEqual(@as(usize, 1), bases.len);
     try std.testing.expect(bases[0].hash.eql(h4));
 }
@@ -496,6 +637,8 @@ test "independents simple case" {
         defer gpa.free(result);
         try std.testing.expectEqual(@as(usize, 1), result.len);
         try std.testing.expect(result[0].hash.eql(h1));
+        // Input-subset: result aliases an input tip.
+        try std.testing.expect(result[0] == &c1);
     }
 
     // Single commit
@@ -505,6 +648,7 @@ test "independents simple case" {
         defer gpa.free(result);
         try std.testing.expectEqual(@as(usize, 1), result.len);
         try std.testing.expect(result[0].hash.eql(h2));
+        try std.testing.expect(result[0] == &c2);
     }
 
     // Two tips of a fork are both independent
@@ -522,4 +666,182 @@ test "independents simple case" {
         try std.testing.expect(result[0].hash.eql(h5));
         try std.testing.expect(result[1].hash.eql(h1));
     }
+}
+
+// ---------------------------------------------------------------------------
+// Production-loader GPA tests (heap_owned=true)
+// ---------------------------------------------------------------------------
+
+const empty_tree_hex = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+const ObjectGetter = @import("storer").ObjectGetter;
+
+fn storeCommit(
+    gpa: Allocator,
+    store: anytype,
+    parents: []const Hash,
+    when: i64,
+) !Hash {
+    var body: std.Io.Writer.Allocating = .init(gpa);
+    defer body.deinit();
+    try body.writer.print("tree {s}\n", .{empty_tree_hex});
+    for (parents) |p| {
+        var hex: [plumbing.MaxHexSize]u8 = undefined;
+        try body.writer.print("parent {s}\n", .{p.string(&hex)});
+    }
+    try body.writer.print(
+        \\author W <w@w> {d} +0000
+        \\committer W <w@w> {d} +0000
+        \\
+        \\m
+    , .{ when, when });
+    const obj = try store.newEncodedObject();
+    obj.setType(.commit);
+    try obj.setContent(body.written());
+    return try store.setEncodedObject(obj);
+}
+
+fn productionLoader(gpa: Allocator, store: anytype) CommitLoader {
+    return walker.loaderFromGetter(gpa, ObjectGetter.from(@TypeOf(store.*), store));
+}
+
+test "production isAncestor early match free yields zero leaks" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const loader = productionLoader(gpa, &store);
+
+    const h_root = try storeCommit(gpa, &store, &.{}, 1);
+    const h_mid = try storeCommit(gpa, &store, &.{h_root}, 2);
+    const h_tip = try storeCommit(gpa, &store, &.{h_mid}, 3);
+
+    // Reload tips for each call so isAncestor can free walk yields.
+    {
+        const tip = try loader.get(h_tip);
+        const root = try loader.get(h_root);
+        defer freeCommit(gpa, root);
+        try std.testing.expect(try isAncestorWithLoader(root, gpa, tip, loader));
+        // tip was freed as walk yield
+    }
+    {
+        const tip = try loader.get(h_tip);
+        const mid = try loader.get(h_mid);
+        defer freeCommit(gpa, mid);
+        try std.testing.expect(try isAncestorWithLoader(mid, gpa, tip, loader));
+    }
+    {
+        const tip = try loader.get(h_tip);
+        // self is not ancestor of root
+        const root = try loader.get(h_root);
+        defer freeCommit(gpa, tip);
+        try std.testing.expect(!(try isAncestorWithLoader(tip, gpa, root, loader)));
+    }
+}
+
+test "production mergeBase diamond free results zero leaks" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const loader = productionLoader(gpa, &store);
+
+    //   tip_a (t=4)   tip_b (t=3)
+    //       \           /
+    //        left(t=2) right is tip_b's parent chain via base
+    //              \   /
+    //              base (t=1)
+    const h_base = try storeCommit(gpa, &store, &.{}, 1);
+    const h_left = try storeCommit(gpa, &store, &.{h_base}, 2);
+    const h_right = try storeCommit(gpa, &store, &.{h_base}, 3);
+    const h_a = try storeCommit(gpa, &store, &.{h_left}, 4);
+    const h_b = try storeCommit(gpa, &store, &.{h_right}, 5);
+
+    const a = try loader.get(h_a);
+    defer freeCommit(gpa, a);
+    const b = try loader.get(h_b);
+    defer freeCommit(gpa, b);
+
+    const bases = try mergeBaseWithLoader(a, gpa, b, loader);
+    defer freeMergeBaseResult(gpa, bases);
+    try std.testing.expectEqual(@as(usize, 1), bases.len);
+    try std.testing.expect(bases[0].hash.eql(h_base));
+    try std.testing.expect(bases[0].heap_owned);
+}
+
+test "production mergeBase IsReachable clone does not free tip" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const loader = productionLoader(gpa, &store);
+
+    const h_root = try storeCommit(gpa, &store, &.{}, 1);
+    const h_tip = try storeCommit(gpa, &store, &.{h_root}, 2);
+
+    const tip = try loader.get(h_tip);
+    defer freeCommit(gpa, tip);
+    const root = try loader.get(h_root);
+    defer freeCommit(gpa, root);
+
+    const bases = try mergeBaseWithLoader(tip, gpa, root, loader);
+    defer freeMergeBaseResult(gpa, bases);
+    try std.testing.expectEqual(@as(usize, 1), bases.len);
+    try std.testing.expect(bases[0].hash.eql(h_root));
+    try std.testing.expect(bases[0].heap_owned);
+    try std.testing.expect(bases[0] != root);
+    // Tips still usable after freeMergeBaseResult of the clone.
+    try std.testing.expect(tip.hash.eql(h_tip));
+    try std.testing.expect(root.hash.eql(h_root));
+}
+
+test "production independents input-subset free slice only" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const loader = productionLoader(gpa, &store);
+
+    const h_root = try storeCommit(gpa, &store, &.{}, 1);
+    const h_mid = try storeCommit(gpa, &store, &.{h_root}, 2);
+    const h_tip = try storeCommit(gpa, &store, &.{h_mid}, 3);
+
+    const tip = try loader.get(h_tip);
+    defer freeCommit(gpa, tip);
+    const mid = try loader.get(h_mid);
+    defer freeCommit(gpa, mid);
+    const root = try loader.get(h_root);
+    defer freeCommit(gpa, root);
+
+    var input = [_]*Commit{ tip, mid, root };
+    const result = try independentsWithLoader(gpa, input[0..], loader);
+    defer gpa.free(result); // slice only
+    try std.testing.expectEqual(@as(usize, 1), result.len);
+    try std.testing.expect(result[0] == tip);
+    try std.testing.expect(tip.hash.eql(h_tip));
+}
+
+test "production isAncestor stack-tip loader path zero leaks" {
+    // heap_owned=false path: freeCommit is no-op; still correct.
+    const gpa = std.testing.allocator;
+
+    const h1 = testHash(0x11);
+    const h2 = testHash(0x22);
+
+    var c2 = try makeCommit(gpa, h2, &.{}, 1);
+    defer c2.deinit();
+    var c1 = try makeCommit(gpa, h1, &.{h2}, 2);
+    defer c1.deinit();
+
+    var graph = TestGraph.init(gpa);
+    defer graph.deinit();
+    try graph.put(&c1);
+    try graph.put(&c2);
+    const loader = graph.loader();
+
+    try std.testing.expect(try isAncestorWithLoader(&c2, gpa, &c1, loader));
+    try std.testing.expect(!(try isAncestorWithLoader(&c1, gpa, &c2, loader)));
 }
