@@ -56,13 +56,23 @@ pub const Hash = struct {
 
     /// True if every storage byte is zero.
     pub fn isZero(self: Hash) bool {
+        self.debugAssertCanonical();
         return std.mem.allEqual(u8, &self.bytes, 0);
     }
 
     /// Full-buffer equality (pad must be zero — constructor invariant).
     /// Independent of process-global object format → safe as map keys.
     pub fn eql(self: Hash, other: Hash) bool {
+        self.debugAssertCanonical();
+        other.debugAssertCanonical();
         return std.mem.eql(u8, &self.bytes, &other.bytes);
+    }
+
+    /// Debug-only: pad beyond active `digestSize()` is zero (R7 / WP-C).
+    pub fn debugAssertCanonical(self: Hash) void {
+        if (comptime !std.debug.runtime_safety) return;
+        const n = hash_algo.digestSize();
+        std.debug.assert(std.mem.allEqual(u8, self.bytes[n..], 0));
     }
 
     /// Write lowercase hex of the **active** digest width into `buf`.
@@ -83,10 +93,12 @@ pub const Hash = struct {
         return self.formatHex(buf);
     }
 
-    /// Build from raw digest bytes. Pads with zeros to `MaxSize`.
+    /// Build from raw digest bytes. Copies only the active `digestSize()`;
+    /// remainder stays zero (pad invariant). Longer buffers under SHA-1 do not
+    /// retain dirty pad bytes.
     pub fn fromBytes(raw: []const u8) Hash {
         var h = ZeroHash;
-        const n = @min(raw.len, MaxSize);
+        const n = @min(raw.len, hash_algo.digestSize());
         if (n > 0) @memcpy(h.bytes[0..n], raw[0..n]);
         return h;
     }
@@ -220,6 +232,9 @@ pub const Hasher = struct {
         var out: [MaxSize]u8 = .{0} ** MaxSize;
         const n = self.inner.digestSize();
         self.inner.final(out[0..n]);
+        // Canonicalize at this hasher's width (`initAlgo` may differ from process format).
+        var scope = FormatScope.enter(self.inner.algo());
+        defer scope.deinit();
         return Hash.fromBytes(out[0..n]);
     }
 };
@@ -299,14 +314,38 @@ test "HashSlice and hashesSort use increasing full hash order" {
 }
 
 test "parseHashAny accepts 40 and 64 hex" {
+    defer hash_algo.setObjectFormat(.sha1);
     const h1 = try parseHashAny("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391");
     try std.testing.expect(!h1.isZero());
     try std.testing.expect(isHashAny("e69de29bb2d1d6434b8b29ae775ad8c2e48c5391"));
     try std.testing.expect(isHashAny("473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813"));
     try std.testing.expect(!isHashAny("deadbeef"));
+    // Full 32-byte OID requires SHA-256 active format for fromBytes pad rule.
+    hash_algo.setObjectFormat(.sha256);
     const h2 = try parseHashAny("473a0f4c3be8a93681a267e3b1e9a7dcda1185436fe141f7749120a303721813");
     try std.testing.expectEqual(@as(u8, 0x47), h2.bytes[0]);
     try std.testing.expectEqual(@as(u8, 0x13), h2.bytes[31]);
+}
+
+test "fromBytes under SHA-1 clears dirty pad beyond digestSize" {
+    defer hash_algo.setObjectFormat(.sha1);
+    hash_algo.setObjectFormat(.sha1);
+
+    var dirty: [MaxSize]u8 = undefined;
+    @memset(&dirty, 0xab);
+    // Real 20-byte digest with garbage in bytes[20..32].
+    const digest = [_]u8{
+        0xe6, 0x9d, 0xe2, 0x9b, 0xb2, 0xd1, 0xd6, 0x43,
+        0x4b, 0x8b, 0x29, 0xae, 0x77, 0x5a, 0xd8, 0xc2,
+        0xe4, 0x8c, 0x53, 0x91,
+    };
+    @memcpy(dirty[0..20], &digest);
+
+    const from_dirty = Hash.fromBytes(&dirty);
+    const from_clean = Hash.fromBytes(digest[0..]);
+    try std.testing.expect(from_dirty.eql(from_clean));
+    try std.testing.expect(std.mem.allEqual(u8, from_dirty.bytes[20..], 0));
+    try std.testing.expectEqualSlices(u8, digest[0..], from_dirty.bytes[0..20]);
 }
 
 test "FormatScope restores previous object format" {

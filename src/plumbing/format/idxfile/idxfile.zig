@@ -126,7 +126,8 @@ pub const MemoryIndex = struct {
         if (self.offset_hash == null) {
             self.offset_hash = std.AutoHashMap(i64, plumbing.Hash).init(self.allocator);
         }
-        self.offset_hash.?.put(@intCast(offset), h) catch {};
+        // Store canonical form so dirty pad on caller Hash cannot poison the map.
+        self.offset_hash.?.put(@intCast(offset), plumbing.Hash.fromBytes(h.slice())) catch {};
         return @intCast(offset);
     }
 
@@ -179,10 +180,9 @@ pub const MemoryIndex = struct {
             var second_level: u32 = 0;
             while (i < fanout_value) {
                 const mi: usize = @intCast(mapped);
-                var hash: plumbing.Hash = .{};
                 const oid_len = objectIdLength();
                 const name_off = @as(usize, second_level) * oid_len;
-                @memcpy(hash.bytes[0..oid_len], self.names.items[mi][name_off .. name_off + oid_len]);
+                const hash = plumbing.Hash.fromBytes(self.names.items[mi][name_off .. name_off + oid_len]);
                 const off = try self.getOffset(mi, second_level);
                 try map.put(@intCast(off), hash);
                 i += 1;
@@ -249,10 +249,13 @@ pub const EntryIterator = struct {
             }
 
             const mapped: usize = @intCast(self.idx.fanout_mapping[self.first_level]);
-            var entry: Entry = .{ .hash = .{}, .crc32 = 0, .offset = 0 };
             const oid_len = objectIdLength();
             const name_off = self.second_level * oid_len;
-            @memcpy(entry.hash.bytes[0..oid_len], self.idx.names.items[mapped][name_off .. name_off + oid_len]);
+            var entry: Entry = .{
+                .hash = plumbing.Hash.fromBytes(self.idx.names.items[mapped][name_off .. name_off + oid_len]),
+                .crc32 = 0,
+                .offset = 0,
+            };
             entry.offset = try self.idx.getOffset(mapped, self.second_level);
             entry.crc32 = self.idx.getCRC32(mapped, self.second_level);
 

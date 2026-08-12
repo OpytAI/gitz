@@ -609,7 +609,7 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             }
 
             // Force cached hash to requested id when content matches (objfile validates stream).
-            obj.cached_hash = h;
+            obj.cached_hash = Hash.fromBytes(h.slice());
 
             try self.owned.append(self.allocator, obj);
             self.cacheIfEligible(obj, hdr.size);
@@ -684,7 +684,7 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             obj.* = MemoryObject.init(self.allocator);
             obj.setType(header.object_type);
             try obj.setContent(aw.written());
-            obj.cached_hash = hash;
+            obj.cached_hash = Hash.fromBytes(hash.slice());
             _ = deltaobject.newDeltaObject(obj, hash, base, header.length);
 
             try self.owned.append(self.allocator, obj);
@@ -702,7 +702,7 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             obj.setType(src.object_type);
             try obj.setContent(src.readerBytes());
             const h = src.hash();
-            if (!h.isZero()) obj.cached_hash = h;
+            if (!h.isZero()) obj.cached_hash = Hash.fromBytes(h.slice());
             if (src.delta) |d| obj.setDeltaMeta(d);
 
             try self.owned.append(self.allocator, obj);
