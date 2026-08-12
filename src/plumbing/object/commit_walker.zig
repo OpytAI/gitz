@@ -25,7 +25,13 @@
 //!   loaded heap commit before `continue` (`freeOwnedCommit`).
 //! - **R3** `close`/`deinit` free only **unyielded** heap commits still held
 //!   (start, stacks, queues, heaps). Already-yielded commits are never freed.
+//! - Mid-`next` errors after detach use `errdefer freeOwnedCommit` so the
+//!   in-flight candidate is not leaked; parent loads errdefer until enqueued.
+//! - Heap-owned loads must be **unique** `*Commit` instances per load
+//!   (`getCommitFromGetter` always creates). Identity-map loaders (TestGraph)
+//!   must keep `heap_owned=false` so R2 skip free is a no-op on aliases.
 //! - Map/stack test commits (`heap_owned == false`) are never destroyed.
+//! - **R4** forEach free-after-cb is PR3; today forEach only closes unyielded.
 //!
 //! Limit/path filters also free skipped heap-owned commits.
 //! `newCommitAllIterFromHashes` owns tips + loader context.
@@ -136,7 +142,11 @@ pub fn loaderFromCommit(c: *Commit) CommitLoader {
     };
 }
 
-/// Free a heap-owned commit (R2 skip / R3 close). No-op when `heap_owned == false`.
+/// Free a heap-owned commit (R2 skip / R3 close / mid-next errdefer).
+/// No-op when `heap_owned == false`.
+///
+/// Invariant: when `heap_owned`, each load is a distinct allocation. Do not set
+/// `heap_owned` on identity-map aliases that may still be queued or yielded.
 fn freeOwnedCommit(c: *Commit) void {
     if (!c.heap_owned) return;
     const a = c.allocator;
@@ -167,8 +177,9 @@ pub const CommitIter = struct {
     }
 
     /// go-git `CommitIter.ForEach`. `error.Stop` ends successfully.
+    /// R4 free-after-callback (including Stop/error) is PR3; yields are R1 today.
     pub fn forEach(self: CommitIter, cb: anytype) !void {
-        defer self.close();
+        defer self.close(); // R3: unyielded only
         while (true) {
             const c = self.next() catch |err| {
                 const e: anyerror = err;
@@ -184,8 +195,9 @@ pub const CommitIter = struct {
     }
 };
 
+/// Shared forEach for concrete walkers. R4 free-after-cb is PR3.
 fn forEachCommit(iter: anytype, cb: anytype) !void {
-    defer iter.close();
+    defer iter.close(); // R3: unyielded only
     while (true) {
         const c = iter.next() catch |err| {
             const e: anyerror = err;
@@ -296,6 +308,9 @@ pub const PreorderIter = struct {
                     continue;
                 }
             }
+
+            // Detached from start/stack; free if mark/parent-push fails before yield.
+            errdefer freeOwnedCommit(c);
 
             try hashSetPut(&self.seen, self.allocator, c.hash);
 
@@ -446,11 +461,15 @@ pub const PostorderIter = struct {
                 continue;
             }
 
+            // Detached from stack; free if mark/parent-load fails before yield.
+            errdefer freeOwnedCommit(c);
+
             try hashSetPut(&self.seen, self.allocator, c.hash);
 
             // go-git: c.Parents().ForEach(append to stack)
             for (c.parent_hashes) |h| {
                 const p = try loadCommit(self.loader, h);
+                errdefer freeOwnedCommit(p);
                 try self.stack.append(self.allocator, p);
             }
             return c;
@@ -545,6 +564,7 @@ pub const BfsIter = struct {
             if (hashSetContains(ext, h)) return;
         }
         const c = try loadCommit(self.loader, h);
+        errdefer freeOwnedCommit(c);
         try self.queue.append(self.allocator, c);
     }
 
@@ -563,6 +583,9 @@ pub const BfsIter = struct {
                     continue;
                 }
             }
+
+            // Detached from queue; free if mark/parent-enqueue fails before yield.
+            errdefer freeOwnedCommit(c);
 
             try hashSetPut(&self.seen, self.allocator, c.hash);
 
@@ -707,6 +730,10 @@ pub const FilterCommitIter = struct {
                 return self.closeWith(err);
             };
 
+            // Detached from queue; free on error until yielded or intentionally freed.
+            var released = false;
+            errdefer if (!released) freeOwnedCommit(commit);
+
             try hashSetPut(&self.visited, self.allocator, commit.hash);
 
             if (!self.checkLimit(commit)) {
@@ -716,10 +743,12 @@ pub const FilterCommitIter = struct {
             }
 
             if (self.checkValid(commit)) {
+                released = true;
                 return commit;
             }
-            // R2: invalid filter drop — free before continue.
+            // R2: invalid filter drop.
             freeOwnedCommit(commit);
+            released = true;
         }
     }
 
@@ -774,6 +803,7 @@ pub const FilterCommitIter = struct {
         for (hashes) |h| {
             if (hashSetContains(&self.visited, h)) continue;
             const commit = try loadCommit(self.loader, h);
+            errdefer freeOwnedCommit(commit);
             try self.queue.append(self.allocator, commit);
         }
     }
@@ -904,6 +934,9 @@ pub const CTimeIter = struct {
                 }
             }
 
+            // Detached from heap; free if mark/parent-push fails before yield.
+            errdefer freeOwnedCommit(c);
+
             try hashSetPut(&self.seen, self.allocator, c.hash);
 
             for (c.parent_hashes) |h| {
@@ -912,6 +945,7 @@ pub const CTimeIter = struct {
                     if (hashSetContains(ext, h)) continue;
                 }
                 const pc = try loadCommit(self.loader, h);
+                errdefer freeOwnedCommit(pc);
                 try self.heap.push(self.allocator, pc);
             }
             return c;
@@ -2272,7 +2306,8 @@ test "production ctime early exit deinit zero leaks" {
     freeYield(c);
 }
 
-test "production filter invalid skip and early close zero leaks" {
+test "production filter invalid skip full walk zero leaks" {
+    // R2: exhaust iterator so mid/root fail is_valid and freeOwnedCommit on continue.
     const gpa = std.testing.allocator;
     const memory = @import("memory");
 
@@ -2287,11 +2322,8 @@ test "production filter invalid skip and early close zero leaks" {
     const tip = try getCommitFromGetter(gpa, getter, h_tip);
     const loader = loaderFromGetter(gpa, getter);
 
-    // Yield only tip hash; free skipped mid/root via R2.
     const only_tip: CommitFilter = struct {
         fn f(c: *Commit) bool {
-            // Match tip by having two parents-of-depth: tip has parent mid which has parent.
-            // Simpler: yield only when message path — use when==3 for tip.
             return c.committer.when == 3;
         }
     }.f;
@@ -2299,10 +2331,41 @@ test "production filter invalid skip and early close zero leaks" {
     var iter = try newFilterCommitIterWithLoader(gpa, tip, loader, only_tip, null);
     defer iter.deinit();
 
+    var n: usize = 0;
+    while (true) {
+        const c = iter.next() catch |err| {
+            if (err == error.EndOfStream) break;
+            return err;
+        };
+        try std.testing.expect(c.hash.eql(h_tip));
+        freeYield(c);
+        n += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), n);
+}
+
+test "production filter early close zero leaks" {
+    // R3: yield tip, leave mid on queue, deinit frees remainder.
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const getter = ObjectGetter.from(memory.Storage, &store);
+
+    const h_root = try storeWalkerCommit(gpa, &store, &.{}, 1);
+    const h_mid = try storeWalkerCommit(gpa, &store, &.{h_root}, 2);
+    const h_tip = try storeWalkerCommit(gpa, &store, &.{h_mid}, 3);
+
+    const tip = try getCommitFromGetter(gpa, getter, h_tip);
+    const loader = loaderFromGetter(gpa, getter);
+
+    var iter = try newFilterCommitIterWithLoader(gpa, tip, loader, null, null);
+    defer iter.deinit();
+
     const c = try iter.next();
     try std.testing.expect(c.hash.eql(h_tip));
     freeYield(c);
-    // Early close: remaining queue freed by deinit (R3).
 }
 
 test "production bfs diamond skip free zero leaks" {
@@ -2336,7 +2399,126 @@ test "production bfs diamond skip free zero leaks" {
     try std.testing.expectEqual(@as(usize, 4), n);
 }
 
-test "production preorder close without next frees tip" {
+test "production postorder diamond skip free zero leaks" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const getter = ObjectGetter.from(memory.Storage, &store);
+
+    const h_base = try storeWalkerCommit(gpa, &store, &.{}, 1);
+    const h_left = try storeWalkerCommit(gpa, &store, &.{h_base}, 2);
+    const h_right = try storeWalkerCommit(gpa, &store, &.{h_base}, 3);
+    const h_tip = try storeWalkerCommit(gpa, &store, &.{ h_left, h_right }, 4);
+
+    const tip = try getCommitFromGetter(gpa, getter, h_tip);
+    const loader = loaderFromGetter(gpa, getter);
+
+    var iter = try newCommitPostorderIterWithLoader(gpa, tip, loader, &.{});
+    defer iter.deinit();
+
+    var n: usize = 0;
+    while (true) {
+        const c = iter.next() catch |err| {
+            if (err == error.EndOfStream) break;
+            return err;
+        };
+        freeYield(c);
+        n += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 4), n);
+}
+
+test "production ctime diamond skip free zero leaks" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const getter = ObjectGetter.from(memory.Storage, &store);
+
+    const h_base = try storeWalkerCommit(gpa, &store, &.{}, 1);
+    const h_left = try storeWalkerCommit(gpa, &store, &.{h_base}, 2);
+    const h_right = try storeWalkerCommit(gpa, &store, &.{h_base}, 3);
+    const h_tip = try storeWalkerCommit(gpa, &store, &.{ h_left, h_right }, 4);
+
+    const tip = try getCommitFromGetter(gpa, getter, h_tip);
+    const loader = loaderFromGetter(gpa, getter);
+
+    var iter = try newCommitIterCTimeWithLoader(gpa, tip, loader, null, &.{});
+    defer iter.deinit();
+
+    var n: usize = 0;
+    while (true) {
+        const c = iter.next() catch |err| {
+            if (err == error.EndOfStream) break;
+            return err;
+        };
+        freeYield(c);
+        n += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 4), n);
+}
+
+test "production preorder seen_external skip free zero leaks" {
+    // Preorder loads parent hashes then skips via seen_external (R2 free).
+    // BFS/CTime skip enqueue for external hashes, so free-on-seen_external
+    // is only reachable for a tip already on the hold structure.
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const getter = ObjectGetter.from(memory.Storage, &store);
+
+    const h_root = try storeWalkerCommit(gpa, &store, &.{}, 1);
+    const h_mid = try storeWalkerCommit(gpa, &store, &.{h_root}, 2);
+    const h_tip = try storeWalkerCommit(gpa, &store, &.{h_mid}, 3);
+
+    var ext: HashSet = .empty;
+    defer ext.deinit(gpa);
+    try hashSetPut(&ext, gpa, h_mid);
+
+    const tip = try getCommitFromGetter(gpa, getter, h_tip);
+    const loader = loaderFromGetter(gpa, getter);
+
+    var iter = try newCommitPreorderIterWithLoader(gpa, tip, loader, &ext, &.{});
+    defer iter.deinit();
+
+    // tip yielded; mid loaded then freed via seen_external (R2); root never visited.
+    const c = try iter.next();
+    try std.testing.expect(c.hash.eql(h_tip));
+    freeYield(c);
+    try std.testing.expectError(error.EndOfStream, iter.next());
+}
+
+test "production bfs tip in seen_external free zero leaks" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const getter = ObjectGetter.from(memory.Storage, &store);
+
+    const h_tip = try storeWalkerCommit(gpa, &store, &.{}, 1);
+
+    var ext: HashSet = .empty;
+    defer ext.deinit(gpa);
+    try hashSetPut(&ext, gpa, h_tip);
+
+    const tip = try getCommitFromGetter(gpa, getter, h_tip);
+    const loader = loaderFromGetter(gpa, getter);
+
+    var iter = try newCommitIterBsfWithLoader(gpa, tip, loader, &ext, &.{});
+    defer iter.deinit();
+
+    // Tip on queue is in seen_external: R2 free, then EndOfStream.
+    try std.testing.expectError(error.EndOfStream, iter.next());
+}
+
+test "production preorder ignore tip free zero leaks" {
+    // Tip pre-marked seen: first nextCandidate returns tip, R2 frees it, EndOfStream.
     const gpa = std.testing.allocator;
     const memory = @import("memory");
 
@@ -2348,7 +2530,47 @@ test "production preorder close without next frees tip" {
     const tip = try getCommitFromGetter(gpa, getter, h_tip);
     const loader = loaderFromGetter(gpa, getter);
 
-    var iter = try newCommitPreorderIterWithLoader(gpa, tip, loader, null, &.{});
-    // No next — close must free tip (R3).
-    iter.deinit();
+    const ignore = [_]Hash{h_tip};
+    var iter = try newCommitPreorderIterWithLoader(gpa, tip, loader, null, &ignore);
+    defer iter.deinit();
+
+    try std.testing.expectError(error.EndOfStream, iter.next());
+}
+
+test "production close without next frees tip all walkers" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const getter = ObjectGetter.from(memory.Storage, &store);
+
+    const h_tip = try storeWalkerCommit(gpa, &store, &.{}, 1);
+    const loader = loaderFromGetter(gpa, getter);
+
+    {
+        const tip = try getCommitFromGetter(gpa, getter, h_tip);
+        var iter = try newCommitPreorderIterWithLoader(gpa, tip, loader, null, &.{});
+        iter.deinit();
+    }
+    {
+        const tip = try getCommitFromGetter(gpa, getter, h_tip);
+        var iter = try newCommitPostorderIterWithLoader(gpa, tip, loader, &.{});
+        iter.deinit();
+    }
+    {
+        const tip = try getCommitFromGetter(gpa, getter, h_tip);
+        var iter = try newCommitIterBsfWithLoader(gpa, tip, loader, null, &.{});
+        iter.deinit();
+    }
+    {
+        const tip = try getCommitFromGetter(gpa, getter, h_tip);
+        var iter = try newCommitIterCTimeWithLoader(gpa, tip, loader, null, &.{});
+        iter.deinit();
+    }
+    {
+        const tip = try getCommitFromGetter(gpa, getter, h_tip);
+        var iter = try newFilterCommitIterWithLoader(gpa, tip, loader, null, null);
+        iter.deinit();
+    }
 }
