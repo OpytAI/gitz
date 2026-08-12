@@ -43,6 +43,8 @@ pub fn StorageFor(comptime Fs: type) type {
         pub const Config = Store.Config;
 
         pub fn init(base: *Store, temporal: *Store) Self {
+            // freeReference uses self.allocator for both base- and temporal-sourced refs.
+            std.debug.assert(base.allocator.ptr == temporal.allocator.ptr);
             return .{ .allocator = base.allocator, .base = base, .temporal = temporal };
         }
 
@@ -241,6 +243,7 @@ pub fn StorageFor(comptime Fs: type) type {
             const child = try self.allocator.create(Self);
             errdefer self.allocator.destroy(child);
             child.* = Self.init(base_module, temporal_module);
+            errdefer child.deinit();
             const key = try self.allocator.dupe(u8, name);
             errdefer self.allocator.free(key);
             try self.modules.put(self.allocator, key, child);

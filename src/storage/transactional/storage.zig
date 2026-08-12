@@ -213,6 +213,7 @@ pub const Storage = struct {
         const child = try self.allocator.create(Storage);
         errdefer self.allocator.destroy(child);
         child.* = Storage.init(base_m, temporal_m);
+        errdefer child.deinit();
         const key = try self.allocator.dupe(u8, name);
         errdefer self.allocator.free(key);
         try self.modules.put(self.allocator, key, child);

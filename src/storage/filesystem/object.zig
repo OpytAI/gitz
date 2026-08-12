@@ -65,7 +65,10 @@ fn destroyPackEntry(allocator: Allocator, entry: *PackCacheEntry) void {
 /// # EncodedObject ownership (unified with memory)
 /// - `newEncodedObject`: caller owns until successful `setEncodedObject` or `discardEncodedObject`
 /// - `setEncodedObject`: storage takes ownership on success; pure pre-write failures leave caller ownership
-/// - `encodedObject` / loads: borrow; storage owns
+/// - `encodedObject` / loads: **borrow**; storage owns
+/// - Borrow validity: until storage `deinit`, `deleteLooseObject` for that hash, or same-kind
+///   replace of that hash (set/re-load of the same representation). Delta and resolved
+///   forms of one hash may both be live (`owned` + `owned_extra`); either borrow stays valid.
 /// - `discardEncodedObject`: abandon a never-set create (safe with storage deinit)
 pub fn ObjectStorageFor(comptime Fs: type) type {
     const DotGit = dotgit.DotGitFor(Fs);
@@ -84,10 +87,12 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
         options: Options = .{},
         object_cache: ?*ObjectLru = null,
         dir: *DotGit,
-        /// Heap objects owned by this storage, keyed by object hash (loads + successful sets).
+        /// Primary owned objects keyed by hash (loads + successful sets). Prefer non-delta.
         /// ObjectLru does not free them; on destroy/deinit we `remove(h)` so a shared cache
         /// never retains a dangling pointer. Never `clear()` a shared external cache.
         owned: std.AutoHashMapUnmanaged(Hash, *MemoryObject) = .empty,
+        /// Extra owned pointers when delta and resolved forms share one hash (free on deinit).
+        owned_extra: std.ArrayListUnmanaged(*MemoryObject) = .empty,
         /// Pack hash → decoded idx (go-git `index map[Hash]idxfile.Index`).
         /// `null` means not loaded yet; empty map means loaded with zero packs.
         index: ?std.AutoHashMapUnmanaged(Hash, *MemoryIndex) = null,
@@ -120,6 +125,12 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
                 self.allocator.destroy(e.value_ptr.*);
             }
             self.owned.deinit(self.allocator);
+            for (self.owned_extra.items) |obj| {
+                if (self.object_cache) |c| c.remove(obj.hash());
+                obj.deinit();
+                self.allocator.destroy(obj);
+            }
+            self.owned_extra.deinit(self.allocator);
             self.* = undefined;
         }
 
@@ -294,16 +305,15 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
         }
 
         /// Record ownership after `prepareAdopt` (no allocation). Hash must be final.
+        /// Set path: same-hash replace frees the previous pointer (caller transferred `obj`).
         fn adoptPrepared(self: *Self, obj: *MemoryObject) void {
             const h = obj.hash();
             const gop = self.owned.getOrPutAssumeCapacity(h);
             if (gop.found_existing) {
                 if (gop.value_ptr.* == obj) return;
-                // Same hash, different pointer: free previous owner entry.
                 const old = gop.value_ptr.*;
                 if (self.object_cache) |c| c.remove(h);
-                old.deinit();
-                self.allocator.destroy(old);
+                destroyOwnedPointer(self, old);
             }
             gop.value_ptr.* = obj;
         }
@@ -319,22 +329,87 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             while (it.next()) |e| {
                 if (e.value_ptr.* == obj) return true;
             }
+            for (store.owned_extra.items) |o| {
+                if (o == obj) return true;
+            }
             return false;
         }
 
-        /// Insert or replace ownership for `h`. Frees a displaced different pointer.
+        fn destroyOwnedPointer(self: *Self, obj: *MemoryObject) void {
+            // Drop from extra if present so deinit cannot double-free.
+            for (self.owned_extra.items, 0..) |o, i| {
+                if (o == obj) {
+                    _ = self.owned_extra.swapRemove(i);
+                    break;
+                }
+            }
+            obj.deinit();
+            self.allocator.destroy(obj);
+        }
+
+        /// Insert ownership for `h`. Same-kind replace frees the old pointer; delta vs
+        /// non-delta keeps both (primary prefers non-delta; other in `owned_extra`).
         fn putOwned(self: *Self, h: Hash, obj: *MemoryObject) Allocator.Error!void {
+            if (ownedContainsPointer(self, obj)) return;
+
             const gop = try self.owned.getOrPut(self.allocator, h);
             if (gop.found_existing) {
-                if (gop.value_ptr.* == obj) return;
                 const old = gop.value_ptr.*;
+                if (old == obj) return;
+
+                if (old.isDeltaObject() != obj.isDeltaObject()) {
+                    // Dual representation under one hash: both borrows stay valid.
+                    if (obj.isDeltaObject()) {
+                        // Keep non-delta as primary; hold delta in extra.
+                        try self.owned_extra.append(self.allocator, obj);
+                        return;
+                    }
+                    // Promote non-delta; retain prior delta in extra.
+                    try self.owned_extra.append(self.allocator, old);
+                    gop.value_ptr.* = obj;
+                    if (self.object_cache) |c| c.remove(h);
+                    return;
+                }
+
+                // Same kind: free displaced (true dedupe).
                 if (self.object_cache) |c| c.remove(h);
-                old.deinit();
-                self.allocator.destroy(old);
+                destroyOwnedPointer(self, old);
                 gop.value_ptr.* = obj;
                 return;
             }
             gop.value_ptr.* = obj;
+        }
+
+        fn findOwnedDelta(self: *const Self, h: Hash) ?*MemoryObject {
+            if (self.owned.get(h)) |o| {
+                if (o.isDeltaObject()) return o;
+            }
+            for (self.owned_extra.items) |o| {
+                if (!o.isDeltaObject()) continue;
+                if (o.cached_hash.eql(h) or o.hash().eql(h)) return o;
+            }
+            return null;
+        }
+
+        /// Free primary + extra owned objects for `h` (invalidates borrows of that hash).
+        fn freeOwnedHash(self: *Self, h: Hash) void {
+            if (self.owned.fetchRemove(h)) |kv| {
+                if (self.object_cache) |c| c.remove(h);
+                destroyOwnedPointer(self, kv.value);
+            }
+            var i: usize = 0;
+            while (i < self.owned_extra.items.len) {
+                const o = self.owned_extra.items[i];
+                const oh = if (!o.cached_hash.isZero()) o.cached_hash else o.hash();
+                if (oh.eql(h)) {
+                    _ = self.owned_extra.swapRemove(i);
+                    if (self.object_cache) |c| c.remove(h);
+                    o.deinit();
+                    self.allocator.destroy(o);
+                } else {
+                    i += 1;
+                }
+            }
         }
 
         /// go-git `ObjectStorage.LazyWriter` result.
@@ -579,6 +654,12 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
                     return;
                 }
             }
+            for (store.owned_extra.items, 0..) |o, i| {
+                if (o == obj) {
+                    _ = store.owned_extra.swapRemove(i);
+                    return;
+                }
+            }
         }
 
         /// go-git `DeltaObject` — loose first, then pack allowing unresolved deltas.
@@ -734,6 +815,9 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             offset: i64,
             hash: Hash,
         ) Error!*MemoryObject {
+            // Same-kind dedupe: return existing unresolved delta if already owned.
+            if (self.findOwnedDelta(hash)) |existing| return existing;
+
             const header = p.scanner.seekObjectHeader(offset) catch return error.ObjectNotFound;
 
             const base: Hash = switch (header.object_type) {
@@ -996,11 +1080,12 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
         }
 
         /// go-git `DeleteLooseObject`.
-        /// Also drops the hash from `object_cache` when present so subsequent
-        /// pack/delta lookups are not shadowed by a stale loose snapshot.
+        /// Drops the hash from `object_cache` and frees any owned objects for `h`
+        /// (invalidates borrows of that hash). Pack-only objects can be reloaded later.
         pub fn deleteLooseObject(self: *Self, h: Hash) Error!void {
             try self.dir.objectDelete(h);
             if (self.object_cache) |c| c.remove(h);
+            self.freeOwnedHash(h);
         }
 
         /// go-git `HashesWithPrefix` — loose + pack index entries.

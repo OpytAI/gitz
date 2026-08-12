@@ -331,6 +331,7 @@ test "large_object_threshold skips object cache" {
 }
 
 // WP-E: ObjectLru scrub on deinit — shared cache must not keep freed pointers.
+// Also pins “never clear shared cache”: an unrelated entry must survive deinit.
 test "ObjectLru remove-on-deinit does not leave dangling cache entries" {
     const gpa = std.testing.allocator;
     const sync = @import("utils/sync");
@@ -341,6 +342,19 @@ test "ObjectLru remove-on-deinit does not leave dangling cache entries" {
 
     var cache = cache_pkg.ObjectLru.initDefault(gpa);
     defer cache.deinit();
+
+    // Sibling entry owned by the test (not by storage). A mistaken clear() would drop it.
+    const survivor = try gpa.create(plumbing.MemoryObject);
+    survivor.* = plumbing.MemoryObject.init(gpa);
+    defer {
+        survivor.deinit();
+        gpa.destroy(survivor);
+    }
+    survivor.setType(.blob);
+    _ = try survivor.write("sibling-not-owned-by-storage");
+    const h_surv = survivor.hash();
+    try cache.put(survivor);
+    try std.testing.expect(cache.get(h_surv) != null);
 
     const s = try newStorageWithOptions(gpa, &mem, &cache, .{});
     try s.initLayout();
@@ -359,8 +373,9 @@ test "ObjectLru remove-on-deinit does not leave dangling cache entries" {
     s.deinit();
     gpa.destroy(s);
 
-    // Shared cache entry scrubbed; cache itself remains usable (not clear/deinit).
+    // Owned hash scrubbed; sibling entry must still be present (no clear()).
     try std.testing.expect(cache.get(h) == null);
+    try std.testing.expect(cache.get(h_surv) == survivor);
 }
 
 // WP-E: owned map dedupes repeated loose loads after cache eviction.
@@ -1308,10 +1323,15 @@ test "deltaObject OFS delta from packfileWriter pack" {
     try std.testing.expect(delta_obj.actualHash().?.eql(h_target));
     try std.testing.expect(delta_obj.readerBytes().len > 0);
 
-    // Resolved path returns full blobs.
+    // Resolved path returns full blobs (must not free the prior delta borrow).
     const resolved = try s.encodedObject(.blob, h_target);
     try std.testing.expectEqualStrings("0123456789abcdefghijXYZ", resolved.readerBytes());
     try std.testing.expect(resolved.object_type == .blob);
+    try std.testing.expect(resolved != delta_obj);
+    // Dual-hold: delta borrow remains valid after same-hash resolve (F1 harden).
+    try std.testing.expect(delta_obj.isDeltaObject());
+    try std.testing.expect(delta_obj.baseHash().?.eql(h_base));
+    try std.testing.expect(delta_obj.actualHash().?.eql(h_target));
 
     // Base is a non-delta in the pack; deltaObject still returns a full blob.
     const base_got = try s.deltaObject(.blob, h_base);
