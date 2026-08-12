@@ -1,4 +1,4 @@
-//! Cross-module ownership GPA suite (ownership program PR12 aggregator).
+//! Cross-module ownership GPA suite (visible acceptance aggregator).
 //!
 //! Runs production-loader scenarios under `std.testing.allocator` so leaks and
 //! double-frees fail the test. Representative ownership paths: walker early-exit
@@ -6,8 +6,8 @@
 //! walker/merge-base plus FS EncodedObject discard, ObjectLru non-owning deinit,
 //! hash pad, and `deinitPools`. Dual-backend walker GPA stays in package tests.
 //!
-//! Per-package GPA tests remain in their modules; this target is the visible
-//! acceptance aggregator counted by the README Ownership GPA suites row.
+//! Per-package GPA tests remain in their modules; this target is counted by the
+//! README Ownership GPA suites row.
 
 const std = @import("std");
 const plumbing = @import("plumbing");

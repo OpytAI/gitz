@@ -132,7 +132,7 @@ zig_test(
     ],
 )
 
-# Cross-module ownership GPA aggregator (PR12). Counted in README Ownership GPA suites.
+# Cross-module ownership GPA aggregator (README Ownership GPA suites row).
 zig_test(
     name = "ownership_gpa_test",
     size = "small",

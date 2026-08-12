@@ -6,19 +6,19 @@ the JavaScript `WebAssembly` runtime. They do not use WASI or Emscripten.
 Run both the release-small and safety-enabled debug gates:
 
 ```sh
-bazel --output_user_root=/mnt/workspace/gitz/bazel-cache --batch test //examples/wasm:all
+bazel test //examples/wasm:all
 ```
 
 Run only the release-small gate:
 
 ```sh
-bazel --output_user_root=/mnt/workspace/gitz/bazel-cache --batch test //examples/wasm:release
+bazel test //examples/wasm:release
 ```
 
 Run only the debug gate:
 
 ```sh
-bazel --output_user_root=/mnt/workspace/gitz/bazel-cache --batch test //examples/wasm:debug
+bazel test //examples/wasm:debug
 ```
 
 The aggregate contains five independent artifacts:

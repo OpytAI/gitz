@@ -647,7 +647,7 @@ fn decodeRefDeltaIndex(allocator: Allocator) !MemoryIndex {
     return idx;
 }
 
-// --- WP-D cachePut ownership (found_existing / zero-hash) ---
+// --- cachePut ownership (found_existing / zero-hash) ---
 
 test "Packfile.cachePut found_existing keeps existing destroys new" {
     const allocator = std.testing.allocator;

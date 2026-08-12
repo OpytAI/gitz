@@ -74,7 +74,7 @@ pub const Hash = struct {
         return std.mem.eql(u8, &self.bytes, &other.bytes);
     }
 
-    /// Debug-only: pad beyond active `digestSize()` is zero (R7 / WP-C).
+    /// Debug-only: pad beyond active `digestSize()` is zero.
     /// Uses process TLS format — SHA-256 OIDs must only be used under SHA-256
     /// active format (or `FormatScope`); otherwise safety builds assert.
     pub fn debugAssertCanonical(self: Hash) void {

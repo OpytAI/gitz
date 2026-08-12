@@ -523,7 +523,7 @@ pub const Parser = struct {
             // in get() (placeholders are not written here).
             // Residual: putContent before graph registration means a later OOM
             // can leave the storer with an object the parse graph did not adopt
-            // (import transactionality is outside WP-D).
+            // (full import transactionality is a separate concern).
             if (self.storage != null and !delta) {
                 _ = try self.storage.?.putContent(oh.object_type, content);
             }
@@ -894,7 +894,7 @@ test "parse basic.pack seekable: checksum and 31 objects" {
     try std.testing.expectEqualStrings(first_hex, obs.hashes.items[0].string(&hex));
 }
 
-/// WP-D: force allocation failures during parse; any error is OK if no leak.
+/// Force allocation failures during parse; any error is OK if no leak.
 /// Unlike `checkAllAllocationFailures`, accepts non-OOM surfaces (e.g. zlib
 /// `WriteFailed` when an inflate buffer alloc fails mid-object).
 fn assertParseAllocFailuresGpaClean(

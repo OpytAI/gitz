@@ -330,7 +330,7 @@ test "large_object_threshold skips object cache" {
     try std.testing.expect(cache.get(eh) != null);
 }
 
-// WP-E: ObjectLru scrub on deinit — shared cache must not keep freed pointers.
+// ObjectLru scrub on deinit — shared cache must not keep freed pointers.
 // Also pins “never clear shared cache”: an unrelated entry must survive deinit.
 test "ObjectLru remove-on-deinit does not leave dangling cache entries" {
     const gpa = std.testing.allocator;
@@ -378,7 +378,7 @@ test "ObjectLru remove-on-deinit does not leave dangling cache entries" {
     try std.testing.expect(cache.get(h_surv) == survivor);
 }
 
-// WP-E: owned map dedupes repeated loose loads after cache eviction.
+// Owned map dedupes repeated loose loads after cache eviction.
 test "owned map dedupes repeated encodedObject loads" {
     const gpa = std.testing.allocator;
     const sync = @import("utils/sync");
@@ -407,7 +407,7 @@ test "owned map dedupes repeated encodedObject loads" {
     try std.testing.expectEqual(@as(usize, 1), s.object_storage.owned.count());
 }
 
-// WP-E: config() returns a stable pointer until setConfig.
+// config() returns a stable pointer until setConfig.
 test "config returns stable pointer until setConfig" {
     const gpa = std.testing.allocator;
     var mem = try fs_pkg.Mem.init(gpa);

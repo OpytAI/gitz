@@ -7,7 +7,7 @@
 | Pin | `v5.19.2` |
 | Published | 2026-07-29 |
 | Decision date | 2026-08-07 |
-| Local path | `/mnt/workspace/gitz/go-git` (sibling of bare repo and worktrees) |
+| Local path | Checkout the pin next to the bare repo / worktrees when refreshing goldens (path is machine-local; not required for builds) |
 
 ## Policy
 

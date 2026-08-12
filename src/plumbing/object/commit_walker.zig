@@ -2583,7 +2583,7 @@ test "production close without next frees tip all walkers" {
 }
 
 // ---------------------------------------------------------------------------
-// PR3: R4 forEach free-after-cb + AllIter single path-list ownership
+// forEach free-after-cb + AllIter single path-list ownership
 // ---------------------------------------------------------------------------
 
 test "production forEach Stop frees yields zero leaks" {
