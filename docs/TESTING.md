@@ -21,13 +21,12 @@ Prefer one shared fixture implementation over copied setup helpers.
 
 ### Ownership and allocators
 
-Follow the production ownership contract in
-[`docs/OWNERSHIP.md`](OWNERSHIP.md) (R1–R9, free companions, EncodedObject,
-walkers). Use `std.testing.allocator` (GPA) or a debug allocator so leaks and
-double-frees fail tests. Ownership and free-companion tests must exercise
-**production loaders** (`heap_owned=true`) and both storage backends where the
-contract applies. Stack/map-only tips alone are not enough for walker or
-merge-base paths.
+Apply R1–R9 and free companions in [`docs/OWNERSHIP.md`](OWNERSHIP.md)
+(EncodedObject, walkers, and related surfaces). Use `std.testing.allocator`
+(GPA) or a debug allocator so leaks and double-frees fail tests. Ownership and
+free-companion tests must exercise **production loaders** (`heap_owned=true`)
+and both storage backends where the contract applies. Stack/map-only tips alone
+are not enough for walker or merge-base paths.
 
 ## Naming
 

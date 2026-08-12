@@ -27,7 +27,7 @@ go-git/                   reference clone of go-git (read only for the port)
 - Never work inside the bare repository directory. It has no working tree.
 - Each worktree checks out exactly one branch. Two worktrees must not share one branch.
 - Treat `go-git/` as reference only. Do not commit project work into `go-git/`.
-- Do not edit go-git to match gitz. Change gitz to match go-git.
+- Do not edit go-git to match gitz. Change gitz to match go-git features and Git behavior (not lifetimes or free surfaces; see `docs/OWNERSHIP.md`).
 
 ## Reference pin (go-git)
 

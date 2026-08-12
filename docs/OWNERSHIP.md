@@ -36,8 +36,8 @@ Replace “same as go-git GC” comments with the applicable rule above.
 
 ## R4 forEach algorithm
 
-Normative shape for `CommitIter.forEach` / `forEachCommit` (and ObjectIter /
-CommitNodeIter under R4b):
+Normative shape for **`CommitIter.forEach` / `forEachCommit`** only
+(`freeCommit` on each yield):
 
 ```zig
 // CommitIter.forEach / forEachCommit — borrow-during-callback
@@ -61,6 +61,11 @@ pub fn forEachCommit(iter: anytype, cb: anytype) !void {
     }
 }
 ```
+
+`ObjectIter.forEach` and `CommitNodeIter.forEach` (R4b) use the **same**
+free-after-cb control flow (`defer close()`, free after callback including
+Stop/error). They free with that yield type’s companion (object/encoded free or
+node free), not `freeCommit`.
 
 Acceptance: GPA with callback `error.Stop` after N yields; GPA with a random
 callback error; both show zero leaks. Callbacks that free the yielded object
@@ -122,7 +127,7 @@ companion lands.
 | Surface | Rule |
 | --- | --- |
 | Session-owned AdvRefs | Do not free; session/storage owns. |
-| Heap AdvRefs | Free with the package free companion when the API documents heap ownership. |
+| Heap AdvRefs | Free with package `freeAdvRefs` when the API documents heap ownership. |
 | `objectPacks` | Document heap vs empty static return; free only heap results. |
 | Repository object getters | Free companions next to `freeReference` on the facade. |
 
