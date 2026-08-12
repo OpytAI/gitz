@@ -216,9 +216,8 @@ pub const GraphCommitNode = struct {
         if (self.author_when) |t| return t;
         const c = self.commitObj() catch return whenUnixSeconds(self.commit_data.when);
         const t = c.author.when;
-        // Graph loads a fresh *Commit — free after reading author time.
-        c.deinit();
-        self.allocator.destroy(c);
+        // commit() always returns heap-owned *Commit.
+        object.freeCommit(self.allocator, c);
         self.author_when = t;
         return t;
     }
@@ -269,6 +268,7 @@ pub const GraphCommitNode = struct {
         return self.commit_data.generation_v2;
     }
 
+    /// Always returns a heap-owned `*Commit`; caller must `freeCommit`.
     pub fn commitObj(self: *GraphCommitNode) anyerror!*object.Commit {
         return self.gci.get_commit_fn(self.gci.storage, self.allocator, self.hash);
     }

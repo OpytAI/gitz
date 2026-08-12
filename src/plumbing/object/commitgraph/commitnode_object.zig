@@ -152,8 +152,21 @@ pub const ObjectCommitNode = struct {
         return max_generation;
     }
 
+    /// Always returns a fresh heap-owned `*Commit`; caller must `freeCommit`.
+    /// Reloads from the storer so callers never free the node's cached commit.
     pub fn commitObj(self: *ObjectCommitNode) anyerror!*object.Commit {
-        return self.commit;
+        const getter = self.commit.storer orelse return error.ObjectNotFound;
+        const o = try getter.encodedObject(.commit, self.commit.hash);
+        const c = try self.allocator.create(object.Commit);
+        errdefer {
+            c.deinit();
+            self.allocator.destroy(c);
+        }
+        c.* = object.Commit.init(self.allocator);
+        c.heap_owned = true;
+        c.storer = getter;
+        try c.decode(o);
+        return c;
     }
 
     pub fn tree(self: *ObjectCommitNode) anyerror!*object.Tree {

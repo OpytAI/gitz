@@ -62,14 +62,12 @@ pub const ResetOptions = struct {
     pub fn validate(self: *ResetOptions, repository: anytype) !void {
         if (self.commit.isZero()) {
             const head_ref = try repository.head();
+            defer repository.freeReference(head_ref);
             self.commit = head_ref.hash;
             return;
         }
         const c = try repository.commitObject(self.commit);
-        defer {
-            c.deinit();
-            repository.storer.allocator.destroy(c);
-        }
+        defer objpkg.freeCommit(repository.storer.allocator, c);
     }
 };
 

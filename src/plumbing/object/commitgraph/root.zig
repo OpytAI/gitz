@@ -155,8 +155,9 @@ test "ObjectCommitNodeIndex parents and ctime walk" {
     try std.testing.expectEqual(@as(usize, 1), parents.items.len);
     try std.testing.expect(parents.items[0].eql(h1));
 
-    // Full commit load
+    // Full commit load (always heap-owned)
     const full = try tip.commit();
+    defer object.freeCommit(gpa, full);
     try std.testing.expect(full.id().eql(h2));
     try std.testing.expectEqualStrings("tip\n", full.message);
 
@@ -241,12 +242,9 @@ test "GraphCommitNodeIndex memory graph + object fallback" {
     try std.testing.expect(p0.id().eql(h0));
     try std.testing.expectEqual(@as(u64, 1), p0.generation());
 
-    // Full Commit() from graph node loads object store
+    // Full Commit() from graph node loads object store (always heap-owned)
     const full = try n1.commit();
-    defer {
-        full.deinit();
-        gpa.destroy(full);
-    }
+    defer object.freeCommit(gpa, full);
     try std.testing.expect(full.id().eql(h1));
 
     // Object fallback for tip not in graph; ParentNode routes through index
@@ -336,4 +334,135 @@ test "CommitNodeIterAuthorDateOrder linear history" {
     try std.testing.expect(walked.items[0].eql(h2));
     try std.testing.expect(walked.items[1].eql(h1));
     try std.testing.expect(walked.items[2].eql(h0));
+}
+
+test "CommitNodeIter forEach R4b free-after-cb Stop zero leaks" {
+    // R4b: forEach frees each node after cb (including Stop) and closes.
+    const gpa = std.testing.allocator;
+
+    const s = try memory.newStorage(gpa);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+
+    const tree_h = try storeEmptyTree(s);
+    const h0 = try storeCommit(gpa, s, tree_h, &.{}, 1000, "root\n");
+    const h1 = try storeCommit(gpa, s, tree_h, &.{h0}, 2000, "mid\n");
+    const h2 = try storeCommit(gpa, s, tree_h, &.{h1}, 3000, "tip\n");
+
+    const index = try newObjectCommitNodeIndex(gpa, Storage, s);
+    defer index.deinit();
+
+    const start = try index.get(h2);
+    const iter = try newCommitNodeIterCTime(gpa, start, null, &.{});
+    // forEach closes; do not defer close (close destroys the heap box).
+
+    var count: usize = 0;
+    const Gen = struct {
+        var n: *usize = undefined;
+        fn cb(_: CommitNode) !void {
+            n.* += 1;
+            if (n.* >= 2) return error.Stop;
+        }
+    };
+    Gen.n = &count;
+    try iter.forEach(Gen.cb);
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "CommitNode.commit always heap-owned freeCommit" {
+    // Object and graph backends both return freeCommit-able *Commit.
+    const gpa = std.testing.allocator;
+
+    const s = try memory.newStorage(gpa);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+
+    const tree_h = try storeEmptyTree(s);
+    const h0 = try storeCommit(gpa, s, tree_h, &.{}, 1000, "root\n");
+    const h1 = try storeCommit(gpa, s, tree_h, &.{h0}, 2000, "child\n");
+
+    // Object-backed node
+    {
+        const index = try newObjectCommitNodeIndex(gpa, Storage, s);
+        defer index.deinit();
+        const node = try index.get(h1);
+        defer node.deinit();
+        const c1 = try node.commit();
+        defer object.freeCommit(gpa, c1);
+        const c2 = try node.commit();
+        defer object.freeCommit(gpa, c2);
+        // Distinct heap instances; free both without touching the node cache.
+        try std.testing.expect(c1 != c2);
+        try std.testing.expect(c1.id().eql(h1));
+        try std.testing.expect(c2.id().eql(h1));
+    }
+
+    // Graph-backed node
+    {
+        var mi = commitgraph.MemoryIndex.init(gpa);
+        defer mi.deinit();
+        var d0: commitgraph.CommitData = .{
+            .tree_hash = tree_h,
+            .when = 1000,
+            .generation = 1,
+            .generation_v2 = 1001,
+        };
+        try mi.add(h0, &d0);
+        var parents0 = [_]Hash{h0};
+        var d1: commitgraph.CommitData = .{
+            .tree_hash = tree_h,
+            .when = 2000,
+            .generation = 2,
+            .generation_v2 = 2002,
+            .parent_hashes = parents0[0..],
+        };
+        try mi.add(h1, &d1);
+
+        const index = try newGraphCommitNodeIndexFrom(gpa, commitgraph.MemoryIndex, &mi, Storage, s);
+        defer index.deinit();
+        const node = try index.get(h1);
+        defer node.deinit();
+        const full = try node.commit();
+        defer object.freeCommit(gpa, full);
+        try std.testing.expect(full.id().eql(h1));
+        try std.testing.expect(full.heap_owned);
+    }
+}
+
+test "ParentCommitNodeIter forEach free-after-cb" {
+    const gpa = std.testing.allocator;
+
+    const s = try memory.newStorage(gpa);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+
+    const tree_h = try storeEmptyTree(s);
+    const h0 = try storeCommit(gpa, s, tree_h, &.{}, 1000, "root\n");
+    const h1 = try storeCommit(gpa, s, tree_h, &.{h0}, 2000, "child\n");
+
+    const index = try newObjectCommitNodeIndex(gpa, Storage, s);
+    defer index.deinit();
+    const tip = try index.get(h1);
+    defer tip.deinit();
+
+    var piter = tip.parentNodes();
+    var count: usize = 0;
+    const Gen = struct {
+        var n: *usize = undefined;
+        var expect: Hash = undefined;
+        fn cb(node: CommitNode) !void {
+            try std.testing.expect(node.id().eql(expect));
+            n.* += 1;
+        }
+    };
+    Gen.n = &count;
+    Gen.expect = h0;
+    try piter.forEach(Gen.cb);
+    try std.testing.expectEqual(@as(usize, 1), count);
 }

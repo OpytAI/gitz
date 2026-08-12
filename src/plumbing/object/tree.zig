@@ -502,6 +502,7 @@ pub const TreeWalker = struct {
                     const heap = getTree(self.allocator, s, entry.hash) catch {
                         return error.EndOfStream;
                     };
+                    errdefer freeTree(self.allocator, heap);
                     try self.owned.append(self.allocator, heap);
                     obj = heap;
                 } else {

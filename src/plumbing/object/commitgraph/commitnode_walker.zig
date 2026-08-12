@@ -427,20 +427,22 @@ pub const CommitNodeIterCTime = struct {
         }
     }
 
+    /// R4b: free-after-cb including Stop/error; always close.
     pub fn forEach(self: *CommitNodeIterCTime, cb: anytype) !void {
+        defer self.close();
         while (true) {
             const c = self.next() catch |err| {
-                if (err == error.EndOfStream) break;
+                if (err == error.EndOfStream) return;
                 return err;
             };
+            var freed = false;
+            defer if (!freed) c.deinit();
             cb(c) catch |err| {
-                if (err == error.Stop) {
-                    c.deinit();
-                    break;
-                }
-                c.deinit();
+                if (err == error.Stop) return;
                 return err;
             };
+            c.deinit();
+            freed = true;
         }
     }
 
@@ -581,20 +583,22 @@ pub const CommitNodeIterTopological = struct {
         return next_node;
     }
 
+    /// R4b: free-after-cb including Stop/error; always close.
     pub fn forEach(self: *CommitNodeIterTopological, cb: anytype) !void {
+        defer self.close();
         while (true) {
             const obj = self.next() catch |err| {
                 if (err == error.EndOfStream) return;
                 return err;
             };
+            var freed = false;
+            defer if (!freed) obj.deinit();
             cb(obj) catch |err| {
-                if (err == error.Stop) {
-                    obj.deinit();
-                    return;
-                }
-                obj.deinit();
+                if (err == error.Stop) return;
                 return err;
             };
+            obj.deinit();
+            freed = true;
         }
     }
 
