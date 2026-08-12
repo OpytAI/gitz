@@ -116,8 +116,7 @@ fn validate(w: anytype, o: *ResetOptions) !void {
                 return error.ObjectNotFound;
             return err;
         };
-        c.deinit();
-        w.allocator.destroy(c);
+        objpkg.freeCommit(w.allocator, c);
     }
 }
 

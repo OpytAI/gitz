@@ -428,22 +428,9 @@ pub const CommitNodeIterCTime = struct {
     }
 
     /// R4b: free-after-cb including Stop/error; always close.
+    /// After forEach, do not call close again (close destroys this heap box).
     pub fn forEach(self: *CommitNodeIterCTime, cb: anytype) !void {
-        defer self.close();
-        while (true) {
-            const c = self.next() catch |err| {
-                if (err == error.EndOfStream) return;
-                return err;
-            };
-            var freed = false;
-            defer if (!freed) c.deinit();
-            cb(c) catch |err| {
-                if (err == error.Stop) return;
-                return err;
-            };
-            c.deinit();
-            freed = true;
-        }
+        return commitnode.forEachCommitNode(self, cb);
     }
 
     pub fn close(self: *CommitNodeIterCTime) void {
@@ -473,6 +460,7 @@ fn ctimeClose(ptr: *anyopaque) void {
 ///
 /// Takes ownership of `start`. Free the iterator with `CommitNodeIter.close`.
 /// Successful `next` transfers node ownership to the caller.
+/// `forEach` closes the iterator; do not call `close` again after `forEach`.
 pub fn newCommitNodeIterCTime(
     allocator: Allocator,
     start: CommitNode,
@@ -584,22 +572,9 @@ pub const CommitNodeIterTopological = struct {
     }
 
     /// R4b: free-after-cb including Stop/error; always close.
+    /// After forEach, do not call close again (close destroys this heap box).
     pub fn forEach(self: *CommitNodeIterTopological, cb: anytype) !void {
-        defer self.close();
-        while (true) {
-            const obj = self.next() catch |err| {
-                if (err == error.EndOfStream) return;
-                return err;
-            };
-            var freed = false;
-            defer if (!freed) obj.deinit();
-            cb(obj) catch |err| {
-                if (err == error.Stop) return;
-                return err;
-            };
-            obj.deinit();
-            freed = true;
-        }
+        return commitnode.forEachCommitNode(self, cb);
     }
 
     pub fn close(self: *CommitNodeIterTopological) void {
@@ -627,6 +602,7 @@ fn topoClose(ptr: *anyopaque) void {
 }
 
 /// go-git `NewCommitNodeIterDateOrder` (`git log --date-order`).
+/// `forEach` closes the iterator; do not call `close` again after `forEach`.
 pub fn newCommitNodeIterDateOrder(
     allocator: Allocator,
     start: CommitNode,
@@ -662,6 +638,7 @@ pub fn newCommitNodeIterDateOrder(
 }
 
 /// go-git `NewCommitNodeIterTopoOrder` (`git log --topo-order`).
+/// `forEach` closes the iterator; do not call `close` again after `forEach`.
 pub fn newCommitNodeIterTopoOrder(
     allocator: Allocator,
     start: CommitNode,
@@ -701,6 +678,7 @@ pub fn newCommitNodeIterTopoOrder(
 ///
 /// Takes ownership of `start`. Free the iterator with `CommitNodeIter.close`.
 /// Successful `next` transfers node ownership to the caller.
+/// `forEach` closes the iterator; do not call `close` again after `forEach`.
 pub fn newCommitNodeIterAuthorDateOrder(
     allocator: Allocator,
     start: CommitNode,

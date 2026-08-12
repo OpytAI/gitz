@@ -34,6 +34,7 @@ const server_pkg = @import("server");
 const repack_mod = @import("repack.zig");
 const prune_pkg = @import("prune");
 const blame_pkg = @import("blame");
+const utils_sync = @import("utils/sync");
 
 const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
@@ -1043,7 +1044,7 @@ test "configScoped GlobalScope with empty env still returns local" {
 
 fn storeMergeTestCommit(
     allocator: Allocator,
-    s: *memory.Storage,
+    s: anytype,
     tree: Hash,
     parents: []const Hash,
     message: []const u8,
@@ -1222,4 +1223,40 @@ test "ResetOptions.validate defaults HEAD and rejects non-commit hash" {
     const blob_hash = try s.setEncodedObject(blob_obj);
     var invalid: worktree_pkg.ResetOptions = .{ .commit = blob_hash };
     try std.testing.expectError(error.ObjectNotFound, invalid.validate(&r));
+}
+
+test "ResetOptions.validate freeReference on FS storage GPA" {
+    // Design R9: free head refs under FS where freeReference is non-no-op.
+    const allocator = std.testing.allocator;
+    const filesystem = @import("filesystem");
+    defer utils_sync.deinitPools(allocator);
+
+    var mem = try fs_pkg.Mem.init(allocator);
+    defer mem.deinit();
+
+    const s = try filesystem.newStorage(allocator, &mem, null);
+    defer {
+        s.deinit();
+        allocator.destroy(s);
+    }
+    try s.initLayout();
+    try s.setReference(Reference.newSymbolicReference(plumbing.HEAD, plumbing.master));
+
+    const tree_obj = try s.newEncodedObject();
+    tree_obj.setType(.tree);
+    _ = try tree_obj.write("");
+    const tree = try s.setEncodedObject(tree_obj);
+    const commit_hash = try storeMergeTestCommit(allocator, s, tree, &.{}, "fs-head\n");
+    try s.setReference(Reference.newHashReference(plumbing.master, commit_hash));
+
+    var r = newRepositoryFor(filesystem.StorageMem, fs_pkg.Mem, s, null);
+
+    var defaults: worktree_pkg.ResetOptions = .{};
+    try defaults.validate(&r);
+    try std.testing.expect(defaults.commit.eql(commit_hash));
+
+    // Non-zero path freeCommit (heap-owned commit load).
+    var check: worktree_pkg.ResetOptions = .{ .commit = commit_hash };
+    try check.validate(&r);
+    try std.testing.expect(check.commit.eql(commit_hash));
 }

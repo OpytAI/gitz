@@ -150,23 +150,10 @@ pub const CommitNodeIter = struct {
     /// Borrow during callback; free each heap-owned node after the callback
     /// returns including `error.Stop` and other errors. Always `close`s so
     /// unyielded holds are released. Callbacks must **not** free the node.
+    /// After `forEach` returns the iterator is closed — do not call `close` again
+    /// when the concrete close frees the heap box (CTime/topo walkers).
     pub fn forEach(self: CommitNodeIter, cb: anytype) !void {
-        defer self.close();
-        while (true) {
-            const node = self.next() catch |err| {
-                if (err == error.EndOfStream) return;
-                return err;
-            };
-            var freed = false;
-            defer if (!freed) node.deinit();
-            cb(node) catch |err| {
-                // go-git `storer.ErrStop` — free via defer, then success-return
-                if (err == error.Stop) return;
-                return err;
-            };
-            node.deinit();
-            freed = true;
-        }
+        return forEachCommitNode(self, cb);
     }
 
     /// go-git `CommitNodeIter.Close`.
@@ -174,6 +161,27 @@ pub const CommitNodeIter = struct {
         self.vtable.close(self.ptr);
     }
 };
+
+/// Shared R4b forEach for CommitNode iterators (fat + concrete + parent).
+/// Free after callback including Stop/error; always close.
+pub fn forEachCommitNode(iter: anytype, cb: anytype) !void {
+    defer iter.close();
+    while (true) {
+        const node = iter.next() catch |err| {
+            if (err == error.EndOfStream) return;
+            return err;
+        };
+        var freed = false;
+        defer if (!freed) node.deinit();
+        cb(node) catch |err| {
+            // go-git `storer.ErrStop` — free via defer, then success-return
+            if (err == error.Stop) return;
+            return err;
+        };
+        node.deinit();
+        freed = true;
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Parent iterator (go-git parentCommitNodeIter)
@@ -206,21 +214,7 @@ pub const ParentCommitNodeIter = struct {
     /// `next` yields immediately (no unyielded parent stack). Free each yield
     /// after the callback including Stop/error; `close` only marks closed.
     pub fn forEach(self: *ParentCommitNodeIter, cb: anytype) !void {
-        defer self.close();
-        while (true) {
-            const obj = self.next() catch |err| {
-                if (err == error.EndOfStream) return;
-                return err;
-            };
-            var freed = false;
-            defer if (!freed) obj.deinit();
-            cb(obj) catch |err| {
-                if (err == error.Stop) return;
-                return err;
-            };
-            obj.deinit();
-            freed = true;
-        }
+        return forEachCommitNode(self, cb);
     }
 
     /// go-git `parentCommitNodeIter.Close`.

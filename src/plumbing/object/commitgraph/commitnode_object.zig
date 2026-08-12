@@ -156,17 +156,7 @@ pub const ObjectCommitNode = struct {
     /// Reloads from the storer so callers never free the node's cached commit.
     pub fn commitObj(self: *ObjectCommitNode) anyerror!*object.Commit {
         const getter = self.commit.storer orelse return error.ObjectNotFound;
-        const o = try getter.encodedObject(.commit, self.commit.hash);
-        const c = try self.allocator.create(object.Commit);
-        errdefer {
-            c.deinit();
-            self.allocator.destroy(c);
-        }
-        c.* = object.Commit.init(self.allocator);
-        c.heap_owned = true;
-        c.storer = getter;
-        try c.decode(o);
-        return c;
+        return object.getCommitFromGetter(self.allocator, getter, self.commit.hash);
     }
 
     pub fn tree(self: *ObjectCommitNode) anyerror!*object.Tree {

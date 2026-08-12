@@ -509,6 +509,11 @@ fn getCommitWithGetter(allocator: Allocator, s: ObjectGetter, h: Hash) !*Commit 
     return c;
 }
 
+/// Load commit via type-erased `ObjectGetter` (heap-owned; caller `freeCommit`).
+pub fn getCommitFromGetter(allocator: Allocator, s: ObjectGetter, h: Hash) !*Commit {
+    return getCommitWithGetter(allocator, s, h);
+}
+
 // ---------------------------------------------------------------------------
 // Parent iterator (go-git Commit.Parents / storerCommitIter subset)
 // ---------------------------------------------------------------------------

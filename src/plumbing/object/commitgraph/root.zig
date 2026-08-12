@@ -466,3 +466,106 @@ test "ParentCommitNodeIter forEach free-after-cb" {
     try piter.forEach(Gen.cb);
     try std.testing.expectEqual(@as(usize, 1), count);
 }
+
+test "CommitNodeIter forEach R4b error frees yields zero leaks" {
+    // R4b: random error after N yields; free current + close remainder.
+    const gpa = std.testing.allocator;
+
+    const s = try memory.newStorage(gpa);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+
+    const tree_h = try storeEmptyTree(s);
+    const h0 = try storeCommit(gpa, s, tree_h, &.{}, 1000, "root\n");
+    const h1 = try storeCommit(gpa, s, tree_h, &.{h0}, 2000, "mid\n");
+    const h2 = try storeCommit(gpa, s, tree_h, &.{h1}, 3000, "tip\n");
+
+    const index = try newObjectCommitNodeIndex(gpa, Storage, s);
+    defer index.deinit();
+
+    const start = try index.get(h2);
+    const iter = try newCommitNodeIterCTime(gpa, start, null, &.{});
+    // forEach closes; do not defer close.
+
+    var count: usize = 0;
+    const Gen = struct {
+        var n: *usize = undefined;
+        fn cb(_: CommitNode) !void {
+            n.* += 1;
+            if (n.* >= 2) return error.UnexpectedData;
+        }
+    };
+    Gen.n = &count;
+    try std.testing.expectError(error.UnexpectedData, iter.forEach(Gen.cb));
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
+
+test "ParentCommitNodeIter forEach Stop free-after-cb zero leaks" {
+    const gpa = std.testing.allocator;
+
+    const s = try memory.newStorage(gpa);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+
+    // Two parents so Stop can fire on the first without exhausting the iter.
+    const tree_h = try storeEmptyTree(s);
+    const h0 = try storeCommit(gpa, s, tree_h, &.{}, 1000, "p0\n");
+    const h1 = try storeCommit(gpa, s, tree_h, &.{}, 1100, "p1\n");
+    const tip_h = try storeCommit(gpa, s, tree_h, &.{ h0, h1 }, 2000, "merge\n");
+
+    const index = try newObjectCommitNodeIndex(gpa, Storage, s);
+    defer index.deinit();
+    const tip = try index.get(tip_h);
+    defer tip.deinit();
+
+    var piter = tip.parentNodes();
+    var count: usize = 0;
+    const Gen = struct {
+        var n: *usize = undefined;
+        fn cb(_: CommitNode) !void {
+            n.* += 1;
+            return error.Stop;
+        }
+    };
+    Gen.n = &count;
+    try piter.forEach(Gen.cb);
+    try std.testing.expectEqual(@as(usize, 1), count);
+}
+
+test "CommitNodeIterDateOrder forEach Stop free-after-cb zero leaks" {
+    const gpa = std.testing.allocator;
+
+    const s = try memory.newStorage(gpa);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+
+    const tree_h = try storeEmptyTree(s);
+    const h0 = try storeCommit(gpa, s, tree_h, &.{}, 1000, "root\n");
+    const h1 = try storeCommit(gpa, s, tree_h, &.{h0}, 2000, "mid\n");
+    const h2 = try storeCommit(gpa, s, tree_h, &.{h1}, 3000, "tip\n");
+
+    const index = try newObjectCommitNodeIndex(gpa, Storage, s);
+    defer index.deinit();
+
+    const start = try index.get(h2);
+    const iter = try newCommitNodeIterDateOrder(gpa, start, null, &.{});
+    // forEach closes; do not defer close.
+
+    var count: usize = 0;
+    const Gen = struct {
+        var n: *usize = undefined;
+        fn cb(_: CommitNode) !void {
+            n.* += 1;
+            if (n.* >= 2) return error.Stop;
+        }
+    };
+    Gen.n = &count;
+    try iter.forEach(Gen.cb);
+    try std.testing.expectEqual(@as(usize, 2), count);
+}
