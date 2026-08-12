@@ -35,8 +35,12 @@ The workspace `.bazelrc` configures the shared output root.
    ```
 
 Valid package statuses are `required`, `deferred`, `excluded`, and `test_only`.
-The inventory's numeric fields are legacy compatibility data used by existing
-checkers; do not use them as a project roadmap.
+Inventories are **navigation and package-surface hygiene**: they map the pinned
+go-git tree to gitz paths and exports so hollow or missing packages fail CI.
+The inventory's numeric fields (including API-name mapping ratios) are legacy
+compatibility data used by existing checkers. They are **not** a project success
+metric or roadmap. Prefer behavioral goldens, Bazel gate health, allowlists, and
+ownership GPA cleanliness (see [`docs/OWNERSHIP.md`](OWNERSHIP.md)).
 
 ## Add a golden
 

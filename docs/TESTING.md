@@ -17,9 +17,17 @@ Production `zig_library` targets must not depend on test packages. When a
 package needs shared test helpers, import them from a test-only target through a
 separate test entry point.
 
-Prefer one shared fixture implementation over copied setup helpers. Follow the
-production ownership contract for type-erased APIs. Use
-`std.testing.allocator` or a debug allocator so leaks fail tests.
+Prefer one shared fixture implementation over copied setup helpers.
+
+### Ownership and allocators
+
+Follow the production ownership contract in
+[`docs/OWNERSHIP.md`](OWNERSHIP.md) (R1–R9, free companions, EncodedObject,
+walkers). Use `std.testing.allocator` (GPA) or a debug allocator so leaks and
+double-frees fail tests. Ownership and free-companion tests must exercise
+**production loaders** (`heap_owned=true`) and both storage backends where the
+contract applies. Stack/map-only tips alone are not enough for walker or
+merge-base paths.
 
 ## Naming
 

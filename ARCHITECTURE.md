@@ -14,6 +14,13 @@ go-git revision used as the reference.
 - Treat untrusted repository data as hostile input. Validate sizes, paths,
   object identifiers, offsets, and protocol framing before use.
 
+## Ownership
+
+go-git is the feature and Git-behavior reference. Zig owns allocation and free
+companions. Do not assume go-git GC lifetimes. The normative rules (R1–R9),
+EncodedObject contract, walker free policy, and process lifecycle live in
+[`docs/OWNERSHIP.md`](docs/OWNERSHIP.md).
+
 ## Dependency direction
 
 ```text

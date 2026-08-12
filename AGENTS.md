@@ -6,9 +6,9 @@ This file gives the rules for work in this project. Read this file before you ch
 
 **gitz** is Git in Zig.
 
-The goal is a full port of **go-git**. Use the latest suitable go-git source (see Reference pin). go-git covers the Git parts that this project needs. go-git uses the Apache 2.0 license. libgit2 does not use a license that this project accepts. Go is simple enough that a port is practical.
+The goal is a port of **go-git** **features and Git behavior**. Use the latest suitable go-git source (see Reference pin). go-git covers the Git parts that this project needs. go-git uses the Apache 2.0 license. libgit2 does not use a license that this project accepts. Go is simple enough that a port is practical.
 
-Do not invent a different Git model. Port the behavior of go-git.
+Do not invent a different Git model. Port go-git features and Git behavior. go-git is not a lifetime reference—Zig owns allocation and free companions. See **`docs/OWNERSHIP.md`**.
 
 ## Repository structure
 
@@ -342,7 +342,7 @@ Required classes of check:
 - After you merge a feature, remove its worktree and delete the branch.
 - Keep the long-lived worktrees (`gitz-master`, `gitz-develop`) present. Feature and hotfix worktrees are temporary.
 - Read go-git only from the sibling `go-git/` reference at the pinned revision.
-- Port go-git behavior. Do not redesign Git semantics.
+- Port go-git features and Git behavior. Do not redesign Git semantics. Zig owns lifetimes; follow `docs/OWNERSHIP.md`.
 - Run concurrent tasks only when they own disjoint files.
 - Always build and test with Bazel, rules_zig, and Zig 0.16. Honor the local `user.bazelrc` when it exists.
 - Do not use system Zig for project verification.
