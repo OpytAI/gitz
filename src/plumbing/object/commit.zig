@@ -485,11 +485,14 @@ pub fn decodeCommit(allocator: Allocator, s: anytype, o: *MemoryObject) !*Commit
 
 /// Free a heap commit from `getCommit` / walker yield when `heap_owned`.
 /// No-op when `heap_owned == false` (stack/map test tips).
-/// Signature mirrors `freeTree(allocator, t)`.
+/// Signature mirrors `freeTree(allocator, t)`; destroy uses `c.allocator`
+/// (create allocator) so a mismatched free-call parameter cannot double-wrong.
 pub fn freeCommit(allocator: Allocator, c: *Commit) void {
+    _ = allocator;
     if (!c.heap_owned) return;
+    const a = c.allocator;
     c.deinit();
-    allocator.destroy(c);
+    a.destroy(c);
 }
 
 fn getCommitWithGetter(allocator: Allocator, s: ObjectGetter, h: Hash) !*Commit {

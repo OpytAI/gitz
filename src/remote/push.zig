@@ -659,8 +659,9 @@ fn addReachableTags(
             if (std.mem.startsWith(u8, cmd.name.raw, "refs/tags")) continue;
             if (cmd.new.isZero()) continue;
 
-            // isAncestor walks from tip and freeCommits every yield (including tip).
+            // isAncestor reloads walk root; tip stays caller-owned.
             const tip = objpkg.getCommit(allocator, sto, cmd.new) catch continue;
+            defer objpkg.freeCommit(allocator, tip);
             if (try objpkg.isAncestor(tag_commit, tip)) {
                 try req.appendCommandOwnedName(ref.name.raw, ZeroHash, ref.hash);
                 break;

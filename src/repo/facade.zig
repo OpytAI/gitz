@@ -145,17 +145,13 @@ pub fn resolveRevision(store: anytype, rev: []const u8) !Hash {
     defer revision.freeRevisioners(gpa, items);
 
     var commit: ?*objpkg.Commit = null;
-    defer if (commit) |c| {
-        c.deinit();
-        gpa.destroy(c);
-    };
+    defer if (commit) |c| objpkg.freeCommit(gpa, c);
 
     for (items) |item| {
         switch (item) {
             .ref => |r| {
                 if (commit) |old| {
-                    old.deinit();
-                    gpa.destroy(old);
+                    objpkg.freeCommit(gpa, old);
                     commit = null;
                 }
 
@@ -196,20 +192,16 @@ pub fn resolveRevision(store: anytype, rev: []const u8) !Hash {
                 var parents = cur.parents();
                 const c1 = parents.next() catch return error.ReferenceNotFound;
                 if (cp.depth == 1) {
-                    cur.deinit();
-                    gpa.destroy(cur);
+                    objpkg.freeCommit(gpa, cur);
                     commit = c1;
                     continue;
                 }
                 const c2 = parents.next() catch {
-                    c1.deinit();
-                    gpa.destroy(c1);
+                    objpkg.freeCommit(gpa, c1);
                     return error.ReferenceNotFound;
                 };
-                c1.deinit();
-                gpa.destroy(c1);
-                cur.deinit();
-                gpa.destroy(cur);
+                objpkg.freeCommit(gpa, c1);
+                objpkg.freeCommit(gpa, cur);
                 commit = c2;
             },
             .tilde_path => |tp| {
@@ -218,25 +210,24 @@ pub fn resolveRevision(store: anytype, rev: []const u8) !Hash {
                 while (i < tp.depth) : (i += 1) {
                     var parents = cur.parents();
                     const next_c = parents.next() catch {
-                        cur.deinit();
-                        gpa.destroy(cur);
+                        objpkg.freeCommit(gpa, cur);
                         commit = null;
                         return error.ReferenceNotFound;
                     };
-                    cur.deinit();
-                    gpa.destroy(cur);
+                    objpkg.freeCommit(gpa, cur);
                     cur = next_c;
                 }
                 commit = cur;
             },
             .caret_reg => |cr| {
                 const cur = commit orelse return error.ReferenceNotFound;
-                // Take ownership from outer `commit` while walking.
-                commit = null;
-                var tip_owned = true;
-                errdefer if (tip_owned) objpkg.freeCommit(gpa, cur);
-
-                var history = try objpkg.newCommitPreorderIter(gpa, cur, null, &.{});
+                // Walk a reloaded tip so mid-next walker free never double-frees `cur`.
+                // Outer `commit` keeps `cur` until a match replaces it.
+                const walk_tip = try commitObject(store, cur.hash);
+                var history = objpkg.newCommitPreorderIter(gpa, walk_tip, null, &.{}) catch |err| {
+                    objpkg.freeCommit(gpa, walk_tip);
+                    return err;
+                };
                 defer history.deinit();
 
                 var found: ?*objpkg.Commit = null;
@@ -246,19 +237,18 @@ pub fn resolveRevision(store: anytype, rev: []const u8) !Hash {
                         if (e == error.EndOfStream) break;
                         return e;
                     };
-                    if (hc == cur) tip_owned = false;
                     const matches = messageMatches(hc.message, cr.pattern);
                     const ok = if (cr.negate) !matches else matches;
                     if (ok) {
                         found = hc;
-                        tip_owned = false; // retained as result (or was tip)
                         break;
                     }
-                    // Free every non-retained yield (including tip when it does not match).
+                    // Free every non-retained walk yield (including reloaded tip).
                     objpkg.freeCommit(gpa, hc);
                 }
 
                 if (found) |fc| {
+                    objpkg.freeCommit(gpa, cur);
                     commit = fc;
                 } else {
                     return error.NoCommitMessageMatch;

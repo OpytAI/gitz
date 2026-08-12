@@ -14,11 +14,15 @@
 //!
 //! **mergeBase / mergeBaseWithLoader**
 //! - Never freeCommits the `self` / `other` inputs.
-//! - During the walk: free every non-retained yield.
+//! - During the walk: free every non-retained yield; walk roots are reloaded.
 //! - IsReachable: return a **cloned** `*Commit` in a 1-slice (caller
 //!   `freeCommit` each element, then free the slice). Prefer `freeMergeBaseResult`.
 //! - Normal path: returned elements are walk-derived; caller freeCommits each,
 //!   then frees the slice.
+//!
+//! **isAncestor / isAncestorWithLoader**
+//! - Never freeCommits `self` / `other` (walk root reloaded like mergeBase).
+//! - Free every walk yield on continue and match/break.
 //!
 //! **independents / independentsWithLoader**
 //! - Never freeCommits original input tips.
@@ -98,9 +102,8 @@ pub fn mergeBaseWithLoader(
 
     // Reload walk root so FilterCommitIter invalid free never destroys inputs.
     const walk_from = try loader.get(older.hash);
-
     const idx_ctx: *anyopaque = @ptrCast(&newer_history);
-    var res_iter = try walker.newFilterCommitIterWithCtx(
+    var res_iter = walker.newFilterCommitIterWithCtx(
         allocator,
         walk_from,
         loader,
@@ -108,7 +111,10 @@ pub fn mergeBaseWithLoader(
         isInIndexCommitFilter,
         idx_ctx,
         isInIndexCommitFilter,
-    );
+    ) catch |err| {
+        freeCommit(allocator, walk_from);
+        return err;
+    };
     defer res_iter.deinit();
 
     while (true) {
@@ -116,7 +122,10 @@ pub fn mergeBaseWithLoader(
             if (err == error.EndOfStream) break;
             return err;
         };
+        var released = false;
+        errdefer if (!released) freeCommit(allocator, c);
         try res.append(allocator, c);
+        released = true;
     }
 
     // Transfer walk-derived candidates into independents (owns elements).
@@ -134,10 +143,8 @@ pub fn mergeBaseWithLoader(
 /// go-git `(*Commit).IsAncestor` — true if `self` is an ancestor of `other`
 /// (including when hashes are equal). Uses `other.allocator` for the walk.
 ///
-/// Frees every walker yield including the tip when `heap_owned`. After a
-/// successful return, do not free `other` again if it was the walk tip and
-/// heap-owned (it was freed as a yield). Prefer reloading tips for production
-/// callers so input ownership stays clear.
+/// Never freeCommits `self` / `other`. The walk root is reloaded via `loader`
+/// so inputs stay solely caller-owned (same discipline as mergeBase).
 pub fn isAncestor(self: *const Commit, other: *Commit) !bool {
     return isAncestorWithLoader(self, other.allocator, other, walker.loaderFromCommit(other));
 }
@@ -149,10 +156,15 @@ pub fn isAncestorWithLoader(
     other: *Commit,
     loader: CommitLoader,
 ) !bool {
-    var found = false;
-    var iter = try walker.newCommitPreorderIterWithLoader(allocator, other, loader, null, &.{});
+    // Reload so free-each-yield never destroys the caller's `other` tip.
+    const walk_tip = try loader.get(other.hash);
+    var iter = walker.newCommitPreorderIterWithLoader(allocator, walk_tip, loader, null, &.{}) catch |err| {
+        freeCommit(allocator, walk_tip);
+        return err;
+    };
     defer iter.deinit();
 
+    var found = false;
     while (true) {
         const comm = iter.next() catch |err| {
             if (err == error.EndOfStream) break;
@@ -256,8 +268,7 @@ fn independentsImpl(
 
         // Reload walk root so filter invalid/seen free never destroys candidates.
         const walk_from = try loader.get(from.hash);
-
-        var from_iter = try walker.newFilterCommitIterWithCtx(
+        var from_iter = walker.newFilterCommitIterWithCtx(
             allocator,
             walk_from,
             loader,
@@ -265,7 +276,10 @@ fn independentsImpl(
             null,
             @ptrCast(&limit_state),
             limit_fn,
-        );
+        ) catch |err| {
+            freeCommit(allocator, walk_from);
+            return err;
+        };
         defer from_iter.deinit();
 
         while (true) {
@@ -274,9 +288,15 @@ fn independentsImpl(
                 return err;
             };
 
+            // Yield is owned until freeCommit or intentional retain (candidate tip).
+            const yield_hash = from_ancestor.hash;
+            var yield_freed = false;
+            errdefer if (!yield_freed and !containsPtr(candidates, from_ancestor)) {
+                freeCommit(allocator, from_ancestor);
+            };
+
             // Find at most one match (candidates are de-duplicated). Do not
             // free/rebuild `others` while iterating it.
-            const yield_hash = from_ancestor.hash;
             var matched: ?*Commit = null;
             for (others) |other| {
                 if (yield_hash.eql(other.hash)) {
@@ -284,12 +304,11 @@ fn independentsImpl(
                     break;
                 }
             }
-            var freed_matched_as_yield = false;
             if (matched) |other| {
                 const next_cand = try remove(allocator, candidates, other);
                 if (free_eliminated) {
                     freeCommit(allocator, other);
-                    if (from_ancestor == other) freed_matched_as_yield = true;
+                    if (from_ancestor == other) yield_freed = true;
                 }
                 allocator.free(candidates);
                 candidates = next_cand;
@@ -302,12 +321,14 @@ fn independentsImpl(
             // Free non-retained walk yield. Skip pointer still held as a candidate
             // (identity-map loaders may yield the tip itself). Avoid double-free
             // when the yield is the eliminated candidate under free_eliminated.
-            if (!freed_matched_as_yield and !containsPtr(candidates, from_ancestor)) {
+            if (!yield_freed and !containsPtr(candidates, from_ancestor)) {
                 freeCommit(allocator, from_ancestor);
+                yield_freed = true;
             }
 
             if (candidates.len == 1) break; // go-git: storer.ErrStop
 
+            // Hash already captured; put after free so OOM cannot leak the yield.
             try seen.put(allocator, yield_hash, {});
         }
 
@@ -339,8 +360,10 @@ fn ancestorsIndex(
 
     // Reload so BFS free never destroys the public `starting` tip.
     const walk_start = try loader.get(starting.hash);
-
-    var iter = try walker.newCommitIterBsfWithLoader(allocator, walk_start, loader, null, &.{});
+    var iter = walker.newCommitIterBsfWithLoader(allocator, walk_start, loader, null, &.{}) catch |err| {
+        freeCommit(allocator, walk_start);
+        return err;
+    };
     defer iter.deinit();
 
     while (true) {
@@ -352,8 +375,9 @@ fn ancestorsIndex(
             freeCommit(allocator, commit);
             return error.IsReachable;
         }
-        try starting_history.put(allocator, commit.hash, {});
+        const h = commit.hash;
         freeCommit(allocator, commit);
+        try starting_history.put(allocator, h, {});
     }
 
     return starting_history;
@@ -716,27 +740,58 @@ test "production isAncestor early match free yields zero leaks" {
     const h_mid = try storeCommit(gpa, &store, &.{h_root}, 2);
     const h_tip = try storeCommit(gpa, &store, &.{h_mid}, 3);
 
-    // Reload tips for each call so isAncestor can free walk yields.
+    // Inputs stay caller-owned (walk root reloaded inside isAncestor).
     {
         const tip = try loader.get(h_tip);
+        defer freeCommit(gpa, tip);
         const root = try loader.get(h_root);
         defer freeCommit(gpa, root);
         try std.testing.expect(try isAncestorWithLoader(root, gpa, tip, loader));
-        // tip was freed as walk yield
     }
     {
         const tip = try loader.get(h_tip);
+        defer freeCommit(gpa, tip);
         const mid = try loader.get(h_mid);
         defer freeCommit(gpa, mid);
         try std.testing.expect(try isAncestorWithLoader(mid, gpa, tip, loader));
     }
     {
         const tip = try loader.get(h_tip);
-        // self is not ancestor of root
-        const root = try loader.get(h_root);
         defer freeCommit(gpa, tip);
+        const root = try loader.get(h_root);
+        defer freeCommit(gpa, root);
         try std.testing.expect(!(try isAncestorWithLoader(tip, gpa, root, loader)));
     }
+}
+
+test "production isAncestor diamond free yields zero leaks" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const loader = productionLoader(gpa, &store);
+
+    //   tip (merge)
+    //   |  \
+    //  left right
+    //    \  /
+    //    base
+    const h_base = try storeCommit(gpa, &store, &.{}, 1);
+    const h_left = try storeCommit(gpa, &store, &.{h_base}, 2);
+    const h_right = try storeCommit(gpa, &store, &.{h_base}, 3);
+    const h_tip = try storeCommit(gpa, &store, &.{ h_left, h_right }, 4);
+
+    const tip = try loader.get(h_tip);
+    defer freeCommit(gpa, tip);
+    const base = try loader.get(h_base);
+    defer freeCommit(gpa, base);
+    const left = try loader.get(h_left);
+    defer freeCommit(gpa, left);
+
+    try std.testing.expect(try isAncestorWithLoader(base, gpa, tip, loader));
+    try std.testing.expect(try isAncestorWithLoader(left, gpa, tip, loader));
+    try std.testing.expect(!(try isAncestorWithLoader(tip, gpa, base, loader)));
 }
 
 test "production mergeBase diamond free results zero leaks" {

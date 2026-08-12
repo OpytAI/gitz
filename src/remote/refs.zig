@@ -318,23 +318,22 @@ fn getHavesFromRef(
         }
         return;
     };
-    // Free tip if the walker never yields it (init failure / immediate stop).
-    var tip_owned = true;
-    defer if (tip_owned) objpkg.freeCommit(allocator, commit);
+    // Walker owns tip after successful construct (start / unyielded free on deinit).
+    var walker = objpkg.newCommitPreorderIter(allocator, commit, haves, &.{}) catch {
+        objpkg.freeCommit(allocator, commit);
+        return;
+    };
+    defer walker.deinit();
 
     var to_visit: i32 = max_haves_to_visit_per_ref;
     if (depth > 0 and depth < max_haves_to_visit_per_ref) {
         to_visit = depth;
     }
 
-    // seenExternal = haves so shared history across refs is not re-walked.
-    var walker = objpkg.newCommitPreorderIter(allocator, commit, haves, &.{}) catch return;
-    defer walker.deinit();
-
     // Ignore walker errors (shallow missing parents) — same as go-git `_ = walker.ForEach`.
+    // Free every yield; mid-next OOM frees detached tip inside the walker (R2/R3).
     while (true) {
         const c = walker.next() catch break;
-        if (c == commit) tip_owned = false;
         defer objpkg.freeCommit(allocator, c);
         haves.put(allocator, c.hash, {}) catch break;
         to_visit -= 1;
@@ -378,8 +377,8 @@ pub fn isFastForward(
     if (old.isZero()) return true;
 
     const tip = try objpkg.getCommit(allocator, sto, new_h);
-    var tip_owned = true;
-    defer if (tip_owned) objpkg.freeCommit(allocator, tip);
+    var tip_for_walk: ?*objpkg.Commit = tip;
+    errdefer if (tip_for_walk) |t| objpkg.freeCommit(allocator, t);
 
     var ignore: []const Hash = &.{};
     var ignore_owned: ?[]Hash = null;
@@ -392,7 +391,10 @@ pub fn isFastForward(
         ignore = ignore_owned.?;
     }
 
+    // After successful construct, walker owns tip (start / free on deinit if unyielded).
+    // Mid-next OOM freeOwnedCommits the detached tip inside the walker — no tip_owned flag.
     var walker = try objpkg.newCommitPreorderIter(allocator, tip, null, ignore);
+    tip_for_walk = null;
     defer walker.deinit();
 
     while (true) {
@@ -400,7 +402,6 @@ pub fn isFastForward(
             if (err == error.EndOfStream) break;
             return err;
         };
-        if (c == tip) tip_owned = false;
         defer objpkg.freeCommit(allocator, c);
         if (c.hash.eql(old)) return true;
     }
