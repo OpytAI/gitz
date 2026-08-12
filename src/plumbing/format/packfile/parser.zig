@@ -419,9 +419,6 @@ pub const Parser = struct {
             var parent_for_append: ?*ObjectInfo = null;
             // Thin-pack placeholder not yet keyed in `oi_by_hash` (free on error).
             var pending_placeholder: ?*ObjectInfo = null;
-            // Placeholder whose children were moved onto ota; restore on error until
-            // the hash-map slot permanently points at ota and the placeholder is freed.
-            var reparented_placeholder: ?*ObjectInfo = null;
             // Registration flags: reverse map/list keys before destroy on error.
             var in_hash_map = false;
             var in_offset_map = false;
@@ -469,23 +466,18 @@ pub const Parser = struct {
             // Reverse registration then destroy ota; free unmapped thin-pack placeholder.
             errdefer {
                 if (in_oi_list) {
-                    if (self.oi.items.len > 0 and self.oi.items[self.oi.items.len - 1] == ota) {
-                        _ = self.oi.pop();
+                    // Pointer scan: safe if anything else were appended after ota.
+                    var ii: usize = 0;
+                    while (ii < self.oi.items.len) {
+                        if (self.oi.items[ii] == ota) {
+                            _ = self.oi.swapRemove(ii);
+                        } else ii += 1;
                     }
                 }
                 if (in_offset_map) {
                     _ = self.oi_by_offset.remove(oh.offset);
                 }
-                if (reparented_placeholder) |ph| {
-                    // Restore children and map key so ph is never left unowned.
-                    ph.children = ota.children;
-                    ota.children = .empty;
-                    for (ph.children.items) |c| {
-                        c.parent = ph;
-                    }
-                    self.oi_by_hash.put(self.allocator, ota.sha1, ph) catch {};
-                    in_hash_map = false;
-                } else if (in_hash_map) {
+                if (in_hash_map) {
                     if (self.oi_by_hash.get(ota.sha1)) |v| {
                         if (v == ota) _ = self.oi_by_hash.remove(ota.sha1);
                     }
@@ -529,6 +521,9 @@ pub const Parser = struct {
             // storage is set. REF/OFS deltas are not stored until resolveObject.
             // External bases for thin REF-deltas are loaded later via storage.get
             // in get() (placeholders are not written here).
+            // Residual: putContent before graph registration means a later OOM
+            // can leave the storer with an object the parse graph did not adopt
+            // (import transactionality is outside WP-D).
             if (self.storage != null and !delta) {
                 _ = try self.storage.?.putContent(oh.object_type, content);
             }
@@ -543,17 +538,20 @@ pub const Parser = struct {
                 const sha1 = hasher.sum();
                 ota.sha1 = sha1;
 
-                // Fallible map/list registration first; free placeholder only after
-                // ota is permanently map-keyed (never destroy while map-keyed).
+                // Fallible map/list registration first.
                 try self.oi_by_offset.put(self.allocator, oh.offset, ota);
                 in_offset_map = true;
                 try self.oi.append(self.allocator, ota);
                 in_oi_list = true;
 
+                // Map commit: replace thin-pack external_ref placeholder, then free
+                // it. No fallible work after the map swap (no `try` after reparent).
+                // Non-placeholder hash collisions leave `prev` alone (children stay
+                // with the earlier node); only external_ref reparent applies.
                 const gop = try self.oi_by_hash.getOrPut(self.allocator, sha1);
                 if (gop.found_existing) {
                     const prev = gop.value_ptr.*;
-                    if (prev != ota) {
+                    if (prev != ota and prev.external_ref) {
                         ota.children = prev.children;
                         prev.children = .empty;
                         for (ota.children.items) |child| {
@@ -561,24 +559,26 @@ pub const Parser = struct {
                         }
                         gop.value_ptr.* = ota;
                         in_hash_map = true;
-                        if (prev.external_ref and !self.oiContains(prev)) {
-                            // Keep ph alive until success of this iteration so errdefer
-                            // can restore it; free only after all registration is done.
-                            reparented_placeholder = prev;
+                        // Map no longer keys prev — free immediately (no try after).
+                        if (!self.oiContains(prev)) {
+                            prev.children.deinit(self.allocator);
+                            self.allocator.destroy(prev);
                         }
                     } else {
-                        in_hash_map = true;
+                        // Same pointer or non-placeholder collision: keep map value.
+                        if (prev == ota) {
+                            in_hash_map = true;
+                        } else {
+                            // Duplicate content hash of a real object: prefer ota
+                            // as the pack's entry (go-git overwrites). prev remains
+                            // in `oi` if it was a pack object; do not steal children.
+                            gop.value_ptr.* = ota;
+                            in_hash_map = true;
+                        }
                     }
                 } else {
                     gop.value_ptr.* = ota;
                     in_hash_map = true;
-                }
-
-                // Iteration fully registered: safe to free replaced placeholder.
-                if (reparented_placeholder) |ph| {
-                    ph.children.deinit(self.allocator);
-                    self.allocator.destroy(ph);
-                    reparented_placeholder = null;
                 }
             } else {
                 if (!self.scanner.is_seekable) {
@@ -892,6 +892,119 @@ test "parse basic.pack seekable: checksum and 31 objects" {
     // First object hash from go-git parser_test.go TestParserHashes.
     const first_hex = "e8d3ffab552895c19b9fcf7aa264d277cde33881";
     try std.testing.expectEqualStrings(first_hex, obs.hashes.items[0].string(&hex));
+}
+
+/// WP-D: force allocation failures during parse; any error is OK if no leak.
+/// Unlike `checkAllAllocationFailures`, accepts non-OOM surfaces (e.g. zlib
+/// `WriteFailed` when an inflate buffer alloc fails mid-object).
+fn assertParseAllocFailuresGpaClean(
+    comptime run: *const fn (Allocator) anyerror!void,
+) !void {
+    const backing = std.testing.allocator;
+    var count_fa = std.testing.FailingAllocator.init(backing, .{});
+    try run(count_fa.allocator());
+    const needed = count_fa.alloc_index;
+
+    var fail_index: usize = 0;
+    while (fail_index < needed) : (fail_index += 1) {
+        var fa = std.testing.FailingAllocator.init(backing, .{ .fail_index = fail_index });
+        if (run(fa.allocator())) |_| {
+            if (fa.has_induced_failure) return error.SwallowedOutOfMemoryError;
+            // fail_index past this path's allocs — skip.
+            continue;
+        } else |_| {
+            if (fa.allocated_bytes != fa.freed_bytes) {
+                std.debug.print(
+                    "\nparser alloc-failure leak fail_index={d}/{d} alloc_bytes={d} free_bytes={d}\n",
+                    .{ fail_index, needed, fa.allocated_bytes, fa.freed_bytes },
+                );
+                return error.MemoryLeakDetected;
+            }
+        }
+    }
+}
+
+fn parseBasicPackAllAllocs(allocator: Allocator) !void {
+    const data = @import("basic_pack.zig").data();
+    var sc = Scanner.initSeekable(data);
+    var parser = try Parser.init(allocator, &sc, &.{});
+    defer parser.deinit();
+    _ = try parser.parse();
+}
+
+test "parser OOM during basic pack parse is GPA-clean" {
+    try assertParseAllocFailuresGpaClean(parseBasicPackAllAllocs);
+}
+
+/// Thin-pack path: placeholder create → child link → map put under OOM.
+fn parseThinPackWithStoreAllAllocs(allocator: Allocator) !void {
+    const base_content = "hello";
+    var store = ObjectStore.init(allocator);
+    defer store.deinit();
+    const base_hash = try store.putContent(.blob, base_content);
+
+    // Minimal REF_DELTA pack (same shape as thin_pack_tests synthetic case).
+    const Sha1 = std.crypto.hash.Sha1;
+    var delta_storage: [64]u8 = undefined;
+    const delta: []const u8 = blk: {
+        // src=5, target=6, copy 5 from base, insert "!"
+        delta_storage[0] = 5;
+        delta_storage[1] = 6;
+        delta_storage[2] = 0x80 | 0x10;
+        delta_storage[3] = 5;
+        delta_storage[4] = 1;
+        delta_storage[5] = '!';
+        break :blk delta_storage[0..6];
+    };
+
+    var compressed: std.ArrayList(u8) = .empty;
+    defer compressed.deinit(allocator);
+    {
+        var out: std.Io.Writer.Allocating = try .initCapacity(allocator, 64);
+        defer out.deinit();
+        var window: [flate.max_window_len]u8 = undefined;
+        var comp = try flate.Compress.init(&out.writer, &window, .zlib, .default);
+        try comp.writer.writeAll(delta);
+        try comp.finish();
+        try compressed.appendSlice(allocator, out.writer.buffered());
+    }
+
+    var buf: std.ArrayList(u8) = .empty;
+    errdefer buf.deinit(allocator);
+    var hasher = Sha1.init(.{});
+    const writeBoth = struct {
+        fn go(b: *std.ArrayList(u8), h: *Sha1, a: Allocator, bytes: []const u8) !void {
+            try b.appendSlice(a, bytes);
+            h.update(bytes);
+        }
+    }.go;
+    try writeBoth(&buf, &hasher, allocator, &common.signature);
+    var u32buf: [4]u8 = undefined;
+    std.mem.writeInt(u32, &u32buf, common.VersionSupported, .big);
+    try writeBoth(&buf, &hasher, allocator, &u32buf);
+    std.mem.writeInt(u32, &u32buf, 1, .big);
+    try writeBoth(&buf, &hasher, allocator, &u32buf);
+    // REF_DELTA type=7, size=delta.len
+    const t: u8 = @intCast(@intFromEnum(ObjectType.ref_delta));
+    const declared: i64 = @intCast(delta.len);
+    const first: u8 = (t << common.first_length_bits) | @as(u8, @intCast(declared & common.mask_first_length));
+    try writeBoth(&buf, &hasher, allocator, &.{first});
+    try writeBoth(&buf, &hasher, allocator, base_hash.slice());
+    try writeBoth(&buf, &hasher, allocator, compressed.items);
+    var trailer: [Sha1.digest_length]u8 = undefined;
+    hasher.final(&trailer);
+    try buf.appendSlice(allocator, &trailer);
+    const pack = try buf.toOwnedSlice(allocator);
+    defer allocator.free(pack);
+
+    var sc = Scanner.initSeekable(pack);
+    var parser = try Parser.initWithStorage(allocator, &sc, &store, &.{});
+    defer parser.deinit();
+    _ = try parser.parse();
+}
+
+test "parser OOM during thin-pack REF delta is GPA-clean" {
+    try assertParseAllocFailuresGpaClean(parseThinPackWithStoreAllAllocs);
 }
 
 test "ObjectStore put and get" {

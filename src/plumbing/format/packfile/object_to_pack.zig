@@ -172,10 +172,12 @@ pub const ObjectToPack = struct {
 
     /// go-git `SetDelta` — attach an **owned** heap delta body based on `base`.
     ///
-    /// Sets `owns_object = true`. The previous `object` is **not** freed here
-    /// (no allocator); call `releaseOwnedObject` first if replacing an owned
-    /// body. Store-owned / stack deltas must use `setDeltaBorrowed` instead.
+    /// Sets `owns_object = true`. Does not free a previous owned body (no
+    /// allocator on this API). Call `releaseOwnedObject` first if replacing.
+    /// Store-owned / stack deltas must use `setDeltaBorrowed` instead.
+    /// Safety builds assert `!owns_object` so replace-without-release is loud.
     pub fn setDelta(self: *ObjectToPack, base: *ObjectToPack, delta: *MemoryObject) void {
+        std.debug.assert(!self.owns_object);
         self.object = delta;
         self.base = base;
         self.depth = base.depth + 1;
@@ -184,7 +186,9 @@ pub const ObjectToPack = struct {
 
     /// Attach a **borrowed** delta (`owns_object = false`).
     /// Not freed by `freeObjectsToPack` / `releaseOwnedObject` / `backToOriginal`.
+    /// Safety builds assert `!owns_object` (release first if replacing an owned body).
     pub fn setDeltaBorrowed(self: *ObjectToPack, base: *ObjectToPack, delta: *MemoryObject) void {
+        std.debug.assert(!self.owns_object);
         self.object = delta;
         self.base = base;
         self.depth = base.depth + 1;

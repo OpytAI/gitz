@@ -324,6 +324,7 @@ pub const ObjectIterator = struct {
                             try self.p.offset_to_type.put(self.p.allocator, offset, h.object_type);
                             continue;
                         }
+                        if (self.p.cacheGet(e.hash)) |obj| return obj;
                         return try self.p.getNextMemoryObject(&h);
                     }
                 }
@@ -705,9 +706,10 @@ test "Packfile.ObjectIterator deinit does not free cache-owned objects" {
 
     var iter = try pf.getAll();
     const first = (try iter.next()).?;
+    const cache_before = pf.cache.count();
     iter.deinit();
+    try std.testing.expectEqual(cache_before, pf.cache.count());
     // Object remains valid via packfile cache after iterator close.
-    try std.testing.expect(first.hash().eql(first.hash()));
     const again = try pf.get(first.hash());
     try std.testing.expect(again == first);
 }
