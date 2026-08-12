@@ -99,6 +99,7 @@ assert.deepEqual(thinResult, { ok: true, objects: 1, content: "thin base!" });
 const warmPages = e.memory.buffer.byteLength / 65536;
 for (let i = 0; i < 24; i += 1) assert.equal(readJson(e.gitz_state()).ok, true);
 assert.equal(e.memory.buffer.byteLength / 65536, warmPages);
+e.gitz_shutdown();
 
 console.log(JSON.stringify({
   ...result,

@@ -70,9 +70,10 @@ pub const InitOptions = struct {
 /// Does **not** own `storer` or `wt`. Caller allocates and frees them. The
 /// default `Repository` alias retains the memory-backed API.
 ///
-/// No repository-level `deinit`: there is nothing to free here. Process-global
-/// pools (`utils/sync.deinitPools`) and the transport client registry
-/// (`client.deinit`) stay alive across repos; the host drains them at shutdown.
+/// No repository-level `deinit` method: this type does not own `storer`/`wt`.
+/// Process-global pools (`utils/sync.deinitPools`) and the transport client
+/// registry (`client.deinit`) stay alive across repos; the host drains them at
+/// process/engine shutdown, not when freeing individual repository storage.
 pub fn RepositoryFor(comptime Storage: type, comptime Fs: type) type {
     return struct {
         const Self = @This();

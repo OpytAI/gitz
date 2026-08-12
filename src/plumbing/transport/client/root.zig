@@ -26,12 +26,14 @@
 //! 3. `utils/sync.deinitPools(allocator)` — drains zlib/buffer free lists used
 //!    during pack encode/decode (same allocator as get/put).
 //!
-//! Do **not** call `deinit` from `Repository.deinit` / `PlainRepository.deinit`:
-//! one registry serves the whole process. Multi-repo hosts shut the registry
-//! down once at process exit.
+//! Do **not** call `deinit` from repository teardown (`PlainRepository.deinit`
+//! or free of `RepositoryFor` storage): one registry serves the whole process.
+//! Memory `RepositoryFor` has no `deinit` method. Multi-repo hosts shut the
+//! registry down once at process exit.
 //!
-//! Freestanding wasm examples in this tree do not register transports; native
-//! GPA tests that call `initWithDefaults` must `defer deinit()`.
+//! Freestanding wasm demos in this tree never call `init` / `installDefaults`,
+//! so they do not call `client.deinit` (docs-only for those hosts). Native GPA
+//! tests that call `initWithDefaults` must `defer deinit()`.
 
 const std = @import("std");
 const testing = std.testing;
@@ -185,7 +187,7 @@ fn deinitDefaults(allocator: Allocator) void {
 
 /// Free default clients, registered scheme keys, and clear the map.
 ///
-/// Host/process shutdown hook (not `Repository.deinit`). Safe when `init` was
+/// Host/process shutdown hook (not repository teardown). Safe when `init` was
 /// never called. After this, call `init` again before further registry use.
 pub fn deinit() void {
     const a = protocols_allocator orelse return;

@@ -60,6 +60,7 @@ pub const PlainOpenOptions = struct {
 /// Does **not** own the caller's original worktree / bare root `Mem`.
 /// Does **not** drain process-global `utils/sync` pools or the transport
 /// client registry — hosts call those once at process/engine shutdown.
+/// (Memory `RepositoryFor` has no `deinit`; this is the filesystem-owned path.)
 pub const PlainRepository = struct {
     allocator: Allocator,
     storer: *filesystem.StorageMem,

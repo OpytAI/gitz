@@ -50,6 +50,19 @@ export fn gitz_restore_finish() u32 {
     return abi.putOwned(result);
 }
 
+/// End-of-instance host close: tear down restored engine, scratch, and pools.
+export fn gitz_shutdown() void {
+    if (engine) |*old| {
+        old.deinit();
+        engine = null;
+    } else {
+        sync.deinitPools(allocator);
+    }
+    restore_bytes.deinit(allocator);
+    restore_bytes = .empty;
+    restore_limit = 0;
+}
+
 export fn gitz_result_len(handle: u32) u32 {
     return abi.len(handle);
 }

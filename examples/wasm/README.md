@@ -58,13 +58,22 @@ or wall-clock imports. Native callers use the same `RepositoryFor` and
 process-scoped. Each wasm example uses **one** process allocator
 (`std.heap.wasm_allocator`) for storage, pack work, and pool get/put. On engine
 or one-shot session close, the example calls `sync.deinitPools(allocator)` with
-that same allocator. `Repository` / store deinit does **not** drain pools.
+that same allocator. Repository teardown (`PlainRepository.deinit` / free of
+`RepositoryFor` storage) does **not** drain pools.
 
 | Host | Allocator | Why drain |
 |------|-----------|-----------|
 | These freestanding wasm modules | `std.heap.wasm_allocator` | Free-list nodes stay live until drained; wasm has no GPA, so leaks are silent, but drain still keeps linear memory stable across repeated runs |
 | Native tests / tools | `std.testing.allocator` or a process GPA | Required for zero leaks under the GPA |
 
-These examples do not open network transports. Hosts that call
-`client.init` / `installDefaults` must also call `client.deinit()` once at
-process shutdown (after remotes/sessions are gone), then `deinitPools`.
+Drain sites:
+
+| Module | Close path |
+| --- | --- |
+| `engine_smoke`, `local_repo`, `pack_build` | End of each one-shot export / fixture deinit |
+| `pack_import`, `persistence` | `Engine.deinit` on replace, plus `gitz_shutdown` for end-of-instance |
+
+These demos do not open network transports, so they never call `client.deinit`
+(that hook is documented for hosts that used `client.init` / `installDefaults`).
+Network hosts: after remotes/sessions are gone, call `client.deinit()`, then
+`deinitPools`.

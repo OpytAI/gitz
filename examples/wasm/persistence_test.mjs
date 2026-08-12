@@ -67,6 +67,7 @@ assert.equal(result.fs_exec, true);
 assert.equal(result.dirty_bytes, "dirty bytes");
 assert.equal(result.untracked_bytes, "untracked bytes");
 assert.equal(result.remote, true);
+second.e.gitz_shutdown();
 
 console.log(JSON.stringify({
   ...result,

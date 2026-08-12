@@ -32,12 +32,15 @@
 //!
 //! - Call `deinitPools(allocator)` once at host/engine shutdown (or end of a
 //!   leak-checked test), with the **same allocator** used for every get/put.
-//! - Do **not** call `deinitPools` from `Repository.deinit` /
-//!   `PlainRepository.deinit`: multi-repo hosts share one process pool, and
-//!   draining on each repo close thrashes free lists and races other repos.
-//! - After network use, also call transport `client.deinit()` (see
-//!   `//src/plumbing/transport/client`) so the protocol registry and default
-//!   clients are released. That is separate from pool drain.
+//! - Do **not** call `deinitPools` from repository teardown
+//!   (`PlainRepository.deinit`, or free of `RepositoryFor` storer/wt):
+//!   multi-repo hosts share one process pool; draining on each repo close
+//!   thrashes free lists and races other repos. Memory `RepositoryFor` has no
+//!   `deinit` method — there is nothing process-global to free there.
+//! - After network use that called `client.init` / `installDefaults`, also call
+//!   transport `client.deinit()` (see `//src/plumbing/transport/client`) so the
+//!   protocol registry and default clients are released. That is a separate
+//!   host hook from pool drain (wasm demos here never register transports).
 //!
 //! ## Allocator identity (native GPA vs freestanding wasm)
 //!
