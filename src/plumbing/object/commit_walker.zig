@@ -1324,7 +1324,8 @@ pub fn newCommitFileIterFromIter(
 // ---------------------------------------------------------------------------
 
 const AllPathNode = struct {
-    commit: *Commit,
+    /// Null after `next` transfers ownership to the caller (or after `close` frees).
+    commit: ?*Commit,
     prev: ?*AllPathNode = null,
     next: ?*AllPathNode = null,
 };
@@ -1342,10 +1343,11 @@ const AllLoaderCtx = struct {
 /// history appears once (go-git `addReference` list merge).
 ///
 /// Ownership: single path-list channel. Tips and walk-loaded commits live only
-/// on the path (`list_head` → tail). `next()` transfers the current path node's
-/// commit to the caller and advances `curr`. `close`/`deinit` free only commits
-/// still on the remaining path (`curr` → tail) via `freeCommit` (no-op when
-/// `heap_owned=false`). No parallel `owned_tips` channel.
+/// on the path (`list_head` → tail). `next()` nulls the node's commit (transfer)
+/// and advances `curr`. `close`/`deinit` free every commit still held on any
+/// path node (`commit != null`) via `freeCommit` — covers unyielded remainder
+/// and construction failure when `curr` was never published. No parallel
+/// `owned_tips` channel.
 ///
 /// Full go-git needs `storage.Storer.IterReferences` + `ResolveReference`.
 /// This port accepts already-resolved tip commits plus a `CommitLoader`.
@@ -1405,7 +1407,7 @@ pub const AllIter = struct {
 
         var ref_commits: std.ArrayList(*Commit) = .empty;
         defer ref_commits.deinit(self.allocator);
-        // On error before path insert, free walk yields still held in ref_commits.
+        // Free walk yields not yet transferred to the path (insert mid-fail).
         errdefer for (ref_commits.items) |c| freeCommit(self.allocator, c);
 
         var common: ?*AllPathNode = null;
@@ -1428,41 +1430,48 @@ pub const AllIter = struct {
             try ref_commits.append(self.allocator, c);
         }
 
+        // Transfer ownership incrementally so mid-insert failure does not
+        // double-free with close (path owns inserted; errdefer owns remainder).
         if (common) |parent_start| {
             var parent = parent_start;
-            var i = ref_commits.items.len;
-            while (i > 0) {
-                i -= 1;
-                parent = try self.insertBefore(ref_commits.items[i], parent);
+            while (ref_commits.items.len > 0) {
+                const c = ref_commits.items[ref_commits.items.len - 1];
+                parent = try self.insertBefore(c, parent);
+                _ = ref_commits.pop();
             }
         } else {
-            for (ref_commits.items) |c| {
+            while (ref_commits.items.len > 0) {
+                const c = ref_commits.items[0];
                 _ = try self.pushBack(c);
+                _ = ref_commits.orderedRemove(0);
             }
         }
-        // Path now owns every ref_commits entry; clear so errdefer is a no-op.
-        ref_commits.clearRetainingCapacity();
     }
 
     /// Transfer ownership of the current path commit to the caller (R1).
     pub fn next(self: *AllIter) anyerror!*Commit {
         const n = self.curr orelse return error.EndOfStream;
+        const c = n.commit orelse return error.EndOfStream;
+        n.commit = null; // detach so close will not free a yielded commit
         self.curr = n.next;
-        return n.commit;
+        return c;
     }
 
     pub fn forEach(self: *AllIter, cb: anytype) !void {
         return forEachCommit(self, cb);
     }
 
-    /// Free unyielded path commits (`curr` → tail) then clear cursor (R3).
+    /// Free every commit still held on the path list (R3 + construction safety).
+    /// Yielded nodes have `commit == null`; construction failure may leave
+    /// commits on nodes while `curr` is still unset.
     pub fn close(self: *AllIter) void {
-        var n = self.curr;
-        self.curr = null;
-        while (n) |node| {
-            freeCommit(self.allocator, node.commit);
-            n = node.next;
+        for (self.nodes.items) |node| {
+            if (node.commit) |c| {
+                freeCommit(self.allocator, c);
+                node.commit = null;
+            }
         }
+        self.curr = null;
     }
 
     pub fn asIter(self: *AllIter) CommitIter {
@@ -1524,8 +1533,9 @@ pub fn newCommitAllIterFromHashes(
     var iter = AllIter{ .allocator = allocator };
     errdefer iter.deinit();
 
+    // Ownership of ctx is solely via iter.loader_ctx (deinit frees it). Do not
+    // also errdefer-destroy ctx — that double-frees on mid-construction failure.
     const ctx = try allocator.create(AllLoaderCtx);
-    errdefer allocator.destroy(ctx);
     ctx.* = .{ .allocator = allocator, .getter = getter };
     iter.loader_ctx = ctx;
 
@@ -1544,6 +1554,8 @@ pub fn newCommitAllIterFromHashes(
             freeCommit(allocator, tip);
             continue;
         }
+        // If addTip fails, tip is either on the path (close frees) or still in
+        // addTip's ref_commits (errdefer frees). Do not free tip here.
         try iter.addTip(tip, loader);
     }
     iter.curr = iter.list_head;
@@ -2717,4 +2729,26 @@ test "production AllIter forEach Stop zero leaks" {
     try iter.forEach(Gen.cb);
     try std.testing.expectEqual(@as(usize, 1), count);
     iter.deinit();
+}
+
+test "production AllIter second tip fail frees first path zero leaks" {
+    // F1: first tip fully on path, second tip walk fails (missing parent);
+    // deinit must free path commits even though curr was never published.
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const getter = ObjectGetter.from(memory.Storage, &store);
+
+    const h_base = try storeWalkerCommit(gpa, &store, &.{}, 1);
+    const h_a = try storeWalkerCommit(gpa, &store, &.{h_base}, 2);
+    // tip_b parent is a hash not in the store → walk fails after yielding tip_b.
+    const h_missing = testHash(0xee);
+    const h_b = try storeWalkerCommit(gpa, &store, &.{h_missing}, 3);
+
+    try std.testing.expectError(
+        error.ObjectNotFound,
+        newCommitAllIterFromHashes(gpa, getter, &.{ h_a, h_b }),
+    );
 }
