@@ -5,9 +5,14 @@
 //! name/urls/fetch/mirror + branches remote/merge + user/author/committer
 //! identity) used by BaseStorageSuite and the memory backend.
 //!
-//! `config()` re-reads the file every call (go-git `Config()`). `setConfig`
-//! validates, marshals, writes, and takes ownership of the heap `*Config`
-//! (same as `memory.ConfigStorage` for suite ownership).
+//! # Lifetime (Zig ownership — not go-git GC)
+//!
+//! `config()` returns a **stable** `*Config` until `setConfig` or storage `deinit`
+//! (memory-like). go-git re-reads the file on every `Config()` call; that pattern
+//! invalidates prior pointers and is unsafe without a GC. External edits to
+//! `.git/config` are not visible until the next `setConfig` replaces the cache
+//! or the storage is recreated. `setConfig` validates, marshals, writes, and
+//! takes ownership of the heap `*Config`.
 
 const std = @import("std");
 const memory = @import("memory");
@@ -36,7 +41,7 @@ pub fn ConfigStorage(comptime Fs: type) type {
 
         allocator: Allocator,
         dir: *DotGit,
-        /// Last returned config (freed on next `config()` / `setConfig` / `deinit`).
+        /// Cached config (stable until `setConfig` / `deinit`).
         stored: ?*Config = null,
 
         pub fn init(allocator: Allocator, dir: *DotGit) Self {
@@ -56,8 +61,11 @@ pub fn ConfigStorage(comptime Fs: type) type {
             }
         }
 
-        /// go-git `Config` — always re-read from disk (or empty default when missing).
+        /// Return the stable config pointer (load once from disk / default empty).
+        /// Subsequent calls return the same pointer until `setConfig` replaces it.
         pub fn config(self: *Self) Error!*Config {
+            if (self.stored) |c| return c;
+
             if (self.dir.config()) |file| {
                 var f = file;
                 defer f.close() catch {};
@@ -65,7 +73,6 @@ pub fn ConfigStorage(comptime Fs: type) type {
                 defer self.allocator.free(data);
 
                 const c = try decodeMemoryConfig(self.allocator, data);
-                self.dropStored();
                 self.stored = c;
                 return c;
             } else |err| switch (err) {
@@ -73,7 +80,6 @@ pub fn ConfigStorage(comptime Fs: type) type {
                 else => |e| return e,
             }
 
-            self.dropStored();
             const c = try self.allocator.create(Config);
             c.* = Config.init(self.allocator);
             self.stored = c;
@@ -81,7 +87,8 @@ pub fn ConfigStorage(comptime Fs: type) type {
         }
 
         /// go-git `SetConfig` — validate, marshal to git-config, write `.git/config`.
-        /// Takes ownership of `cfg` on success (suite / memory parity).
+        /// Takes ownership of `cfg` on success (suite / memory parity). Prior
+        /// `config()` pointer is freed when different from `cfg`.
         pub fn setConfig(self: *Self, cfg: *Config) Error!void {
             try cfg.validate();
 
@@ -425,7 +432,7 @@ test "encode/decode repositoryformatversion and objectformat" {
     try std.testing.expectEqualStrings(format_config.SHA256, got.object_format);
 }
 
-test "ConfigStorage setConfig writes git-config and reloads from disk" {
+test "ConfigStorage setConfig writes git-config; config is stable until setConfig" {
     const gpa = std.testing.allocator;
     var mem = try fs_pkg.Mem.init(gpa);
     defer mem.deinit();
@@ -445,7 +452,7 @@ test "ConfigStorage setConfig writes git-config and reloads from disk" {
         try store.setConfig(cfg);
     }
 
-    // Cold storage re-reads from disk every config() call.
+    // Fresh storage loads once from disk.
     var store2 = ConfigStorageMem.init(gpa, &dg);
     defer store2.deinit();
     const got = try store2.config();
@@ -453,10 +460,9 @@ test "ConfigStorage setConfig writes git-config and reloads from disk" {
     const remote = got.remotes.get("origin") orelse return error.TestExpectedEqual;
     try std.testing.expectEqualStrings("http://example.com/r.git", remote.urls[0]);
 
-    // Second config() re-reads (new pointer after dropStored).
+    // Second config() returns the same stable pointer (Zig lifetime, not go-git re-read).
     const got2 = try store2.config();
-    try std.testing.expect(got2.is_bare);
-    try std.testing.expect(got2 != got);
+    try std.testing.expect(got2 == got);
 
     var f = try mem.open("config");
     defer f.close() catch {};

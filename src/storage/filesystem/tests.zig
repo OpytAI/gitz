@@ -330,6 +330,96 @@ test "large_object_threshold skips object cache" {
     try std.testing.expect(cache.get(eh) != null);
 }
 
+// WP-E: ObjectLru scrub on deinit — shared cache must not keep freed pointers.
+test "ObjectLru remove-on-deinit does not leave dangling cache entries" {
+    const gpa = std.testing.allocator;
+    const sync = @import("utils/sync");
+    defer sync.deinitPools(std.testing.allocator);
+
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+
+    var cache = cache_pkg.ObjectLru.initDefault(gpa);
+    defer cache.deinit();
+
+    const s = try newStorageWithOptions(gpa, &mem, &cache, .{});
+    try s.initLayout();
+
+    const obj = try s.newEncodedObject();
+    obj.setType(.blob);
+    _ = try obj.write("scrub-me");
+    const h = try s.setEncodedObject(obj);
+
+    // Populate cache via lookup (eligible under default threshold).
+    const got = try s.encodedObject(.blob, h);
+    try std.testing.expect(got.hash().eql(h));
+    try std.testing.expect(cache.get(h) != null);
+
+    // Deinit storage: must remove(h) from shared cache, never clear() it.
+    s.deinit();
+    gpa.destroy(s);
+
+    // Shared cache entry scrubbed; cache itself remains usable (not clear/deinit).
+    try std.testing.expect(cache.get(h) == null);
+}
+
+// WP-E: owned map dedupes repeated loose loads after cache eviction.
+test "owned map dedupes repeated encodedObject loads" {
+    const gpa = std.testing.allocator;
+    const sync = @import("utils/sync");
+    defer sync.deinitPools(std.testing.allocator);
+
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+
+    const s = try newStorage(gpa, &mem, null);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+    try s.initLayout();
+
+    const obj = try s.newEncodedObject();
+    obj.setType(.blob);
+    _ = try obj.write("dedupe");
+    const h = try s.setEncodedObject(obj);
+
+    const a = try s.encodedObject(.blob, h);
+    // Evict from LRU without clearing ownership.
+    if (s.owns_cache) s.cache_storage.clear() else if (s.external_cache) |c| c.clear();
+    const b = try s.encodedObject(.blob, h);
+    try std.testing.expect(a == b);
+    try std.testing.expectEqual(@as(usize, 1), s.object_storage.owned.count());
+}
+
+// WP-E: config() returns a stable pointer until setConfig.
+test "config returns stable pointer until setConfig" {
+    const gpa = std.testing.allocator;
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+
+    const s = try newStorage(gpa, &mem, null);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
+    try s.initLayout();
+
+    const c1 = try s.config();
+    const c2 = try s.config();
+    try std.testing.expect(c1 == c2);
+
+    const replacement = try gpa.create(memory.Config);
+    replacement.* = memory.Config.init(gpa);
+    try replacement.setUser("alice", "a@example.com");
+    try s.setConfig(replacement);
+
+    const c3 = try s.config();
+    try std.testing.expect(c3 == replacement);
+    try std.testing.expect(c3 != c1);
+    try std.testing.expectEqualStrings("alice", c3.user_name);
+}
+
 test "shallow set and get" {
     const gpa = std.testing.allocator;
     var mem = try fs_pkg.Mem.init(gpa);

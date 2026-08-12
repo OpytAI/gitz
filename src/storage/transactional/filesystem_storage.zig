@@ -30,12 +30,15 @@ pub fn StorageFor(comptime Fs: type) type {
         deleted: std.StringHashMapUnmanaged(void) = .empty,
         index_set: bool = false,
         config_set: bool = false,
-        nested: std.ArrayListUnmanaged(*Self) = .empty,
+        /// Nested transactional wrappers keyed by module name (one wrapper per name).
+        modules: std.StringHashMapUnmanaged(*Self) = .empty,
 
         pub const implements_packfile_writer = true;
         /// Unified EncodedObject contract (set adopts; new does not register).
         pub const set_encoded_object_takes_ownership = true;
         pub const new_encoded_object_storage_owned = false;
+        /// FS refs return owned name/target strings (free with `freeReference`).
+        pub const reference_returns_owned = Store.reference_returns_owned;
         pub const Index = Store.Index;
         pub const Config = Store.Config;
 
@@ -44,11 +47,13 @@ pub fn StorageFor(comptime Fs: type) type {
         }
 
         pub fn deinit(self: *Self) void {
-            for (self.nested.items) |child| {
-                child.deinit();
-                self.allocator.destroy(child);
+            var mod_it = self.modules.iterator();
+            while (mod_it.next()) |e| {
+                e.value_ptr.*.deinit();
+                self.allocator.destroy(e.value_ptr.*);
+                self.allocator.free(e.key_ptr.*);
             }
-            self.nested.deinit(self.allocator);
+            self.modules.deinit(self.allocator);
             var it = self.deleted.keyIterator();
             while (it.next()) |key| self.allocator.free(key.*);
             self.deleted.deinit(self.allocator);
@@ -145,7 +150,7 @@ pub fn StorageFor(comptime Fs: type) type {
             const next = ref orelse return;
             if (old) |expected| {
                 const current = try self.reference(expected.name);
-                defer freeReference(self, current);
+                defer self.freeReference(current);
                 if (!current.hash.eql(expected.hash)) return error.ReferenceHasChanged;
             }
             try self.setReference(next);
@@ -227,13 +232,18 @@ pub fn StorageFor(comptime Fs: type) type {
             return self.base.config();
         }
 
+        /// Nested transactional module storage. Same name returns the same wrapper.
         pub fn module(self: *Self, name: []const u8) anyerror!*Self {
+            if (self.modules.get(name)) |m| return m;
+
             const base_module = try self.base.module(name);
             const temporal_module = try self.temporal.module(name);
             const child = try self.allocator.create(Self);
             errdefer self.allocator.destroy(child);
             child.* = Self.init(base_module, temporal_module);
-            try self.nested.append(self.allocator, child);
+            const key = try self.allocator.dupe(u8, name);
+            errdefer self.allocator.free(key);
+            try self.modules.put(self.allocator, key, child);
             return child;
         }
 
@@ -282,7 +292,8 @@ pub fn StorageFor(comptime Fs: type) type {
             if (self.deleted.fetchRemove(name.raw)) |entry| self.allocator.free(entry.key);
         }
 
-        fn freeReference(self: *Self, ref: Reference) void {
+        /// Release an owned reference returned by `reference` (public free companion).
+        pub fn freeReference(self: *const Self, ref: Reference) void {
             if (comptime Store.reference_returns_owned) {
                 if (ref.name.raw.len > 0) self.allocator.free(ref.name.raw);
                 if (ref.type == .symbolic and ref.target.raw.len > 0) self.allocator.free(ref.target.raw);
@@ -467,4 +478,70 @@ test "filesystem transaction rollback leaves base empty" {
     // No commit: temporal deinit frees its objects; base never saw them.
     try std.testing.expectError(error.ObjectNotFound, base.hasEncodedObject(hash));
     try temporal.hasEncodedObject(hash);
+}
+
+test "filesystem transaction module name cache returns same wrapper" {
+    const allocator = std.testing.allocator;
+    defer @import("utils/sync").deinitPools(allocator);
+    var base_fs = try fs_pkg.Mem.init(allocator);
+    defer base_fs.deinit();
+    var temporal_fs = try fs_pkg.Mem.init(allocator);
+    defer temporal_fs.deinit();
+
+    const base = try filesystem.newStorage(allocator, &base_fs, null);
+    defer {
+        base.deinit();
+        allocator.destroy(base);
+    }
+    const temporal = try filesystem.newStorage(allocator, &temporal_fs, null);
+    defer {
+        temporal.deinit();
+        allocator.destroy(temporal);
+    }
+    try base.initLayout();
+    try temporal.initLayout();
+
+    var tx = StorageMem.init(base, temporal);
+    defer tx.deinit();
+
+    const m1 = try tx.module("sub");
+    const m2 = try tx.module("sub");
+    try std.testing.expect(m1 == m2);
+    try std.testing.expectEqual(@as(usize, 1), tx.modules.count());
+}
+
+test "filesystem transaction freeReference and reference_returns_owned" {
+    const allocator = std.testing.allocator;
+    defer @import("utils/sync").deinitPools(allocator);
+    var base_fs = try fs_pkg.Mem.init(allocator);
+    defer base_fs.deinit();
+    var temporal_fs = try fs_pkg.Mem.init(allocator);
+    defer temporal_fs.deinit();
+
+    const base = try filesystem.newStorage(allocator, &base_fs, null);
+    defer {
+        base.deinit();
+        allocator.destroy(base);
+    }
+    const temporal = try filesystem.newStorage(allocator, &temporal_fs, null);
+    defer {
+        temporal.deinit();
+        allocator.destroy(temporal);
+    }
+    try base.initLayout();
+    try temporal.initLayout();
+
+    var tx = StorageMem.init(base, temporal);
+    defer tx.deinit();
+
+    try std.testing.expect(StorageMem.reference_returns_owned);
+
+    const name = plumbing.ReferenceName.init("refs/heads/main");
+    const h = plumbing.newHash("b66c08ba28aa1f81eb06a1127aa3936ff77e5e2c");
+    try tx.setReference(plumbing.Reference.newHashReference(name, h));
+
+    const ref = try tx.reference(name);
+    defer tx.freeReference(ref);
+    try std.testing.expect(ref.hash.eql(h));
+    try std.testing.expectEqualStrings("refs/heads/main", ref.name.raw);
 }

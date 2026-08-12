@@ -52,8 +52,8 @@ pub const Storage = struct {
     shallow_storage: ShallowStorage,
     config_storage: ConfigStorage,
 
-    /// Heap wrappers returned from `module` (owned until `deinit`).
-    nested: std.ArrayListUnmanaged(*Storage) = .empty,
+    /// Nested transactional wrappers keyed by module name (one wrapper per name).
+    modules: std.StringHashMapUnmanaged(*Storage) = .empty,
 
     /// go-git: PackfileWriter iff temporal supports it (memory: false).
     pub const implements_packfile_writer = memory.Storage.implements_packfile_writer;
@@ -77,11 +77,13 @@ pub const Storage = struct {
     }
 
     pub fn deinit(self: *Storage) void {
-        for (self.nested.items) |n| {
-            n.deinit();
-            self.allocator.destroy(n);
+        var it = self.modules.iterator();
+        while (it.next()) |e| {
+            e.value_ptr.*.deinit();
+            self.allocator.destroy(e.value_ptr.*);
+            self.allocator.free(e.key_ptr.*);
         }
-        self.nested.deinit(self.allocator);
+        self.modules.deinit(self.allocator);
         self.reference_storage.deinit();
         self.* = undefined;
     }
@@ -202,13 +204,18 @@ pub const Storage = struct {
     // --- ModuleStorer ---
 
     /// go-git `Module` — nested transactional storage over base/temporal modules.
+    /// Same name returns the same wrapper (cached like base `ModuleStorage`).
     pub fn module(self: *Storage, name: []const u8) Allocator.Error!*Storage {
+        if (self.modules.get(name)) |m| return m;
+
         const base_m = try self.base.module(name);
         const temporal_m = try self.temporal.module(name);
         const child = try self.allocator.create(Storage);
         errdefer self.allocator.destroy(child);
         child.* = Storage.init(base_m, temporal_m);
-        try self.nested.append(self.allocator, child);
+        const key = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(key);
+        try self.modules.put(self.allocator, key, child);
         return child;
     }
 
@@ -435,6 +442,9 @@ test "Storage module nested transactional" {
     defer st.deinit();
 
     const m = try st.module("sub");
+    const m2 = try st.module("sub");
+    try std.testing.expect(m == m2);
+
     const obj = try m.newEncodedObject();
     obj.setType(.blob);
     _ = try obj.write("nested-tx");

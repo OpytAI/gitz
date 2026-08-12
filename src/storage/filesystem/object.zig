@@ -84,8 +84,10 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
         options: Options = .{},
         object_cache: ?*ObjectLru = null,
         dir: *DotGit,
-        /// Heap objects owned by this storage (loads + successful sets; cache does not free them).
-        owned: std.ArrayListUnmanaged(*MemoryObject) = .empty,
+        /// Heap objects owned by this storage, keyed by object hash (loads + successful sets).
+        /// ObjectLru does not free them; on destroy/deinit we `remove(h)` so a shared cache
+        /// never retains a dangling pointer. Never `clear()` a shared external cache.
+        owned: std.AutoHashMapUnmanaged(Hash, *MemoryObject) = .empty,
         /// Pack hash → decoded idx (go-git `index map[Hash]idxfile.Index`).
         /// `null` means not loaded yet; empty map means loaded with zero packs.
         index: ?std.AutoHashMapUnmanaged(Hash, *MemoryIndex) = null,
@@ -110,13 +112,14 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
         pub fn deinit(self: *Self) void {
             self.clearPackCache();
             self.clearIndex();
-            for (self.owned.items) |obj| {
-                obj.deinit();
-                self.allocator.destroy(obj);
+            var it = self.owned.iterator();
+            while (it.next()) |e| {
+                // Scrub shared LRU per owned hash; do not clear() the whole cache.
+                if (self.object_cache) |c| c.remove(e.key_ptr.*);
+                e.value_ptr.*.deinit();
+                self.allocator.destroy(e.value_ptr.*);
             }
             self.owned.deinit(self.allocator);
-            // Do not clear object_cache — it may be shared with the parent Storage /
-            // alternate lookups (go-git shares the cache pointer).
             self.* = undefined;
         }
 
@@ -276,32 +279,62 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
         /// Abandon a never-set create. Removes from `owned` if present; frees with `obj.allocator`.
         /// For never-set creates only — do not discard lookup borrows or post-set objects.
         pub fn discardEncodedObject(self: *Self, obj: *MemoryObject) void {
+            const h = obj.hash();
             removeOwned(self, obj);
+            if (self.object_cache) |c| c.remove(h);
             const a = obj.allocator;
             obj.deinit();
             a.destroy(obj);
         }
 
-        /// Ensure room to adopt `obj` (no-op if already tracked). Call before durable write.
+        /// Ensure room to adopt `obj` (no-op if already tracked by pointer). Call before durable write.
         fn prepareAdopt(self: *Self, obj: *MemoryObject) Allocator.Error!void {
-            for (self.owned.items) |o| {
-                if (o == obj) return;
-            }
+            if (ownedContainsPointer(self, obj)) return;
             try self.owned.ensureUnusedCapacity(self.allocator, 1);
         }
 
-        /// Record ownership after `prepareAdopt` (no allocation).
+        /// Record ownership after `prepareAdopt` (no allocation). Hash must be final.
         fn adoptPrepared(self: *Self, obj: *MemoryObject) void {
-            for (self.owned.items) |o| {
-                if (o == obj) return;
+            const h = obj.hash();
+            const gop = self.owned.getOrPutAssumeCapacity(h);
+            if (gop.found_existing) {
+                if (gop.value_ptr.* == obj) return;
+                // Same hash, different pointer: free previous owner entry.
+                const old = gop.value_ptr.*;
+                if (self.object_cache) |c| c.remove(h);
+                old.deinit();
+                self.allocator.destroy(old);
             }
-            self.owned.appendAssumeCapacity(obj);
+            gop.value_ptr.* = obj;
         }
 
         /// Register `obj` in `owned` if not already tracked (load / adopt paths).
         fn ensureOwned(self: *Self, obj: *MemoryObject) Allocator.Error!void {
             try prepareAdopt(self, obj);
             adoptPrepared(self, obj);
+        }
+
+        fn ownedContainsPointer(store: *const Self, obj: *MemoryObject) bool {
+            var it = store.owned.iterator();
+            while (it.next()) |e| {
+                if (e.value_ptr.* == obj) return true;
+            }
+            return false;
+        }
+
+        /// Insert or replace ownership for `h`. Frees a displaced different pointer.
+        fn putOwned(self: *Self, h: Hash, obj: *MemoryObject) Allocator.Error!void {
+            const gop = try self.owned.getOrPut(self.allocator, h);
+            if (gop.found_existing) {
+                if (gop.value_ptr.* == obj) return;
+                const old = gop.value_ptr.*;
+                if (self.object_cache) |c| c.remove(h);
+                old.deinit();
+                self.allocator.destroy(old);
+                gop.value_ptr.* = obj;
+                return;
+            }
+            gop.value_ptr.* = obj;
         }
 
         /// go-git `ObjectStorage.LazyWriter` result.
@@ -503,26 +536,46 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             return error.ObjectNotFound;
         }
 
-        /// Move `obj` from an alternate store into this store's ownership list.
+        /// Move `obj` from an alternate store into this store's ownership map.
         ///
         /// Alternate ObjectStorage shares `object_cache` and must not free the
-        /// returned MemoryObject on deinit. Append to `self.owned` first so a
-        /// failed append leaves the object still owned by `alt`.
+        /// returned MemoryObject on deinit. Insert into `self.owned` first so a
+        /// failed put leaves the object still owned by `alt`.
         fn adoptObject(self: *Self, alt: *Self, obj: *MemoryObject) Allocator.Error!void {
-            for (self.owned.items) |o| {
-                if (o == obj) {
+            const h = obj.hash();
+            if (self.owned.get(h)) |existing| {
+                if (existing == obj) {
                     removeOwned(alt, obj);
                     return;
                 }
+                // Already own another copy of this hash: keep ours, drop alt's.
+                removeOwned(alt, obj);
+                if (self.object_cache) |c| {
+                    if (c.get(h) == obj) {
+                        c.remove(h);
+                        c.put(existing) catch {};
+                    }
+                }
+                obj.deinit();
+                self.allocator.destroy(obj);
+                return;
             }
-            try self.owned.append(self.allocator, obj);
+            try self.owned.put(self.allocator, h, obj);
             removeOwned(alt, obj);
         }
 
         fn removeOwned(store: *Self, obj: *MemoryObject) void {
-            for (store.owned.items, 0..) |o, i| {
+            const h = obj.hash();
+            if (store.owned.get(h)) |o| {
                 if (o == obj) {
-                    _ = store.owned.swapRemove(i);
+                    _ = store.owned.remove(h);
+                    return;
+                }
+            }
+            var it = store.owned.iterator();
+            while (it.next()) |e| {
+                if (e.value_ptr.* == obj) {
+                    _ = store.owned.remove(e.key_ptr.*);
                     return;
                 }
             }
@@ -570,11 +623,21 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
                 if (c.get(h)) |cached| return cached;
             }
 
+            // Loose must exist for this path (do not return owned after loose delete —
+            // pack/delta paths need ObjectNotFound here).
             var f = self.dir.object(h) catch |err| switch (err) {
                 error.NotExist, error.ObjectNotFound => return error.ObjectNotFound,
                 else => |e| return e,
             };
             defer f.close() catch {};
+
+            // Dedupe: already-owned non-delta for this hash (avoids owned-map growth).
+            if (self.owned.get(h)) |existing| {
+                if (!existing.isDeltaObject()) {
+                    self.cacheIfEligible(existing, existing.size);
+                    return existing;
+                }
+            }
 
             const data = try dotgit.readFileAll(self.allocator, &f);
             defer self.allocator.free(data);
@@ -611,7 +674,7 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             // Force cached hash to requested id when content matches (objfile validates stream).
             obj.cached_hash = Hash.fromBytes(h.slice());
 
-            try self.owned.append(self.allocator, obj);
+            try self.putOwned(h, obj);
             self.cacheIfEligible(obj, hdr.size);
             return obj;
         }
@@ -642,10 +705,17 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
         }
 
         fn decodeObjectAt(self: *Self, p: *packfile.Packfile, offset: i64) Error!*MemoryObject {
-            // Prefer object cache when hash is known.
+            // Prefer object cache / owned non-delta when hash is known.
             if (p.index.findHash(offset)) |hash| {
                 if (self.object_cache) |c| {
                     if (c.get(hash)) |cached| return cached;
+                }
+                if (self.owned.get(hash)) |existing| {
+                    if (!existing.isDeltaObject()) {
+                        const sz = if (existing.size > 0) existing.size else @as(i64, @intCast(existing.readerBytes().len));
+                        self.cacheIfEligible(existing, sz);
+                        return existing;
+                    }
                 }
             } else |_| {}
 
@@ -690,12 +760,23 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             obj.cached_hash = id;
             _ = deltaobject.newDeltaObject(obj, id, base_id, header.length);
 
-            try self.owned.append(self.allocator, obj);
+            try self.putOwned(hash, obj);
             return obj;
         }
 
         /// Copy a packfile-owned object into storage ownership.
         fn cloneOwned(self: *Self, src: *MemoryObject) Error!*MemoryObject {
+            const h = src.hash();
+            if (!h.isZero()) {
+                if (self.owned.get(h)) |existing| {
+                    if (!existing.isDeltaObject()) {
+                        const sz = if (existing.size > 0) existing.size else @as(i64, @intCast(existing.readerBytes().len));
+                        self.cacheIfEligible(existing, sz);
+                        return existing;
+                    }
+                }
+            }
+
             const obj = try self.allocator.create(MemoryObject);
             errdefer {
                 obj.deinit();
@@ -704,7 +785,6 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             obj.* = MemoryObject.init(self.allocator);
             obj.setType(src.object_type);
             try obj.setContent(src.readerBytes());
-            const h = src.hash();
             if (!h.isZero()) obj.cached_hash = Hash.fromBytes(h.slice());
             if (src.delta) |d| {
                 obj.setDeltaMeta(.{
@@ -714,7 +794,13 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
                 });
             }
 
-            try self.owned.append(self.allocator, obj);
+            if (!h.isZero()) {
+                try self.putOwned(h, obj);
+            } else {
+                // Zero hash should not occur for real objects; still track under computed hash.
+                const computed = obj.hash();
+                try self.putOwned(computed, obj);
+            }
             const sz = if (src.size > 0) src.size else @as(i64, @intCast(src.readerBytes().len));
             self.cacheIfEligible(obj, sz);
             return obj;
