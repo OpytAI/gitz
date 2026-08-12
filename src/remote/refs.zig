@@ -343,10 +343,7 @@ fn getHavesFromRef(
 }
 
 fn freeHeapCommit(c: *objpkg.Commit) void {
-    if (!c.heap_owned) return;
-    const a = c.allocator;
-    c.deinit();
-    a.destroy(c);
+    objpkg.freeCommit(c.allocator, c);
 }
 
 // ---------------------------------------------------------------------------

@@ -69,11 +69,13 @@ var path_filter_dummy_ctx: u8 = 0;
 /// go-git `Log` — history walk with order / all / file / path / since / until.
 ///
 /// Ownership:
-/// - Caller owns every `*Commit` from `LogResult.next` (`deinit` + `destroy`).
+/// - Caller owns every `*Commit` from `LogResult.next` (`freeCommit` when
+///   `heap_owned`, or deinit+destroy for the single-from tip).
 /// - `LogResult.deinit` frees walk state and an unyielded single-from tip.
 /// - Limit/path filters free skipped heap-owned commits; the single-from tip
 ///   is marked `heap_owned=false` so only `LogResult` manages its lifetime.
-/// - `all=true` uses `newCommitAllIterFromHashes` (preorder merge of tips).
+/// - `all=true` uses `newCommitAllIterFromHashes` (path-list owns tips + walk
+///   loads; `AllIter.close`/`deinit` frees unyielded path commits).
 ///
 /// Path filter priority (one PathIter): `path_filter_ctx_fn` → `path_filter`
 /// → `file_name` exact equality.
@@ -165,8 +167,8 @@ fn initLogFrom(
     }
 
     const tip = try objpkg.getCommit(gpa, store, from);
-    // LogResult owns tip until yielded. Filters use freeOwnedCommit which
-    // only destroys heap_owned commits — clear the flag so skips leave tip alone.
+    // LogResult owns tip until yielded. Filters use freeCommit which only
+    // destroys heap_owned commits — clear the flag so skips leave tip alone.
     tip.heap_owned = false;
     var tip_owned = true;
     errdefer if (tip_owned) {
@@ -318,14 +320,8 @@ pub const LogResult = struct {
     }
 
     /// Free walk state. Single-from: frees tip if never yielded.
-    /// `all`: frees unyielded commits still held by `AllIter`.
+    /// `all`: `AllIter.deinit` frees unyielded path commits (R3).
     pub fn deinit(self: *LogResult) void {
-        if (self.base == .all) {
-            const w = self.base.all;
-            w.freeUnyielded();
-            w.disownTips();
-        }
-
         // Tear down outer filters without cascading into base, then free base.
         if (self.limit) |lim| {
             self.allocator.destroy(lim);
@@ -336,10 +332,7 @@ pub const LogResult = struct {
             // base is freed in the switch below. Tip is heap_owned=false so only
             // free heap-owned current (loaded parents still held by path).
             if (p.current_commit) |cc| {
-                if (cc.heap_owned) {
-                    cc.deinit();
-                    self.allocator.destroy(cc);
-                }
+                objpkg.freeCommit(self.allocator, cc);
                 p.current_commit = null;
             }
             if (p.pending_parent_tree) |t| {
@@ -387,6 +380,7 @@ pub const LogResult = struct {
 
         if (self.tip) |t| {
             if (!self.yielded_tip) {
+                // Tip is heap_owned=false so freeCommit would no-op; destroy fully.
                 t.deinit();
                 self.allocator.destroy(t);
             }
@@ -470,17 +464,19 @@ fn storeCommitWhen(
     return s.setEncodedObject(obj);
 }
 
-fn freeCommit(gpa: Allocator, c: *objpkg.Commit) void {
+/// Test helper: free a log yield. Single-from tip has `heap_owned=false` so
+/// public `freeCommit` no-ops; always deinit+destroy for test-owned yields.
+fn destroyLogCommit(gpa: Allocator, c: *objpkg.Commit) void {
     c.deinit();
     gpa.destroy(c);
 }
 
 fn collectLogHashes(gpa: Allocator, walk: *LogResult) ![]Hash {
-    // Do not free commits until the walk is finished: preorder/BFS loaders may
-    // still hold the tip (or parent chain) as a loader context.
+    // Free after full walk: single-from tip is heap_owned=false; all-path yields
+    // are heap_owned=true. destroyLogCommit handles both.
     var commits: std.ArrayList(*objpkg.Commit) = .empty;
     defer {
-        for (commits.items) |c| freeCommit(gpa, c);
+        for (commits.items) |c| destroyLogCommit(gpa, c);
         commits.deinit(gpa);
     }
     while (true) {
@@ -557,15 +553,15 @@ test "log on small commit chain" {
     defer walk.deinit();
 
     const a = try walk.next();
-    defer freeCommit(gpa, a);
+    defer destroyLogCommit(gpa, a);
     try std.testing.expect(a.hash.eql(c2));
 
     const b = try walk.next();
-    defer freeCommit(gpa, b);
+    defer destroyLogCommit(gpa, b);
     try std.testing.expect(b.hash.eql(c1));
 
     const c = try walk.next();
-    defer freeCommit(gpa, c);
+    defer destroyLogCommit(gpa, c);
     try std.testing.expect(c.hash.eql(c0));
 
     try std.testing.expectError(error.EndOfStream, walk.next());
@@ -573,7 +569,7 @@ test "log on small commit chain" {
     var log2 = try log(s, .{ .from = c1 });
     defer log2.deinit();
     const d = try log2.next();
-    defer freeCommit(gpa, d);
+    defer destroyLogCommit(gpa, d);
     try std.testing.expect(d.hash.eql(c1));
 }
 
@@ -613,13 +609,14 @@ test "log each LogOrder on linear chain" {
 }
 
 test "log all walks multiple branch tips" {
-    // Arena: AllIter may retain transient parent loads for the merge path
-    // (go-git GC; walkers do not free unyielded loads).
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const gpa = arena.allocator();
-
+    // GPA: AllIter path-list frees unyielded on deinit; yielded commits freed
+    // by collectLogHashes.
+    const gpa = std.testing.allocator;
     const s = try memory.newStorage(gpa);
+    defer {
+        s.deinit();
+        gpa.destroy(s);
+    }
 
     try s.setReference(Reference.newSymbolicReference(plumbing.HEAD, plumbing.master));
     const blob_h = try storeBlob(s, "a");
@@ -636,6 +633,7 @@ test "log all walks multiple branch tips" {
     var walk = try log(s, .{ .all = true });
     defer walk.deinit();
     const hashes = try collectLogHashes(gpa, &walk);
+    defer gpa.free(hashes);
 
     try std.testing.expect(hashes.len >= 3);
     var seen_master = false;

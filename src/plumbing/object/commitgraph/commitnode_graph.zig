@@ -115,7 +115,7 @@ pub const GraphCommitNodeIndex = struct {
         }
 
         const commit = try self.get_commit_fn(self.storage, self.allocator, hash);
-        errdefer freeCommit(self.allocator, commit);
+        errdefer object.freeCommit(self.allocator, commit);
 
         const node = try self.allocator.create(ObjectCommitNode);
         errdefer self.allocator.destroy(node);
@@ -350,9 +350,4 @@ fn graphNodeTree(ptr: *anyopaque) anyerror!*object.Tree {
 fn graphNodeDeinit(ptr: *anyopaque) void {
     const self: *GraphCommitNode = @ptrCast(@alignCast(ptr));
     self.deinit();
-}
-
-fn freeCommit(allocator: Allocator, commit: *object.Commit) void {
-    commit.deinit();
-    allocator.destroy(commit);
 }

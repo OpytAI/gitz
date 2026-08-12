@@ -22,19 +22,24 @@
 //! Ownership (Zig rules, not go-git GC):
 //! - **R1** Yielded `*Commit`s are caller-owned when `heap_owned`.
 //! - **R2** On internal skip (seen / seen_external / invalid filter), free the
-//!   loaded heap commit before `continue` (`freeOwnedCommit`).
+//!   loaded heap commit before `continue` (`freeCommit`).
 //! - **R3** `close`/`deinit` free only **unyielded** heap commits still held
-//!   (start, stacks, queues, heaps). Already-yielded commits are never freed.
+//!   (start, stacks, queues, heaps, AllIter path tail). Already-yielded commits
+//!   are never freed by close.
+//! - **R4** `forEach` / `forEachCommit`: borrow during callback; free after cb
+//!   including Stop and error; then close frees only unyielded remainder.
+//!   Callbacks must **not** free the yielded commit.
 //! - Mid-`next` errors after detach use `errdefer freeOwnedCommit` so the
 //!   in-flight candidate is not leaked; parent loads errdefer until enqueued.
 //! - Heap-owned loads must be **unique** `*Commit` instances per load
 //!   (`getCommitFromGetter` always creates). Identity-map loaders (TestGraph)
 //!   must keep `heap_owned=false` so R2 skip free is a no-op on aliases.
 //! - Map/stack test commits (`heap_owned == false`) are never destroyed.
-//! - **R4** forEach free-after-cb is PR3; today forEach only closes unyielded.
+//! - **AllIter**: single path-list ownership; tips and walk loads live only on
+//!   the path; `next` transfers; `close` frees remaining path commits.
 //!
 //! Limit/path filters also free skipped heap-owned commits.
-//! `newCommitAllIterFromHashes` owns tips + loader context.
+//! `newCommitAllIterFromHashes` owns loader context; tips join the path list.
 //!
 //! # go-git map
 //!
@@ -142,17 +147,17 @@ pub fn loaderFromCommit(c: *Commit) CommitLoader {
     };
 }
 
-/// Free a heap-owned commit (R2 skip / R3 close / mid-next errdefer).
-/// No-op when `heap_owned == false`.
+/// Free a heap-owned commit (R2 skip / R3 close / mid-next errdefer / R4).
+/// Thin alias of public `freeCommit`; no-op when `heap_owned == false`.
 ///
 /// Invariant: when `heap_owned`, each load is a distinct allocation. Do not set
 /// `heap_owned` on identity-map aliases that may still be queued or yielded.
 fn freeOwnedCommit(c: *Commit) void {
-    if (!c.heap_owned) return;
-    const a = c.allocator;
-    c.deinit();
-    a.destroy(c);
+    freeCommit(c.allocator, c);
 }
+
+/// Re-export for walkers; same symbol as `commit.freeCommit` / package root.
+const freeCommit = commit_mod.freeCommit;
 
 fn loadCommit(loader: CommitLoader, h: Hash) anyerror!*Commit {
     return loader.get(h);
@@ -176,26 +181,16 @@ pub const CommitIter = struct {
         self.close_fn(self.ptr);
     }
 
-    /// go-git `CommitIter.ForEach`. `error.Stop` ends successfully.
-    /// R4 free-after-callback (including Stop/error) is PR3; yields are R1 today.
+    /// go-git `CommitIter.ForEach`. Borrow during callback; free after (R4).
+    /// `error.Stop` ends successfully after freeing the current yield.
     pub fn forEach(self: CommitIter, cb: anytype) !void {
-        defer self.close(); // R3: unyielded only
-        while (true) {
-            const c = self.next() catch |err| {
-                const e: anyerror = err;
-                if (e == error.EndOfStream) return;
-                return e;
-            };
-            cb(c) catch |err| {
-                const e: anyerror = err;
-                if (e == error.Stop) return;
-                return e;
-            };
-        }
+        return forEachCommit(self, cb);
     }
 };
 
-/// Shared forEach for concrete walkers. R4 free-after-cb is PR3.
+/// Shared forEach for concrete walkers and type-erased `CommitIter` (R4).
+/// Ownership is with forEach for the duration of the callback; free after cb
+/// including Stop and error; then close frees only unyielded remainder.
 fn forEachCommit(iter: anytype, cb: anytype) !void {
     defer iter.close(); // R3: unyielded only
     while (true) {
@@ -204,11 +199,17 @@ fn forEachCommit(iter: anytype, cb: anytype) !void {
             if (e == error.EndOfStream) return;
             return e;
         };
+        // Ownership is with forEach for the duration of the callback.
+        var freed = false;
+        defer if (!freed) freeCommit(c.allocator, c);
         cb(c) catch |err| {
+            // Stop and error both free c via defer, then propagate.
             const e: anyerror = err;
-            if (e == error.Stop) return;
+            if (e == error.Stop) return; // success stop after free
             return e;
         };
+        freeCommit(c.allocator, c);
+        freed = true;
     }
 }
 
@@ -1340,6 +1341,12 @@ const AllLoaderCtx = struct {
 /// commit already on the path is found; the unique prefix is inserted so shared
 /// history appears once (go-git `addReference` list merge).
 ///
+/// Ownership: single path-list channel. Tips and walk-loaded commits live only
+/// on the path (`list_head` → tail). `next()` transfers the current path node's
+/// commit to the caller and advances `curr`. `close`/`deinit` free only commits
+/// still on the remaining path (`curr` → tail) via `freeCommit` (no-op when
+/// `heap_owned=false`). No parallel `owned_tips` channel.
+///
 /// Full go-git needs `storage.Storer.IterReferences` + `ResolveReference`.
 /// This port accepts already-resolved tip commits plus a `CommitLoader`.
 pub const AllIter = struct {
@@ -1351,19 +1358,12 @@ pub const AllIter = struct {
     nodes: std.ArrayList(*AllPathNode) = .empty,
     /// Heap context for `newCommitAllIterFromHashes` (null for tip-pointer form).
     loader_ctx: ?*AllLoaderCtx = null,
-    /// Tip commits loaded by FromHashes (freed on deinit).
-    owned_tips: std.ArrayList(*Commit) = .empty,
 
     pub fn deinit(self: *AllIter) void {
         self.close();
         for (self.nodes.items) |n| self.allocator.destroy(n);
         self.nodes.deinit(self.allocator);
         self.lookup.deinit(self.allocator);
-        for (self.owned_tips.items) |c| {
-            c.deinit();
-            self.allocator.destroy(c);
-        }
-        self.owned_tips.deinit(self.allocator);
         if (self.loader_ctx) |ctx| self.allocator.destroy(ctx);
         self.* = undefined;
     }
@@ -1405,6 +1405,8 @@ pub const AllIter = struct {
 
         var ref_commits: std.ArrayList(*Commit) = .empty;
         defer ref_commits.deinit(self.allocator);
+        // On error before path insert, free walk yields still held in ref_commits.
+        errdefer for (ref_commits.items) |c| freeCommit(self.allocator, c);
 
         var common: ?*AllPathNode = null;
 
@@ -1418,6 +1420,8 @@ pub const AllIter = struct {
                 return e;
             };
             if (self.lookup.get(c.hash)) |node| {
+                // Common ancestor already on path; free this walk yield (not inserted).
+                freeCommit(self.allocator, c);
                 common = node;
                 break;
             }
@@ -1436,8 +1440,11 @@ pub const AllIter = struct {
                 _ = try self.pushBack(c);
             }
         }
+        // Path now owns every ref_commits entry; clear so errdefer is a no-op.
+        ref_commits.clearRetainingCapacity();
     }
 
+    /// Transfer ownership of the current path commit to the caller (R1).
     pub fn next(self: *AllIter) anyerror!*Commit {
         const n = self.curr orelse return error.EndOfStream;
         self.curr = n.next;
@@ -1448,27 +1455,14 @@ pub const AllIter = struct {
         return forEachCommit(self, cb);
     }
 
+    /// Free unyielded path commits (`curr` → tail) then clear cursor (R3).
     pub fn close(self: *AllIter) void {
-        self.curr = null;
-    }
-
-    /// Free commits still on the path (`curr` → tail). Call before `close`/`deinit`
-    /// when the caller owns yielded commits and used a heap loader (FromHashes).
-    /// Do **not** use with stack-backed tip loaders (FromTips unit tests).
-    pub fn freeUnyielded(self: *AllIter) void {
         var n = self.curr;
+        self.curr = null;
         while (n) |node| {
-            const c = node.commit;
-            c.deinit();
-            self.allocator.destroy(c);
+            freeCommit(self.allocator, node.commit);
             n = node.next;
         }
-        self.curr = null;
-    }
-
-    /// Clear tip ownership so `deinit` does not free tip commits (caller owns them).
-    pub fn disownTips(self: *AllIter) void {
-        self.owned_tips.clearRetainingCapacity();
     }
 
     pub fn asIter(self: *AllIter) CommitIter {
@@ -1496,8 +1490,10 @@ pub const AllIter = struct {
 /// commits already resolved from those refs. Each tip history is walked with
 /// preorder and merged into one path.
 ///
-/// Incomplete vs go-git: no `Storer.IterReferences` / symbolic HEAD resolve
-/// inside this function; no `commitIterFunc` (always preorder).
+/// Tips with `heap_owned=false` (stack/map) are path-held but freeCommit no-ops
+/// on close; caller still owns those tip objects. Incomplete vs go-git: no
+/// `Storer.IterReferences` / symbolic HEAD resolve; no `commitIterFunc`
+/// (always preorder).
 pub fn newCommitAllIterFromTips(
     allocator: Allocator,
     tips: []const *Commit,
@@ -1517,7 +1513,9 @@ pub fn newCommitAllIterFromTips(
 
 /// Load tip hashes via `ObjectGetter`, skip non-commits, then merge with preorder.
 ///
-/// Owns loaded tip commits and a heap loader context (valid for the iter lifetime).
+/// Loaded tips and walk parents are owned solely by the path list. Duplicate tip
+/// loads (hash already on path) are freed immediately. Owns a heap loader
+/// context for the iter lifetime.
 pub fn newCommitAllIterFromHashes(
     allocator: Allocator,
     getter: ObjectGetter,
@@ -1540,15 +1538,12 @@ pub fn newCommitAllIterFromHashes(
     const loader = CommitLoader{ .ptr = ctx, .get_fn = Gen.get };
 
     for (tip_hashes) |h| {
-        const c = getCommitFromGetter(allocator, getter, h) catch continue;
-        try iter.owned_tips.append(allocator, c);
-    }
-
-    if (iter.owned_tips.items.len == 0) {
-        return iter;
-    }
-
-    for (iter.owned_tips.items) |tip| {
+        const tip = getCommitFromGetter(allocator, getter, h) catch continue;
+        if (iter.lookup.get(tip.hash) != null) {
+            // Already on path from another tip's walk; free the duplicate load.
+            freeCommit(allocator, tip);
+            continue;
+        }
         try iter.addTip(tip, loader);
     }
     iter.curr = iter.list_head;
@@ -2573,4 +2568,153 @@ test "production close without next frees tip all walkers" {
         var iter = try newFilterCommitIterWithLoader(gpa, tip, loader, null, null);
         iter.deinit();
     }
+}
+
+// ---------------------------------------------------------------------------
+// PR3: R4 forEach free-after-cb + AllIter single path-list ownership
+// ---------------------------------------------------------------------------
+
+test "production forEach Stop frees yields zero leaks" {
+    // R4: callback returns Stop after N yields; forEach frees each yield + close unyielded.
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const getter = ObjectGetter.from(memory.Storage, &store);
+
+    const h_root = try storeWalkerCommit(gpa, &store, &.{}, 1);
+    const h_mid = try storeWalkerCommit(gpa, &store, &.{h_root}, 2);
+    const h_tip = try storeWalkerCommit(gpa, &store, &.{h_mid}, 3);
+
+    const tip = try getCommitFromGetter(gpa, getter, h_tip);
+    const loader = loaderFromGetter(gpa, getter);
+
+    var iter = try newCommitPreorderIterWithLoader(gpa, tip, loader, null, &.{});
+    // forEach closes; no defer deinit (close is idempotent for free path).
+
+    var count: usize = 0;
+    const Gen = struct {
+        var n: *usize = undefined;
+        fn cb(_: *Commit) !void {
+            n.* += 1;
+            if (n.* >= 2) return error.Stop;
+        }
+    };
+    Gen.n = &count;
+    try iter.forEach(Gen.cb);
+    try std.testing.expectEqual(@as(usize, 2), count);
+    // deinit after forEach close is safe (close already drained unyielded).
+    iter.deinit();
+}
+
+test "production forEach error frees yields zero leaks" {
+    // R4: callback returns a random error; forEach frees current + close remainder.
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const getter = ObjectGetter.from(memory.Storage, &store);
+
+    const h_root = try storeWalkerCommit(gpa, &store, &.{}, 1);
+    const h_mid = try storeWalkerCommit(gpa, &store, &.{h_root}, 2);
+    const h_tip = try storeWalkerCommit(gpa, &store, &.{h_mid}, 3);
+
+    const tip = try getCommitFromGetter(gpa, getter, h_tip);
+    const loader = loaderFromGetter(gpa, getter);
+
+    var iter = try newCommitPreorderIterWithLoader(gpa, tip, loader, null, &.{});
+
+    var count: usize = 0;
+    const Gen = struct {
+        var n: *usize = undefined;
+        fn cb(_: *Commit) !void {
+            n.* += 1;
+            if (n.* >= 1) return error.UnexpectedData;
+        }
+    };
+    Gen.n = &count;
+    try std.testing.expectError(error.UnexpectedData, iter.forEach(Gen.cb));
+    try std.testing.expectEqual(@as(usize, 1), count);
+    iter.deinit();
+}
+
+test "production AllIter early close frees remaining path zero leaks" {
+    // Single path-list owner: yield one tip, deinit frees rest of path.
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const getter = ObjectGetter.from(memory.Storage, &store);
+
+    const h_base = try storeWalkerCommit(gpa, &store, &.{}, 1);
+    const h_a = try storeWalkerCommit(gpa, &store, &.{h_base}, 2);
+    const h_b = try storeWalkerCommit(gpa, &store, &.{h_base}, 3);
+
+    var iter = try newCommitAllIterFromHashes(gpa, getter, &.{ h_a, h_b });
+    defer iter.deinit();
+
+    const c = try iter.next();
+    freeYield(c);
+    // Remaining path (base, other tip, …) freed by deinit → close (R3).
+}
+
+test "production AllIter full walk zero leaks" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const getter = ObjectGetter.from(memory.Storage, &store);
+
+    const h_base = try storeWalkerCommit(gpa, &store, &.{}, 1);
+    const h_a = try storeWalkerCommit(gpa, &store, &.{h_base}, 2);
+    const h_b = try storeWalkerCommit(gpa, &store, &.{h_base}, 3);
+
+    var iter = try newCommitAllIterFromHashes(gpa, getter, &.{ h_a, h_b });
+    defer iter.deinit();
+
+    var n: usize = 0;
+    var seen_base = false;
+    while (true) {
+        const c = iter.next() catch |err| {
+            if (err == error.EndOfStream) break;
+            return err;
+        };
+        if (c.hash.eql(h_base)) seen_base = true;
+        freeYield(c);
+        n += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expect(seen_base);
+}
+
+test "production AllIter forEach Stop zero leaks" {
+    const gpa = std.testing.allocator;
+    const memory = @import("memory");
+
+    var store = memory.Storage.init(gpa);
+    defer store.deinit();
+    const getter = ObjectGetter.from(memory.Storage, &store);
+
+    const h_base = try storeWalkerCommit(gpa, &store, &.{}, 1);
+    const h_a = try storeWalkerCommit(gpa, &store, &.{h_base}, 2);
+    const h_b = try storeWalkerCommit(gpa, &store, &.{h_base}, 3);
+
+    var iter = try newCommitAllIterFromHashes(gpa, getter, &.{ h_a, h_b });
+
+    var count: usize = 0;
+    const Gen = struct {
+        var n: *usize = undefined;
+        fn cb(_: *Commit) !void {
+            n.* += 1;
+            if (n.* >= 1) return error.Stop;
+        }
+    };
+    Gen.n = &count;
+    try iter.forEach(Gen.cb);
+    try std.testing.expectEqual(@as(usize, 1), count);
+    iter.deinit();
 }

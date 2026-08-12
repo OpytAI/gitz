@@ -47,7 +47,7 @@ pub const ObjectCommitNodeIndex = struct {
     /// go-git `objectCommitNodeIndex.Get`.
     pub fn get(self: *ObjectCommitNodeIndex, hash: Hash) anyerror!CommitNode {
         const commit = try self.get_commit_fn(self.storage, self.allocator, hash);
-        errdefer freeCommit(self.allocator, commit);
+        errdefer object.freeCommit(self.allocator, commit);
 
         const node = try self.allocator.create(ObjectCommitNode);
         errdefer self.allocator.destroy(node);
@@ -166,7 +166,7 @@ pub const ObjectCommitNode = struct {
 
     pub fn deinit(self: *ObjectCommitNode) void {
         if (self.owns_commit) {
-            freeCommit(self.allocator, self.commit);
+            object.freeCommit(self.allocator, self.commit);
         }
         self.allocator.destroy(self);
     }
@@ -239,9 +239,4 @@ fn objectNodeTree(ptr: *anyopaque) anyerror!*object.Tree {
 fn objectNodeDeinit(ptr: *anyopaque) void {
     const self: *ObjectCommitNode = @ptrCast(@alignCast(ptr));
     self.deinit();
-}
-
-fn freeCommit(allocator: Allocator, commit: *object.Commit) void {
-    commit.deinit();
-    allocator.destroy(commit);
 }

@@ -79,12 +79,7 @@ fn applyStagingFromCommit(w: anytype, s: *Status, commit: Hash) !void {
 
     if (!commit.isZero()) {
         const c = try objpkg.getCommit(w.allocator, w.storer, commit);
-        defer {
-            if (c.heap_owned) {
-                c.deinit();
-                w.allocator.destroy(c);
-            }
-        }
+        defer objpkg.freeCommit(w.allocator, c);
         tree_ptr = try c.tree();
     }
 
@@ -278,12 +273,7 @@ pub fn diffCommitWithStaging(w: anytype, commit: Hash, reverse: bool) !Changes {
 
     if (!commit.isZero()) {
         const c = try objpkg.getCommit(w.allocator, w.storer, commit);
-        defer {
-            if (c.heap_owned) {
-                c.deinit();
-                w.allocator.destroy(c);
-            }
-        }
+        defer objpkg.freeCommit(w.allocator, c);
         tree_ptr = try c.tree();
     }
 

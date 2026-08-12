@@ -73,6 +73,7 @@ pub const newTreeWalker = tree_mod.TreeWalker.init;
 pub const Commit = commit_mod.Commit;
 pub const getCommit = commit_mod.getCommit;
 pub const decodeCommit = commit_mod.decodeCommit;
+pub const freeCommit = commit_mod.freeCommit;
 pub const MessageEncoding = commit_mod.MessageEncoding;
 pub const newCommitIter = commit_mod.newCommitIter;
 pub const StorerCommitIter = commit_mod.StorerCommitIter;
