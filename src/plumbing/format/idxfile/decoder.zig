@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const hash_pkg = @import("hash");
+const plumbing = @import("plumbing");
 
 const idxfile = @import("idxfile.zig");
 
@@ -185,12 +186,18 @@ pub const Decoder = struct {
     }
 
     fn readPackChecksum(self: *Decoder, idx: *MemoryIndex) Reader.Error!void {
-        try self.readHashed(idx.packfile_checksum.bytes[0..objectIdLength()]);
+        var buf: [hash_pkg.MaxSize]u8 = undefined;
+        const n = objectIdLength();
+        try self.readHashed(buf[0..n]);
+        idx.packfile_checksum = plumbing.Hash.fromBytes(buf[0..n]);
     }
 
     fn readIdxChecksum(self: *Decoder, idx: *MemoryIndex) Reader.Error!void {
         // Not hashed: go-git takes Sum before reading the trailer checksum.
-        try self.reader.readSliceAll(idx.idx_checksum.bytes[0..objectIdLength()]);
+        var buf: [hash_pkg.MaxSize]u8 = undefined;
+        const n = objectIdLength();
+        try self.reader.readSliceAll(buf[0..n]);
+        idx.idx_checksum = plumbing.Hash.fromBytes(buf[0..n]);
     }
 };
 

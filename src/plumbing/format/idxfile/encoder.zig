@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const hash_pkg = @import("hash");
+const plumbing = @import("plumbing");
 
 const idxfile = @import("idxfile.zig");
 
@@ -107,7 +108,7 @@ pub const Encoder = struct {
 
         var sum: [hash_pkg.MaxSize]u8 = undefined;
         self.hasher.final(&sum);
-        @memcpy(idx.idx_checksum.bytes[0..oid_len], sum[0..oid_len]);
+        idx.idx_checksum = plumbing.Hash.fromBytes(sum[0..oid_len]);
         // Trailer checksum is not hashed (already finalized).
         try self.writer.writeAll(idx.idx_checksum.bytes[0..oid_len]);
         return oid_len * 2;

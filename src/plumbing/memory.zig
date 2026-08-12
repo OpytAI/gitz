@@ -63,6 +63,9 @@ pub const MemoryObject = struct {
         self.* = undefined;
     }
 
+    /// Content-addressed OID. Prefer process format matching `hash_algo` before
+    /// calling: under safety builds `isZero`/`eql` assert pad for the **active**
+    /// process width (SHA-256 OIDs assert if process format is still SHA-1).
     pub fn hash(self: *MemoryObject) Hash {
         if (!self.cached_hash.isZero()) return self.cached_hash;
         if (self.size < 0) return ZeroHash;

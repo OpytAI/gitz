@@ -118,6 +118,10 @@ pub const MemoryIndex = struct {
     }
 
     /// go-git `FindOffset`.
+    ///
+    /// Incrementally seeds `offset_hash` for reverse lookup. Put failures
+    /// (OOM) are swallowed: reverse map is best-effort until `genOffsetHash`
+    /// rebuilds it fully for `findHash`.
     pub fn findOffset(self: *MemoryIndex, h: plumbing.Hash) Error!i64 {
         const k = self.fanout_mapping[h.bytes[0]];
         const i = self.findHashIndex(h) orelse return Error.ObjectNotFound;

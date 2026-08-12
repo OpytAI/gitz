@@ -9,6 +9,12 @@
 //!   calling thread; use `FormatScope` around direct codec calls.
 //! - `parseHash` / `isHash` require the **active** hex width; use `parseHashAny` /
 //!   `isHashAny` for fixtures that mix widths.
+//! - Public construction: `fromBytes` / `fromHex` paths / `ZeroHash` / `Hasher.sum`.
+//!   `fromBytes` copies only active `digestSize()` so dirty pad under SHA-1 is cleared.
+//! - Dual-format: a full SHA-256 OID (non-zero bytes[20..]) is only valid while the
+//!   active process format is SHA-256 (or inside `FormatScope(.sha256)`). Safety
+//!   builds assert pad-under-active-width on `eql`/`isZero`; re-canonicalize paths
+//!   that call `fromBytes(h.slice())` under the wrong format truncate.
 
 const std = @import("std");
 const err = @import("error.zig");
@@ -69,6 +75,8 @@ pub const Hash = struct {
     }
 
     /// Debug-only: pad beyond active `digestSize()` is zero (R7 / WP-C).
+    /// Uses process TLS format — SHA-256 OIDs must only be used under SHA-256
+    /// active format (or `FormatScope`); otherwise safety builds assert.
     pub fn debugAssertCanonical(self: Hash) void {
         if (comptime !std.debug.runtime_safety) return;
         const n = hash_algo.digestSize();
@@ -346,6 +354,29 @@ test "fromBytes under SHA-1 clears dirty pad beyond digestSize" {
     try std.testing.expect(from_dirty.eql(from_clean));
     try std.testing.expect(std.mem.allEqual(u8, from_dirty.bytes[20..], 0));
     try std.testing.expectEqualSlices(u8, digest[0..], from_dirty.bytes[0..20]);
+}
+
+test "Hasher.sum initAlgo width is independent of process format" {
+    defer hash_algo.setObjectFormat(.sha1);
+    hash_algo.setObjectFormat(.sha1);
+
+    // SHA-256 hasher while process format is SHA-1: full 32-byte OID, pad unused.
+    var h256 = Hasher.initAlgo(.sha256, .blob, 0);
+    const sum256 = h256.sum();
+    try std.testing.expectEqual(@as(u8, 0x47), sum256.bytes[0]);
+    try std.testing.expectEqual(@as(u8, 0x13), sum256.bytes[31]);
+    // Process format is still SHA-1 (FormatScope restored after sum).
+    try std.testing.expect(objectFormat() == .sha1);
+    try std.testing.expectEqual(@as(usize, 20), digestSize());
+
+    // Reverse: SHA-1 hasher under process SHA-256 still pads zeros beyond 20.
+    hash_algo.setObjectFormat(.sha256);
+    var h1 = Hasher.initAlgo(.sha1, .blob, 0);
+    const sum1 = h1.sum();
+    try std.testing.expect(std.mem.allEqual(u8, sum1.bytes[20..], 0));
+    try std.testing.expect(!sum1.isZero());
+    // Empty-blob SHA-1 under active SHA-256: eql/isZero ok (pad zeros).
+    try std.testing.expect(sum1.eql(sum1));
 }
 
 test "FormatScope restores previous object format" {

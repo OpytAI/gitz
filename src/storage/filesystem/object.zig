@@ -684,8 +684,11 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             obj.* = MemoryObject.init(self.allocator);
             obj.setType(header.object_type);
             try obj.setContent(aw.written());
-            obj.cached_hash = Hash.fromBytes(hash.slice());
-            _ = deltaobject.newDeltaObject(obj, hash, base, header.length);
+            // Canonicalize once at the boundary for cache identity and DeltaMeta keys.
+            const id = Hash.fromBytes(hash.slice());
+            const base_id = Hash.fromBytes(base.slice());
+            obj.cached_hash = id;
+            _ = deltaobject.newDeltaObject(obj, id, base_id, header.length);
 
             try self.owned.append(self.allocator, obj);
             return obj;
@@ -703,7 +706,13 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             try obj.setContent(src.readerBytes());
             const h = src.hash();
             if (!h.isZero()) obj.cached_hash = Hash.fromBytes(h.slice());
-            if (src.delta) |d| obj.setDeltaMeta(d);
+            if (src.delta) |d| {
+                obj.setDeltaMeta(.{
+                    .base_hash = Hash.fromBytes(d.base_hash.slice()),
+                    .actual_hash = Hash.fromBytes(d.actual_hash.slice()),
+                    .actual_size = d.actual_size,
+                });
+            }
 
             try self.owned.append(self.allocator, obj);
             const sz = if (src.size > 0) src.size else @as(i64, @intCast(src.readerBytes().len));

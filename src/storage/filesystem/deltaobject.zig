@@ -11,6 +11,7 @@ const DeltaMeta = plumbing.DeltaMeta;
 
 /// Attach delta metadata to a MemoryObject (go-git `newDeltaObject`).
 /// Content remains the raw delta payload; type is left as set by the caller.
+/// Hashes are re-canonicalized so dirty pad cannot poison map keys.
 pub fn setDeltaObject(
     obj: *MemoryObject,
     actual_hash: Hash,
@@ -18,8 +19,8 @@ pub fn setDeltaObject(
     actual_size: i64,
 ) void {
     obj.setDeltaMeta(.{
-        .base_hash = base,
-        .actual_hash = actual_hash,
+        .base_hash = Hash.fromBytes(base.slice()),
+        .actual_hash = Hash.fromBytes(actual_hash.slice()),
         .actual_size = actual_size,
     });
 }
