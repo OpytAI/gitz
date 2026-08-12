@@ -453,16 +453,6 @@ fn isStandardHeader(key: []const u8) bool {
 // getCommit / decodeCommit
 // ---------------------------------------------------------------------------
 
-/// Free a heap commit from `getCommit` / walker yield when `heap_owned`.
-/// No-op when `heap_owned == false` (stack/map test tips).
-/// Signature mirrors `freeTree(allocator, t)`.
-pub fn freeCommit(allocator: Allocator, c: *Commit) void {
-    if (!c.heap_owned) return;
-    std.debug.assert(allocator.ptr == c.allocator.ptr);
-    c.deinit();
-    allocator.destroy(c);
-}
-
 /// go-git `GetCommit`.
 pub fn getCommit(allocator: Allocator, s: anytype, h: Hash) !*Commit {
     const o = try s.encodedObject(ObjectType.commit, h);
