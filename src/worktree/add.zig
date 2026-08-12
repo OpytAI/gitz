@@ -273,10 +273,7 @@ pub fn copyFileToStorage(w: anytype, path: []const u8) !Hash {
     const fi = try w.filesystem.lstat(path);
 
     const obj = try w.storer.newEncodedObject();
-    errdefer {
-        obj.deinit();
-        w.storer.allocator.destroy(obj);
-    }
+    errdefer w.storer.discardEncodedObject(obj);
     obj.setType(.blob);
     obj.setSize(fi.size);
 

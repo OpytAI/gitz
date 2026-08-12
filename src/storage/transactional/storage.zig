@@ -57,6 +57,8 @@ pub const Storage = struct {
 
     /// go-git: PackfileWriter iff temporal supports it (memory: false).
     pub const implements_packfile_writer = memory.Storage.implements_packfile_writer;
+    pub const set_encoded_object_takes_ownership = true;
+    pub const new_encoded_object_storage_owned = false;
 
     /// go-git `NewStorage(base, temporal)`.
     ///
@@ -88,6 +90,10 @@ pub const Storage = struct {
 
     pub fn newEncodedObject(self: *Storage) Allocator.Error!*MemoryObject {
         return self.object_storage.newEncodedObject();
+    }
+
+    pub fn discardEncodedObject(self: *Storage, obj: *MemoryObject) void {
+        self.object_storage.discardEncodedObject(obj);
     }
 
     pub fn setEncodedObject(self: *Storage, obj: *MemoryObject) (Allocator.Error || memory.ObjectError)!Hash {

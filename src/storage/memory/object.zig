@@ -19,12 +19,17 @@ const ObjectMap = std.AutoHashMapUnmanaged(Hash, *MemoryObject);
 
 /// In-memory object store (go-git `memory.ObjectStorage`).
 ///
-/// # Ownership
-/// After a successful `setEncodedObject` (including when it returns
-/// `error.UnsupportedObjectType`), the store owns `obj` and the caller must
-/// not free it. On pure `Allocator.Error` before the map insert, the caller
-/// retains ownership.
+/// # Ownership (unified EncodedObject contract)
+/// - `newEncodedObject`: caller owns until successful set or `discardEncodedObject`
+/// - `setEncodedObject`: store owns on success and on `UnsupportedObjectType` (kept in maps)
+/// - pure `Allocator.Error` before the map insert: caller retains
+/// - `encodedObject` / lookup: borrow; store owns
 pub const ObjectStorage = struct {
+    /// `setEncodedObject` takes ownership on success / kept-but-error paths.
+    pub const set_encoded_object_takes_ownership = true;
+    /// `newEncodedObject` does not register storage ownership.
+    pub const new_encoded_object_storage_owned = false;
+
     allocator: Allocator,
     objects: ObjectMap = .empty,
     commits: ObjectMap = .empty,
@@ -52,11 +57,26 @@ pub const ObjectStorage = struct {
     }
 
     /// Heap-create an empty `MemoryObject` (go-git `NewEncodedObject`).
-    /// Caller owns the pointer until `setEncodedObject` takes ownership.
+    /// Caller owns the pointer until `setEncodedObject` or `discardEncodedObject`.
     pub fn newEncodedObject(self: *const ObjectStorage) Allocator.Error!*MemoryObject {
         const obj = try self.allocator.create(MemoryObject);
         obj.* = MemoryObject.init(self.allocator);
         return obj;
+    }
+
+    /// Abandon a caller-owned create that was never successfully set.
+    /// If `obj` is already in the store maps (incorrect double-discard after set),
+    /// remove it first so deinit cannot double-free.
+    pub fn discardEncodedObject(self: *ObjectStorage, obj: *MemoryObject) void {
+        const h = obj.hash();
+        if (self.objects.get(h)) |stored| {
+            if (stored == obj) {
+                _ = self.objects.remove(h);
+                self.removeFromTypeMaps(h, obj.object_type);
+            }
+        }
+        obj.deinit();
+        self.allocator.destroy(obj);
     }
 
     /// Store `obj` and take ownership (go-git `SetEncodedObject`).
@@ -725,4 +745,28 @@ test "ObjectStorage deleteOldObjectPackAndIndex is no-op" {
     var store = ObjectStorage.init(std.testing.allocator);
     defer store.deinit();
     store.deleteOldObjectPackAndIndex(plumbing.ZeroHash, 0);
+}
+
+test "ObjectStorage new discard deinit GPA clean" {
+    var store = ObjectStorage.init(std.testing.allocator);
+    defer store.deinit();
+
+    const obj = try store.newEncodedObject();
+    obj.setType(.blob);
+    _ = try obj.write("discard-me");
+    store.discardEncodedObject(obj);
+    try std.testing.expectEqual(@as(usize, 0), store.count());
+}
+
+test "ObjectStorage set takes ownership; lookup is borrow" {
+    var store = ObjectStorage.init(std.testing.allocator);
+    defer store.deinit();
+
+    const obj = try store.newEncodedObject();
+    obj.setType(.blob);
+    _ = try obj.write("owned-by-store");
+    const h = try store.setEncodedObject(obj);
+    const got = try store.encodedObject(.blob, h);
+    try std.testing.expect(got == obj);
+    try std.testing.expectEqual(@as(usize, 1), store.count());
 }

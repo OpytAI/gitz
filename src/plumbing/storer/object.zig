@@ -32,6 +32,14 @@ const Hash = plumbing.Hash;
 const ObjectType = plumbing.ObjectType;
 const MemoryObject = plumbing.MemoryObject;
 
+/// Discard a never-set create on any storer that implements `discardEncodedObject`.
+///
+/// Prefer the method form (`store.discardEncodedObject(obj)`) at monomorphised
+/// call sites. This free function is for `anytype` helpers.
+pub fn discardEncodedObject(store: anytype, obj: *MemoryObject) void {
+    store.discardEncodedObject(obj);
+}
+
 // ---------------------------------------------------------------------------
 // Type-erased EncodedObjectIter (go-git EncodedObjectIter interface)
 // ---------------------------------------------------------------------------

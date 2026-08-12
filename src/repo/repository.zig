@@ -139,6 +139,11 @@ pub fn RepositoryFor(comptime Storage: type, comptime Fs: type) type {
             self.storer.freeReference(ref);
         }
 
+        /// Abandon a caller-owned EncodedObject create that was never successfully set.
+        pub fn discardEncodedObject(self: *Self, obj: *plumbing.MemoryObject) void {
+            self.storer.discardEncodedObject(obj);
+        }
+
         /// go-git `Repository.References` — unsorted iterator over all references.
         pub fn references(self: *const Self) !Storage.ReferenceIter {
             return self.storer.iterReferences();

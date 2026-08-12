@@ -243,10 +243,7 @@ fn modeFromFileInfo(info: fs_pkg.FileInfo) FileMode {
 
 fn storeBlob(s: anytype, content: []const u8) !Hash {
     const obj = try s.newEncodedObject();
-    errdefer {
-        obj.deinit();
-        s.allocator.destroy(obj);
-    }
+    errdefer s.discardEncodedObject(obj);
     obj.setType(.blob);
     try obj.setContent(content);
     return try s.setEncodedObject(obj);
@@ -329,10 +326,7 @@ fn buildCommitObject(
     }
 
     const obj = try w.storer.newEncodedObject();
-    errdefer {
-        obj.deinit();
-        w.storer.allocator.destroy(obj);
-    }
+    errdefer w.storer.discardEncodedObject(obj);
     try c.encode(obj);
     // Clear parent_hashes before Commit would free it — we own via defer.
     c.parent_hashes = &.{};
@@ -464,16 +458,12 @@ fn BuildTreeHelper(comptime Storage: type) type {
             t.sortEntries();
 
             const o = try self.s.newEncodedObject();
-            errdefer {
-                o.deinit();
-                self.s.allocator.destroy(o);
-            }
+            errdefer self.s.discardEncodedObject(o);
             try t.encode(o);
 
             const hash = o.hash();
             if (self.s.hasEncodedObject(hash)) |_| {
-                o.deinit();
-                self.s.allocator.destroy(o);
+                self.s.discardEncodedObject(o);
                 return hash;
             } else |_| {
                 return try self.s.setEncodedObject(o);

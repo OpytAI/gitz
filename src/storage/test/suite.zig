@@ -155,12 +155,48 @@ pub fn testSetEncodedObjectInvalid(s: anytype) !void {
     const o = try s.storer.newEncodedObject();
     o.setType(.ref_delta);
     // go-git asserts err != nil (memory: UnsupportedObjectType; filesystem: InvalidType).
+    // Memory keeps the object on UnsupportedObjectType; FS InvalidType is pre-write
+    // so the caller still owns and must discard.
     const result = s.storer.setEncodedObject(o);
     if (comptime isErrorUnion(@TypeOf(result))) {
-        if (result) |_| return error.TestUnexpectedResult else |_| {}
+        if (result) |_| {
+            return error.TestUnexpectedResult;
+        } else |_| {
+            const h = o.hash();
+            if (s.storer.hasEncodedObject(h)) |_| {
+                // Storage retained the object (memory kept-but-error path).
+            } else |_| {
+                if (comptime @hasDecl(@TypeOf(s.storer.*), "discardEncodedObject")) {
+                    s.storer.discardEncodedObject(o);
+                } else {
+                    o.deinit();
+                    s.allocator.destroy(o);
+                }
+            }
+        }
     } else {
         return error.TestUnexpectedResult;
     }
+}
+
+/// GPA: new + discard without set; storage deinit must not double-free.
+pub fn testDiscardEncodedObjectNeverSet(s: anytype) !void {
+    if (comptime !@hasDecl(@TypeOf(s.storer.*), "discardEncodedObject")) return;
+    const o = try s.storer.newEncodedObject();
+    o.setType(.blob);
+    _ = try o.write("discard-suite");
+    s.storer.discardEncodedObject(o);
+}
+
+/// GPA: lookup returns a borrow; consumer must not destroy; storage deinit frees.
+pub fn testEncodedObjectLookupIsBorrow(s: anytype) !void {
+    const obj = try s.newTypedObject(.blob);
+    _ = try obj.write("borrow-me");
+    const h = try s.storer.setEncodedObject(obj);
+    const got = try s.storer.encodedObject(.blob, h);
+    try objectEquals(got, obj);
+    // Memory reuses the set pointer; FS may reload a storage-owned clone from disk.
+    // Either way the consumer must not destroy — storage deinit owns cleanup.
 }
 
 pub fn testIterEncodedObjects(s: anytype) !void {
@@ -572,7 +608,7 @@ pub fn testDeltaObjectStorer(s: anytype) !void {
 // Runner: each test gets a fresh Storage (go-git SetUpTest)
 // ---------------------------------------------------------------------------
 
-/// All go-git BaseStorageSuite case names (23).
+/// All BaseStorageSuite case names (go-git 23 + ownership GPA cases).
 pub const Case = enum {
     set_encoded_object_and_encoded_object,
     set_encoded_object_invalid,
@@ -597,6 +633,8 @@ pub const Case = enum {
     set_config_invalid,
     module,
     delta_object_storer,
+    discard_encoded_object_never_set,
+    encoded_object_lookup_is_borrow,
 
     pub fn name(self: Case) []const u8 {
         return switch (self) {
@@ -623,11 +661,13 @@ pub const Case = enum {
             .set_config_invalid => "TestSetConfigInvalid",
             .module => "TestModule",
             .delta_object_storer => "TestDeltaObjectStorer",
+            .discard_encoded_object_never_set => "TestDiscardEncodedObjectNeverSet",
+            .encoded_object_lookup_is_borrow => "TestEncodedObjectLookupIsBorrow",
         };
     }
 };
 
-/// Ordered suite cases matching go-git BaseStorageSuite (23).
+/// Ordered suite cases (go-git BaseStorageSuite + ownership GPA).
 pub const suite_cases = [_]Case{
     .set_encoded_object_and_encoded_object,
     .set_encoded_object_invalid,
@@ -652,6 +692,8 @@ pub const suite_cases = [_]Case{
     .set_config_invalid,
     .module,
     .delta_object_storer,
+    .discard_encoded_object_never_set,
+    .encoded_object_lookup_is_borrow,
 };
 
 /// Dispatch one suite case against fixture `s` (`*BaseStorageSuite(T)`).
@@ -680,6 +722,8 @@ pub fn runCase(s: anytype, case: Case) !void {
         .set_config_invalid => try testSetConfigInvalid(s),
         .module => try testModule(s),
         .delta_object_storer => try testDeltaObjectStorer(s),
+        .discard_encoded_object_never_set => try testDiscardEncodedObjectNeverSet(s),
+        .encoded_object_lookup_is_borrow => try testEncodedObjectLookupIsBorrow(s),
     }
 }
 
@@ -739,6 +783,6 @@ test "BaseStorageSuite (memory)" {
 }
 
 test "suite case count" {
-    // All 23 go-git BaseStorageSuite methods (including capability-gated members).
-    try testing.expectEqual(@as(usize, 23), suite_cases.len);
+    // 23 go-git BaseStorageSuite methods + 2 ownership GPA cases.
+    try testing.expectEqual(@as(usize, 25), suite_cases.len);
 }

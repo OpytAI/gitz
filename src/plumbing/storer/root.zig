@@ -14,9 +14,10 @@
 //!
 //! | Method | Role |
 //! |--------|------|
-//! | `newEncodedObject(allocator)` | Return a new empty `*MemoryObject` (heap; caller owns until set) |
-//! | `setEncodedObject(obj)` | Save object; return its `plumbing.Hash` |
-//! | `encodedObject(object_type, hash)` | Load by type + hash; `AnyObject` matches any type |
+//! | `newEncodedObject()` | Return a new empty `*MemoryObject` (heap; caller owns until set or discard) |
+//! | `setEncodedObject(obj)` | Save object; storage takes ownership on success; return `plumbing.Hash` |
+//! | `discardEncodedObject(obj)` | Abandon a never-set create (safe with storage deinit) |
+//! | `encodedObject(object_type, hash)` | Load by type + hash (borrow; storage owns); `AnyObject` matches any type |
 //! | `iterEncodedObjects(object_type)` | Iterator over objects of the given type |
 //! | `hasEncodedObject(hash)` | `error.ObjectNotFound` if missing, else success |
 //! | `encodedObjectSize(hash)` | Plaintext size of the encoded object body |
@@ -93,6 +94,7 @@ pub const MultiEncodedObjectIter = object_mod.MultiEncodedObjectIter;
 pub const newMultiEncodedObjectIter = object_mod.newMultiEncodedObjectIter;
 pub const forEachIterator = object_mod.forEachIterator;
 pub const forEachEncodedObject = object_mod.forEachEncodedObject;
+pub const discardEncodedObject = object_mod.discardEncodedObject;
 
 // --- reference.zig (go-git reference.go) ---
 pub const MaxResolveRecursion = reference_mod.MaxResolveRecursion;

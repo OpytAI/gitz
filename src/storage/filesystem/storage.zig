@@ -97,6 +97,10 @@ pub fn Storage(comptime Fs: type) type {
         pub const set_index_can_fail = true;
         /// `reference()` returns owned name/target strings (free with freeRef pattern).
         pub const reference_returns_owned = true;
+        /// `setEncodedObject` takes ownership on success.
+        pub const set_encoded_object_takes_ownership = true;
+        /// `newEncodedObject` does not register storage ownership.
+        pub const new_encoded_object_storage_owned = false;
 
         pub const ObjectHashIter = ObjectHashIterT;
         pub const ReferenceIter = reference_mod.ReferenceSliceIter;
@@ -208,6 +212,11 @@ pub fn Storage(comptime Fs: type) type {
             const obj = try self.object_storage.newEncodedObject();
             obj.hash_algo = self.hash_algo;
             return obj;
+        }
+
+        /// Abandon a caller-owned create that was never successfully set.
+        pub fn discardEncodedObject(self: *Self, obj: *MemoryObject) void {
+            self.object_storage.discardEncodedObject(obj);
         }
 
         pub fn setEncodedObject(self: *Self, obj: *MemoryObject) object_mod.Error!Hash {

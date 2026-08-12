@@ -72,10 +72,19 @@ pub fn FilesystemPackImportSessionFor(comptime Fs: type) type {
             const checksum = try self.input.finish(sink);
             const object_count = self.staging.count();
 
+            // Clone into destination: FS setEncodedObject takes ownership, and
+            // staging still owns the original pointers until importer deinit.
             var objects = try self.staging.iterEncodedObjects(.any);
             defer objects.deinit();
             while (objects.next()) |obj| {
-                _ = try self.destination.setEncodedObject(obj);
+                const copy = try cloneMemoryObject(self.allocator, obj);
+                var transferred = false;
+                errdefer if (!transferred) {
+                    copy.deinit();
+                    self.allocator.destroy(copy);
+                };
+                _ = try self.destination.setEncodedObject(copy);
+                transferred = true;
             } else |err| if (err != error.EndOfStream) return err;
 
             try self.destination.commitPreparedReferenceUpdates(updates, &prepared);
@@ -120,4 +129,23 @@ fn FilesystemImportTarget(comptime Fs: type) type {
             return self.staging.setEncodedObject(obj);
         }
     };
+}
+
+fn cloneMemoryObject(allocator: Allocator, src: *const plumbing.MemoryObject) Allocator.Error!*plumbing.MemoryObject {
+    const obj = try allocator.create(plumbing.MemoryObject);
+    errdefer allocator.destroy(obj);
+    obj.* = plumbing.MemoryObject.init(allocator);
+    errdefer obj.deinit();
+    obj.setType(src.object_type);
+    obj.hash_algo = src.hash_algo;
+    if (src.content.items.len > 0) {
+        _ = try obj.write(src.content.items);
+    } else {
+        obj.size = src.size;
+    }
+    if (!src.cached_hash.isZero() and obj.content.items.len == src.content.items.len) {
+        obj.cached_hash = src.cached_hash;
+    }
+    obj.delta = src.delta;
+    return obj;
 }

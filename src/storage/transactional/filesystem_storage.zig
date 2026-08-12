@@ -33,6 +33,9 @@ pub fn StorageFor(comptime Fs: type) type {
         nested: std.ArrayListUnmanaged(*Self) = .empty,
 
         pub const implements_packfile_writer = true;
+        /// Unified EncodedObject contract (set adopts; new does not register).
+        pub const set_encoded_object_takes_ownership = true;
+        pub const new_encoded_object_storage_owned = false;
         pub const Index = Store.Index;
         pub const Config = Store.Config;
 
@@ -54,6 +57,12 @@ pub fn StorageFor(comptime Fs: type) type {
 
         pub fn newEncodedObject(self: *Self) Allocator.Error!*MemoryObject {
             return self.base.newEncodedObject();
+        }
+
+        /// Discard a never-set create (new does not register on base/temporal).
+        pub fn discardEncodedObject(self: *Self, obj: *MemoryObject) void {
+            // Prefer temporal (post-set mis-use); never-set objects free either way.
+            self.temporal.discardEncodedObject(obj);
         }
 
         pub fn setEncodedObject(self: *Self, obj: *MemoryObject) anyerror!Hash {
@@ -228,15 +237,25 @@ pub fn StorageFor(comptime Fs: type) type {
             return child;
         }
 
-        /// Merge the filesystem temporal store into base without transferring
-        /// ownership of temporal pointers.
+        /// Merge the filesystem temporal store into base.
+        ///
+        /// Objects are **cloned** so base and temporal each own independent
+        /// `*MemoryObject` values (matches memory transactional commit). After
+        /// unify, FS `setEncodedObject` takes ownership — passing the temporal
+        /// pointer would double-free.
         pub fn commit(self: *Self) anyerror!void {
             var objects = try self.temporal.iterEncodedObjects(.any);
             defer objects.deinit();
             while (objects.next()) |obj| {
-                // Filesystem SetEncodedObject serializes immediately and does
-                // not retain the pointer. The temporal store keeps ownership.
-                _ = try self.base.setEncodedObject(obj);
+                const copy = try cloneMemoryObject(self.base.allocator, obj);
+                // Base takes ownership of `copy` on success; free on pure failure.
+                var transferred = false;
+                errdefer if (!transferred) {
+                    copy.deinit();
+                    self.base.allocator.destroy(copy);
+                };
+                _ = try self.base.setEncodedObject(copy);
+                transferred = true;
             } else |err| if (err != error.EndOfStream) return err;
 
             var deleted = self.deleted.keyIterator();
@@ -274,6 +293,25 @@ pub fn StorageFor(comptime Fs: type) type {
 
 pub const StorageMem = StorageFor(fs_pkg.Mem);
 pub const StorageOs = StorageFor(fs_pkg.Os);
+
+fn cloneMemoryObject(allocator: Allocator, src: *const MemoryObject) Allocator.Error!*MemoryObject {
+    const obj = try allocator.create(MemoryObject);
+    errdefer allocator.destroy(obj);
+    obj.* = MemoryObject.init(allocator);
+    errdefer obj.deinit();
+    obj.setType(src.object_type);
+    obj.hash_algo = src.hash_algo;
+    if (src.content.items.len > 0) {
+        _ = try obj.write(src.content.items);
+    } else {
+        obj.size = src.size;
+    }
+    if (!src.cached_hash.isZero() and obj.content.items.len == src.content.items.len) {
+        obj.cached_hash = src.cached_hash;
+    }
+    obj.delta = src.delta;
+    return obj;
+}
 
 fn cloneConfig(allocator: Allocator, src: *const filesystem.Config) Allocator.Error!*filesystem.Config {
     const dst = try allocator.create(filesystem.Config);
@@ -341,4 +379,111 @@ test "filesystem transaction commits temporal objects and exposes PackfileWriter
     try std.testing.expectError(error.ObjectNotFound, base.hasEncodedObject(hash));
     try tx.commit();
     try base.hasEncodedObject(hash);
+}
+
+test "filesystem transaction clone-on-commit independent ownership GPA" {
+    const allocator = std.testing.allocator;
+    defer @import("utils/sync").deinitPools(allocator);
+    var base_fs = try fs_pkg.Mem.init(allocator);
+    defer base_fs.deinit();
+    var temporal_fs = try fs_pkg.Mem.init(allocator);
+    defer temporal_fs.deinit();
+
+    const base = try filesystem.newStorage(allocator, &base_fs, null);
+    defer {
+        base.deinit();
+        allocator.destroy(base);
+    }
+    const temporal = try filesystem.newStorage(allocator, &temporal_fs, null);
+    defer {
+        temporal.deinit();
+        allocator.destroy(temporal);
+    }
+    try base.initLayout();
+    try temporal.initLayout();
+
+    var tx = StorageMem.init(base, temporal);
+    defer tx.deinit();
+
+    const obj = try tx.newEncodedObject();
+    obj.setType(.blob);
+    _ = try obj.write("clone-on-commit");
+    const hash = try tx.setEncodedObject(obj);
+
+    // Still only in temporal before commit.
+    try std.testing.expectError(error.ObjectNotFound, base.hasEncodedObject(hash));
+    try temporal.hasEncodedObject(hash);
+
+    try tx.commit();
+
+    // Both stores have the object content; deinit of each frees independent pointers.
+    try base.hasEncodedObject(hash);
+    try temporal.hasEncodedObject(hash);
+    const from_base = try base.encodedObject(.blob, hash);
+    const from_temp = try temporal.encodedObject(.blob, hash);
+    try std.testing.expect(from_base != from_temp);
+    try std.testing.expectEqualStrings("clone-on-commit", from_base.readerBytes());
+}
+
+test "filesystem transaction discard never-set create" {
+    const allocator = std.testing.allocator;
+    defer @import("utils/sync").deinitPools(allocator);
+    var base_fs = try fs_pkg.Mem.init(allocator);
+    defer base_fs.deinit();
+    var temporal_fs = try fs_pkg.Mem.init(allocator);
+    defer temporal_fs.deinit();
+
+    const base = try filesystem.newStorage(allocator, &base_fs, null);
+    defer {
+        base.deinit();
+        allocator.destroy(base);
+    }
+    const temporal = try filesystem.newStorage(allocator, &temporal_fs, null);
+    defer {
+        temporal.deinit();
+        allocator.destroy(temporal);
+    }
+    try base.initLayout();
+    try temporal.initLayout();
+
+    var tx = StorageMem.init(base, temporal);
+    defer tx.deinit();
+
+    const obj = try tx.newEncodedObject();
+    obj.setType(.blob);
+    _ = try obj.write("abandoned");
+    tx.discardEncodedObject(obj);
+}
+
+test "filesystem transaction rollback leaves base empty" {
+    const allocator = std.testing.allocator;
+    defer @import("utils/sync").deinitPools(allocator);
+    var base_fs = try fs_pkg.Mem.init(allocator);
+    defer base_fs.deinit();
+    var temporal_fs = try fs_pkg.Mem.init(allocator);
+    defer temporal_fs.deinit();
+
+    const base = try filesystem.newStorage(allocator, &base_fs, null);
+    defer {
+        base.deinit();
+        allocator.destroy(base);
+    }
+    const temporal = try filesystem.newStorage(allocator, &temporal_fs, null);
+    defer {
+        temporal.deinit();
+        allocator.destroy(temporal);
+    }
+    try base.initLayout();
+    try temporal.initLayout();
+
+    var tx = StorageMem.init(base, temporal);
+    defer tx.deinit();
+
+    const obj = try tx.newEncodedObject();
+    obj.setType(.blob);
+    _ = try obj.write("rolled-back");
+    const hash = try tx.setEncodedObject(obj);
+    // No commit: temporal deinit frees its objects; base never saw them.
+    try std.testing.expectError(error.ObjectNotFound, base.hasEncodedObject(hash));
+    try temporal.hasEncodedObject(hash);
 }

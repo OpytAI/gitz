@@ -161,6 +161,11 @@ pub const PlainRepository = struct {
         dotgit.freeRef(self.allocator, ref);
     }
 
+    /// Abandon a caller-owned EncodedObject create that was never successfully set.
+    pub fn discardEncodedObject(self: *PlainRepository, obj: *plumbing.MemoryObject) void {
+        self.storer.discardEncodedObject(obj);
+    }
+
     pub fn head(self: *PlainRepository) !Reference {
         return self.reference(plumbing.HEAD, true);
     }

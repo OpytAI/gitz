@@ -141,6 +141,10 @@ pub const Storage = struct {
     pub const set_index_can_fail = false;
     /// Memory refs borrow map keys; suite must not free them.
     pub const reference_returns_owned = false;
+    /// `setEncodedObject` takes ownership on success / kept-but-error paths.
+    pub const set_encoded_object_takes_ownership = true;
+    /// `newEncodedObject` does not register storage ownership.
+    pub const new_encoded_object_storage_owned = false;
     pub const ObjectHashIter = ObjectSnapshotIter;
     pub const ReferenceIter = ReferenceSliceIter;
 
@@ -201,6 +205,11 @@ pub const Storage = struct {
         const obj = try self.object_storage.newEncodedObject();
         obj.hash_algo = self.hash_algo;
         return obj;
+    }
+
+    /// Abandon a caller-owned create that was never successfully set.
+    pub fn discardEncodedObject(self: *Storage, obj: *MemoryObject) void {
+        self.object_storage.discardEncodedObject(obj);
     }
 
     pub fn setEncodedObject(self: *Storage, obj: *MemoryObject) (Allocator.Error || ObjectError)!Hash {

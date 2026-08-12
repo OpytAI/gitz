@@ -578,6 +578,7 @@ const testing = std.testing;
 
 fn storeBlob(sto: *memory.Storage, content: []const u8) !Hash {
     const obj = try sto.newEncodedObject();
+    errdefer sto.discardEncodedObject(obj);
     obj.setType(.blob);
     _ = try obj.write(content);
     return try sto.setEncodedObject(obj);
@@ -589,6 +590,7 @@ fn storeTreeOne(gpa: Allocator, sto: *memory.Storage, name: []const u8, mode: fi
     try t.appendEntry(name, mode, blob);
     t.sortEntries();
     const obj = try sto.newEncodedObject();
+    errdefer sto.discardEncodedObject(obj);
     try t.encode(obj);
     return try sto.setEncodedObject(obj);
 }
@@ -606,6 +608,7 @@ fn storeCommit(gpa: Allocator, sto: *memory.Storage, tree_h: Hash, parent: ?Hash
         c.parent_hashes = parents;
     }
     const obj = try sto.newEncodedObject();
+    errdefer sto.discardEncodedObject(obj);
     try c.encode(obj);
     return try sto.setEncodedObject(obj);
 }

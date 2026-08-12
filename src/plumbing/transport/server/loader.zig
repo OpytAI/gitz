@@ -85,6 +85,7 @@ pub const RepoStorer = struct {
         encodedObject: *const fn (ptr: *anyopaque, t: ObjectType, h: Hash) anyerror!*MemoryObject,
         newEncodedObject: *const fn (ptr: *anyopaque) anyerror!*MemoryObject,
         setEncodedObject: *const fn (ptr: *anyopaque, obj: *MemoryObject) anyerror!Hash,
+        discardEncodedObject: *const fn (ptr: *anyopaque, obj: *MemoryObject) void,
         setReference: *const fn (ptr: *anyopaque, ref: Reference) anyerror!void,
         reference: *const fn (ptr: *anyopaque, name: ReferenceName) anyerror!Reference,
         freeReference: *const fn (ptr: *anyopaque, ref: Reference) void,
@@ -102,6 +103,11 @@ pub const RepoStorer = struct {
 
     pub fn setEncodedObject(self: RepoStorer, obj: *MemoryObject) anyerror!Hash {
         return self.vtable.setEncodedObject(self.ptr, obj);
+    }
+
+    /// Abandon a caller-owned create that was never successfully set.
+    pub fn discardEncodedObject(self: RepoStorer, obj: *MemoryObject) void {
+        self.vtable.discardEncodedObject(self.ptr, obj);
     }
 
     pub fn setReference(self: RepoStorer, ref: Reference) anyerror!void {
@@ -177,6 +183,15 @@ pub const RepoStorer = struct {
                 const s: *T = @ptrCast(@alignCast(ptr));
                 return s.setEncodedObject(obj);
             }
+            fn discardEncodedObjectFn(ptr: *anyopaque, obj: *MemoryObject) void {
+                const s: *T = @ptrCast(@alignCast(ptr));
+                if (comptime @hasDecl(T, "discardEncodedObject")) {
+                    s.discardEncodedObject(obj);
+                } else {
+                    obj.deinit();
+                    s.allocator.destroy(obj);
+                }
+            }
             fn setReferenceFn(ptr: *anyopaque, ref: Reference) anyerror!void {
                 const s: *T = @ptrCast(@alignCast(ptr));
                 return s.setReference(ref);
@@ -213,6 +228,7 @@ pub const RepoStorer = struct {
                 .encodedObject = encodedObjectFn,
                 .newEncodedObject = newEncodedObjectFn,
                 .setEncodedObject = setEncodedObjectFn,
+                .discardEncodedObject = discardEncodedObjectFn,
                 .setReference = setReferenceFn,
                 .reference = referenceFn,
                 .freeReference = freeReferenceFn,

@@ -61,6 +61,12 @@ fn destroyPackEntry(allocator: Allocator, entry: *PackCacheEntry) void {
 
 /// go-git `filesystem.ObjectStorage` monomorphised over billy-style `Fs`.
 /// Default export is `ObjectStorage` = Mem specialisation (see bottom of file).
+///
+/// # EncodedObject ownership (unified with memory)
+/// - `newEncodedObject`: caller owns until successful `setEncodedObject` or `discardEncodedObject`
+/// - `setEncodedObject`: storage takes ownership on success; pure pre-write failures leave caller ownership
+/// - `encodedObject` / loads: borrow; storage owns
+/// - `discardEncodedObject`: abandon a never-set create (safe with storage deinit)
 pub fn ObjectStorageFor(comptime Fs: type) type {
     const DotGit = dotgit.DotGitFor(Fs);
     const PackWriter = dotgit.PackWriterFor(Fs);
@@ -69,11 +75,16 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
     return struct {
         const Self = @This();
 
+        /// `setEncodedObject` adopts the pointer on success.
+        pub const set_encoded_object_takes_ownership = true;
+        /// `newEncodedObject` does not register storage ownership.
+        pub const new_encoded_object_storage_owned = false;
+
         allocator: Allocator,
         options: Options = .{},
         object_cache: ?*ObjectLru = null,
         dir: *DotGit,
-        /// Heap objects created by this storage (cache does not free them).
+        /// Heap objects owned by this storage (loads + successful sets; cache does not free them).
         owned: std.ArrayListUnmanaged(*MemoryObject) = .empty,
         /// Pack hash → decoded idx (go-git `index map[Hash]idxfile.Index`).
         /// `null` means not loaded yet; empty map means loaded with zero packs.
@@ -228,15 +239,17 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
             }
         }
 
-        /// go-git `NewEncodedObject`.
+        /// go-git `NewEncodedObject` — caller owns until set or discard.
         pub fn newEncodedObject(self: *Self) Allocator.Error!*MemoryObject {
             const obj = try self.allocator.create(MemoryObject);
             obj.* = MemoryObject.init(self.allocator);
-            try self.owned.append(self.allocator, obj);
             return obj;
         }
 
-        /// go-git `SetEncodedObject` — write loose object; caller retains ownership of `obj`.
+        /// go-git `SetEncodedObject` — write loose object; storage takes ownership on success.
+        ///
+        /// Delta types fail before any write (`error.InvalidType`); caller retains.
+        /// On successful write, `obj` is registered in `owned` and must not be freed by the caller.
         pub fn setEncodedObject(self: *Self, obj: *MemoryObject) Error!Hash {
             if (obj.object_type == .ofs_delta or obj.object_type == .ref_delta) {
                 return error.InvalidType;
@@ -251,7 +264,25 @@ pub fn ObjectStorageFor(comptime Fs: type) type {
                 _ = try ow.write(content);
             }
             try ow.close();
+            // Adopt after durable write so pure write failures leave caller ownership.
+            try ensureOwned(self, obj);
             return obj.hash();
+        }
+
+        /// Abandon a caller-owned create that was never successfully set.
+        /// Safe if `obj` is not in `owned`; removes then destroys if present.
+        pub fn discardEncodedObject(self: *Self, obj: *MemoryObject) void {
+            removeOwned(self, obj);
+            obj.deinit();
+            self.allocator.destroy(obj);
+        }
+
+        /// Register `obj` in `owned` if not already tracked (set / adopt paths).
+        fn ensureOwned(self: *Self, obj: *MemoryObject) Allocator.Error!void {
+            for (self.owned.items) |o| {
+                if (o == obj) return;
+            }
+            try self.owned.append(self.allocator, obj);
         }
 
         /// go-git `ObjectStorage.LazyWriter` result.

@@ -262,6 +262,7 @@ fn removeIndexFiles(w: anytype) !void {
 
 fn storeBlob(sto: *memory.Storage, content: []const u8) !Hash {
     const o = try sto.newEncodedObject();
+    errdefer sto.discardEncodedObject(o);
     o.setType(.blob);
     try o.setContent(content);
     return try sto.setEncodedObject(o);
@@ -279,6 +280,7 @@ fn storeTree(sto: *memory.Storage, allocator: Allocator, entries: []const struct
     }
     tree.sortEntries();
     const o = try sto.newEncodedObject();
+    errdefer sto.discardEncodedObject(o);
     try tree.encode(o);
     return try sto.setEncodedObject(o);
 }
@@ -292,6 +294,7 @@ fn storeCommit(sto: *memory.Storage, allocator: Allocator, tree_h: Hash, msg: []
     // Commit.deinit always frees message when non-empty.
     c.message = try allocator.dupe(u8, msg);
     const o = try sto.newEncodedObject();
+    errdefer sto.discardEncodedObject(o);
     try c.encode(o);
     return try sto.setEncodedObject(o);
 }

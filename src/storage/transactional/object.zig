@@ -14,6 +14,10 @@ const MemoryObject = plumbing.MemoryObject;
 
 /// go-git `transactional.ObjectStorage`.
 pub const ObjectStorage = struct {
+    /// Unified contract: set takes ownership (temporal owns after set).
+    pub const set_encoded_object_takes_ownership = true;
+    pub const new_encoded_object_storage_owned = false;
+
     base: *memory.Storage,
     temporal: *memory.Storage,
 
@@ -59,8 +63,15 @@ pub const ObjectStorage = struct {
     }
 
     /// go-git `NewEncodedObject` — factory via base (go-git embeds base storer).
+    /// Caller owns until set (on temporal) or discard.
     pub fn newEncodedObject(self: *ObjectStorage) Allocator.Error!*MemoryObject {
         return self.base.newEncodedObject();
+    }
+
+    /// Discard a never-set create. New objects are not registered on base/temporal.
+    pub fn discardEncodedObject(self: *ObjectStorage, obj: *MemoryObject) void {
+        // Prefer temporal remove (if incorrectly discarded after set); else base; else free.
+        self.temporal.discardEncodedObject(obj);
     }
 
     /// go-git `AddAlternate` — temporal (writes).
@@ -328,4 +339,50 @@ test "write object not in base until Commit" {
 
     try os.commit();
     try base.hasEncodedObject(h);
+}
+
+test "memory transactional discard never-set create GPA" {
+    const allocator = std.testing.allocator;
+    const base = try memory.newStorage(allocator);
+    defer {
+        base.deinit();
+        allocator.destroy(base);
+    }
+    const temporal = try memory.newStorage(allocator);
+    defer {
+        temporal.deinit();
+        allocator.destroy(temporal);
+    }
+
+    var os = ObjectStorage.init(base, temporal);
+    const blob = try os.newEncodedObject();
+    blob.setType(.blob);
+    _ = try blob.write("never-set");
+    os.discardEncodedObject(blob);
+}
+
+test "memory transactional commit clones independent pointers" {
+    const allocator = std.testing.allocator;
+    const base = try memory.newStorage(allocator);
+    defer {
+        base.deinit();
+        allocator.destroy(base);
+    }
+    const temporal = try memory.newStorage(allocator);
+    defer {
+        temporal.deinit();
+        allocator.destroy(temporal);
+    }
+
+    var os = ObjectStorage.init(base, temporal);
+    const blob = try os.newEncodedObject();
+    blob.setType(.blob);
+    _ = try blob.write("tx-clone");
+    const h = try os.setEncodedObject(blob);
+    try os.commit();
+
+    const from_base = try base.encodedObject(.blob, h);
+    const from_temp = try temporal.encodedObject(.blob, h);
+    try std.testing.expect(from_base != from_temp);
+    try std.testing.expectEqualStrings("tx-clone", from_base.readerBytes());
 }
