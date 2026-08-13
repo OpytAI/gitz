@@ -15,7 +15,12 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from simple_yaml import YamlError, load, load_path
 
-ALLOWED_SRC_ROOT_FILES = {"root.zig", "BUILD.bazel", "BUILD"}
+ALLOWED_SRC_ROOT_FILES = {
+    "root.zig",
+    "ownership_gpa_test.zig",
+    "BUILD.bazel",
+    "BUILD",
+}
 VALID_STATUSES = frozenset({"required", "excluded", "test_only", "deferred"})
 ENFORCED_STATUSES = frozenset({"required", "deferred"})
 

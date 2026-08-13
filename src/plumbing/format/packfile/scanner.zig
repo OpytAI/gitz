@@ -650,7 +650,8 @@ const expected_crc_ofs = [_]u32{
 };
 
 // go-git scanner_test.go expectedHeadersREF / expectedCRCREF
-const expected_headers_ref = [_]ObjectHeader{
+fn expectedHeadersRef() [31]ObjectHeader {
+    return .{
     .{ .object_type = .commit, .offset = 12, .length = 254 },
     .{ .object_type = .ref_delta, .offset = 186, .length = 93, .reference = plumbing.newHash("e8d3ffab552895c19b9fcf7aa264d277cde33881") },
     .{ .object_type = .commit, .offset = 304, .length = 242 },
@@ -682,7 +683,8 @@ const expected_headers_ref = [_]ObjectHeader{
     .{ .object_type = .tree, .offset = 85335, .length = 110 },
     .{ .object_type = .ref_delta, .offset = 85448, .length = 8, .reference = plumbing.newHash("eba74343e2f15d62adedfd8c883ee0262b5c8021") },
     .{ .object_type = .tree, .offset = 85485, .length = 73 },
-};
+    };
+}
 
 const expected_crc_ref = [_]u32{
     0xaa07ba4b,
@@ -795,6 +797,7 @@ test "TestNextObjectHeaderWithOutReadObject" {
 
 // go-git ScannerSuite.TestNextObjectHeaderREFDelta + CRC + Checksum
 test "TestNextObjectHeaderREFDelta" {
+    const expected_headers_ref = expectedHeadersRef();
     var sc = Scanner.initSeekable(ref_delta_pack.data());
     _, const objects = try sc.header();
     try std.testing.expectEqual(@as(u32, 31), objects);
@@ -820,6 +823,7 @@ test "TestNextObjectHeaderREFDelta" {
 
 // go-git ScannerSuite.TestNextObjectHeaderWithOutReadObject (REF-delta pack)
 test "TestNextObjectHeaderWithOutReadObject REF-delta" {
+    const expected_headers_ref = expectedHeadersRef();
     var sc = Scanner.initSeekable(ref_delta_pack.data());
     _, const objects = try sc.header();
 
@@ -930,6 +934,7 @@ test "TestSeekObjectHeaderNonSeekable" {
 // go-git ScannerSuite.TestNextObjectHeaderWithOutReadObjectNonSeekable.
 // Header/offset/type and checksum parity on a non-seekable stream.
 test "TestNextObjectHeaderWithOutReadObjectNonSeekable" {
+    const expected_headers_ref = expectedHeadersRef();
     const pack = ref_delta_pack.data();
     var r: IoReader = .fixed(pack);
     var sc = Scanner.init(&r);
