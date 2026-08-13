@@ -8,6 +8,7 @@ exports_files([
     "ARCHITECTURE.md",
     "README.md",
     "LICENSE",
+    "NOTICE",
 ])
 
 # Convenience alias for the core library.
