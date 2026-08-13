@@ -138,6 +138,12 @@ pub const Mem = struct {
         return root_mod.AllCapabilities;
     }
 
+    /// Memory writes are immediately visible; retained for the shared
+    /// durability API used by filesystem storage.
+    pub fn syncRoot(_: *Mem) Error!void {}
+    pub fn syncDir(_: *Mem, _: []const u8) Error!void {}
+    pub fn syncTree(_: *Mem) Error!void {}
+
     pub fn chmod(self: *Mem, filename: []const u8, mode: u32) (Allocator.Error || Error)!void {
         const abs = try self.toAbs(filename);
         defer self.allocator.free(abs);
@@ -714,6 +720,9 @@ pub const MemFile = struct {
 
     pub fn lock(_: *MemFile) Error!void {}
     pub fn unlock(_: *MemFile) Error!void {}
+    pub fn sync(self: *MemFile) Error!void {
+        if (self.closed) return error.Closed;
+    }
 
     pub fn close(self: *MemFile) Error!void {
         if (self.closed) return error.Closed;

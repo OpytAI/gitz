@@ -607,6 +607,7 @@ pub fn DotGit(comptime Fs: type) type {
                 _ = try tmp.write(line);
                 _ = try tmp.write("\n");
             }
+            try tmp.sync();
             try tmp.close();
 
             try self.rewritePackedRefsWhileLocked(tmp_name, packed_refs_path);
@@ -712,7 +713,7 @@ pub fn DotGit(comptime Fs: type) type {
 
                 // Path is the objects dir; chroot to parent (repo root).
                 const parent = pathDir(path);
-                // Dupe parent so chroot's toAbs can complete before path is freed... 
+                // Dupe parent so chroot's toAbs can complete before path is freed...
                 // path still live for this iteration; pathDir is a view into path.
                 const chrooted = try alt_fs.chroot(parent);
 
@@ -763,6 +764,7 @@ pub fn DotGit(comptime Fs: type) type {
 
             try self.checkReferenceAndTruncate(&f, old);
             _ = try f.write(content);
+            try f.sync();
         }
 
         fn checkReferenceAndTruncate(self: *Self, f: *File, old: ?Reference) !void {
@@ -989,6 +991,7 @@ pub fn DotGit(comptime Fs: type) type {
             }
 
             _ = try tmp.write(out.items);
+            try tmp.sync();
             try tmp.close();
 
             if (!found) {
@@ -1009,6 +1012,7 @@ pub fn DotGit(comptime Fs: type) type {
                     var dst = try self.fs.create(pr_name);
                     defer dst.close() catch {};
                     _ = try dst.write(body);
+                    try dst.sync();
                 },
                 else => |e| return e,
             };

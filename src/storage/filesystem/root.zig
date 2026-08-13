@@ -36,6 +36,7 @@ const gitconfig = @import("gitconfig");
 const storage_mod = @import("storage.zig");
 const object_mod = @import("object.zig");
 const reference_mod = @import("reference.zig");
+const reference_transaction_mod = @import("reference_transaction.zig");
 const index_mod = @import("index.zig");
 const config_mod = @import("config.zig");
 const shallow_mod = @import("shallow.zig");
@@ -103,6 +104,12 @@ pub const ReferenceStorageMem = reference_mod.ReferenceStorageMem;
 pub const ReferenceStorageOs = reference_mod.ReferenceStorageOs;
 pub const ReferenceStorage = ReferenceStorageMem;
 pub const ReferenceSliceIter = reference_mod.ReferenceSliceIter;
+pub const ReferenceTransactionFor = reference_transaction_mod.ReferenceTransaction;
+pub const ReferenceTransactionMem = reference_transaction_mod.ReferenceTransactionMem;
+pub const ReferenceTransactionOs = reference_transaction_mod.ReferenceTransactionOs;
+pub const ReferenceTransactionBoundary = reference_transaction_mod.Boundary;
+pub const ReferenceTransactionFailureInjector = reference_transaction_mod.FailureInjector;
+pub const ReferenceTransactionError = reference_transaction_mod.Error;
 
 // --- Index storage ---
 
@@ -144,6 +151,7 @@ test {
     _ = storage_mod;
     _ = object_mod;
     _ = reference_mod;
+    _ = reference_transaction_mod;
     _ = index_mod;
     _ = config_mod;
     _ = shallow_mod;

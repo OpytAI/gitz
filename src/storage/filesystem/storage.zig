@@ -18,6 +18,7 @@ const memory = @import("memory");
 const dotgit = @import("dotgit");
 const object_mod = @import("object.zig");
 const reference_mod = @import("reference.zig");
+const reference_transaction_mod = @import("reference_transaction.zig");
 const index_mod = @import("index.zig");
 const config_mod = @import("config.zig");
 const shallow_mod = @import("shallow.zig");
@@ -28,6 +29,8 @@ const ObjectType = plumbing.ObjectType;
 const MemoryObject = plumbing.MemoryObject;
 const Reference = plumbing.Reference;
 const ReferenceName = plumbing.ReferenceName;
+const ReferenceUpdate = memory.ReferenceUpdate;
+const ReferenceTransactionError = reference_transaction_mod.Error;
 const Algorithm = plumbing.Algorithm;
 const ObjectLru = cache_pkg.ObjectLru;
 const Mem = fs_pkg.Mem;
@@ -133,7 +136,7 @@ pub fn Storage(comptime Fs: type) type {
                 self.* = undefined;
             }
 
-            pub fn module(self: *Self.ModuleStorage, name: []const u8) (Allocator.Error || fs_pkg.Error || dotgit.Error)!*Self {
+            pub fn module(self: *Self.ModuleStorage, name: []const u8) (Allocator.Error || fs_pkg.Error || dotgit.Error || ReferenceTransactionError)!*Self {
                 if (self.modules.get(name)) |m| return m;
 
                 const chrooted = try self.dir.module(name);
@@ -195,6 +198,20 @@ pub fn Storage(comptime Fs: type) type {
         pub fn setHashAlgo(self: *Self, algo: Algorithm) void {
             self.hash_algo = algo;
             self.activateFormat();
+        }
+
+        /// Recover an interrupted durable multi-reference update. Repository
+        /// open paths call this before making refs visible to readers.
+        pub fn recoverReferenceTransactions(self: *Self) ReferenceTransactionError!void {
+            var transaction = reference_transaction_mod.ReferenceTransaction(Fs).init(&self.reference_storage);
+            try transaction.recover();
+        }
+
+        /// Crash-recoverable filesystem reference update with durable journal,
+        /// publication, commit-marker, and cleanup boundaries.
+        pub fn applyReferenceUpdatesDurable(self: *Self, updates: []const ReferenceUpdate) ReferenceTransactionError!void {
+            var transaction = reference_transaction_mod.ReferenceTransaction(Fs).init(&self.reference_storage);
+            try transaction.apply(updates, null);
         }
 
         /// Publish this storage's format for process-wide wire codecs.
@@ -384,7 +401,7 @@ pub fn Storage(comptime Fs: type) type {
 
         // --- ModuleStorer ---
 
-        pub fn module(self: *Self, name: []const u8) (Allocator.Error || fs_pkg.Error || dotgit.Error)!*Self {
+        pub fn module(self: *Self, name: []const u8) (Allocator.Error || fs_pkg.Error || dotgit.Error || ReferenceTransactionError)!*Self {
             return self.module_storage.module(name);
         }
     };
@@ -410,7 +427,7 @@ pub fn newStorage(
     allocator: Allocator,
     mem_fs: *Mem,
     object_cache: ?*ObjectLru,
-) Allocator.Error!*StorageMem {
+) ReferenceTransactionError!*StorageMem {
     return newStorageWithOptions(allocator, mem_fs, object_cache, .{});
 }
 
@@ -420,7 +437,7 @@ pub fn newStorageWithOptions(
     mem_fs: *Mem,
     object_cache: ?*ObjectLru,
     ops: Options,
-) Allocator.Error!*StorageMem {
+) ReferenceTransactionError!*StorageMem {
     return newStorageWithOptionsFor(Mem, allocator, mem_fs, object_cache, ops);
 }
 
@@ -429,7 +446,7 @@ pub fn newStorageOs(
     allocator: Allocator,
     os_fs: *Os,
     object_cache: ?*ObjectLru,
-) Allocator.Error!*StorageOs {
+) ReferenceTransactionError!*StorageOs {
     return newStorageOsWithOptions(allocator, os_fs, object_cache, .{});
 }
 
@@ -439,7 +456,7 @@ pub fn newStorageOsWithOptions(
     os_fs: *Os,
     object_cache: ?*ObjectLru,
     ops: OptionsFor(Os),
-) Allocator.Error!*StorageOs {
+) ReferenceTransactionError!*StorageOs {
     return newStorageWithOptionsFor(Os, allocator, os_fs, object_cache, ops);
 }
 
@@ -449,7 +466,7 @@ pub fn newStorageFor(
     allocator: Allocator,
     backend: *Fs,
     object_cache: ?*ObjectLru,
-) Allocator.Error!*Storage(Fs) {
+) ReferenceTransactionError!*Storage(Fs) {
     return newStorageWithOptionsFor(Fs, allocator, backend, object_cache, .{});
 }
 
@@ -460,7 +477,7 @@ pub fn newStorageWithOptionsFor(
     backend: *Fs,
     object_cache: ?*ObjectLru,
     ops: OptionsFor(Fs),
-) Allocator.Error!*Storage(Fs) {
+) ReferenceTransactionError!*Storage(Fs) {
     const DotGit = dotgit.DotGitFor(Fs);
     const StorageT = Storage(Fs);
     const ObjectStorageT = object_mod.ObjectStorageFor(Fs);
@@ -479,6 +496,13 @@ pub fn newStorageWithOptionsFor(
         dir.deinit();
         allocator.destroy(dir);
     }
+
+    // Recovery precedes construction and publication of the composite
+    // storage, so no caller can observe a partially applied ref transaction.
+    var recovery_storage = ReferenceStorageT.init(allocator, dir);
+    defer recovery_storage.deinit();
+    var recovery = reference_transaction_mod.ReferenceTransaction(Fs).init(&recovery_storage);
+    try recovery.recover();
 
     const s = try allocator.create(StorageT);
     errdefer allocator.destroy(s);

@@ -4,6 +4,7 @@ _SRCS = [
     "storage.zig",
     "object.zig",
     "reference.zig",
+    "reference_transaction.zig",
     "index.zig",
     "config.zig",
     "shallow.zig",

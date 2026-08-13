@@ -11,12 +11,13 @@
 //!
 //! # Method sets (billy)
 //!
-//! **Basic:** create, open, openFile, stat, rename, remove, joinPath  
-//! **Dir:** readDir, mkdirAll  
-//! **TempFile:** tempFile  
-//! **Symlink:** lstat, symlink, readlink  
-//! **Chroot:** chroot, root  
-//! **File:** fileName, read, readAt, write, seek, close, truncate, lock, unlock
+//! **Basic:** create, open, openFile, stat, rename, remove, joinPath
+//! **Dir:** readDir, mkdirAll
+//! **TempFile:** tempFile
+//! **Symlink:** lstat, symlink, readlink
+//! **Chroot:** chroot, root
+//! **Durability:** file sync, directory sync, full-tree sync
+//! **File:** fileName, read, readAt, write, seek, close, truncate, lock, unlock, sync
 //!
 //! Logical path separator is always `/`. `Os` resolves relative to an open root
 //! directory handle; platform separators appear only inside `std.Io` calls.
