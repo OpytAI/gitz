@@ -87,7 +87,10 @@ pub fn FilesystemPackImportSessionFor(comptime Fs: type) type {
                 transferred = true;
             } else |err| if (err != error.EndOfStream) return err;
 
-            try self.destination.commitPreparedReferenceUpdates(updates, &prepared);
+            // Revalidate expected-old values and publish through the durable
+            // filesystem journal. A killed process is resolved before the
+            // next storage construction returns.
+            try self.destination.applyReferenceUpdatesDurable(updates);
             return .{
                 .checksum = checksum,
                 .object_count = object_count,
