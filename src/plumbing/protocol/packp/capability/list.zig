@@ -240,6 +240,19 @@ pub const List = struct {
     }
 };
 
+test "capability advertisement decoder is fuzzable" {
+    try testing.fuzz({}, fuzzDecode, .{});
+}
+
+fn fuzzDecode(_: void, smith: *testing.Smith) !void {
+    var buffer: [4096]u8 = undefined;
+    const length = smith.slice(&buffer);
+    const bytes = buffer[0..length];
+    var list = List.init(testing.allocator);
+    defer list.deinit();
+    list.decode(bytes) catch {};
+}
+
 // ---------------------------------------------------------------------------
 // Tests (list_test.go)
 // ---------------------------------------------------------------------------
