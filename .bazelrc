@@ -11,20 +11,11 @@ common --enable_runfiles
 # Hermetic actions: declared env only (no ambient $PATH tools).
 common --incompatible_strict_action_env
 
-# Zig compiler cache under /tmp (rules_zig default family). Mount /tmp so the
-# sandbox can write the shared Zig cache (same pattern as agent-os).
-# Prefer /tmp over a workspace path: pair-mounts of /mnt/workspace/* arrive RO
-# in linux-sandbox here and break `zig` with ReadOnlyFileSystem.
-common --repo_env=RULES_ZIG_CACHE_PREFIX=/tmp/gitz-zig-cache
-common --repo_env=RULES_ZIG_CACHE_PREFIX_LINUX=/tmp/gitz-zig-cache
-build --sandbox_add_mount_pair=/tmp
-
 # Show failing test output.
 test --test_output=errors
 
 # BCR only for now.
 common --registry=https://bcr.bazel.build/
 
-# Optional machine-specific overrides (gitignored). Use this file to set an
-# alternate output_user_root when Bazel's platform default is not suitable.
+# Machine-local output and Zig cache placement belongs in this ignored file.
 try-import %workspace%/user.bazelrc

@@ -69,9 +69,8 @@ Useful targets:
 | `//check:all` | Complete compatibility and regression suite |
 | `//examples/wasm:all` | Runnable `wasm32-freestanding` repository and pack gate |
 
-The repository `.bazelrc` selects hermetic build settings. Bazel uses its
-platform default output root. A developer can set a machine-specific output
-root in the ignored `user.bazelrc` file.
+The repository `.bazelrc` selects hermetic build settings. Set the Bazel
+output root and Zig compiler cache in the ignored `user.bazelrc` file.
 
 The WebAssembly gate runs in both safety-enabled and release-optimized modes.
 See [`examples/wasm/README.md`](examples/wasm/README.md) for its artifact,
