@@ -17,6 +17,7 @@
 
   <p>
     <a href="#why-gitz">Why gitz</a> ·
+    <a href="#first-program">First program</a> ·
     <a href="#capabilities">Capabilities</a> ·
     <a href="#build">Build</a> ·
     <a href="#project-status">Status</a> ·
@@ -37,6 +38,38 @@ The library ports the behavior of
 [go-git](https://github.com/go-git/go-git), a mature Git implementation with a
 broad, well-tested surface. The current reference is pinned to
 [`v5.19.2`](GO_GIT_PIN.md), so compatibility has a concrete target.
+
+## First program
+
+Init a repository in memory, add a file, commit, and walk history. Leaf
+packages (`repo`, `memory`, `fs`, `worktree`) are the public API; a full
+runnable copy lives in [`examples/wasm/local_repo.zig`](examples/wasm/local_repo.zig).
+
+```zig
+const store = try memory.newStorage(allocator);
+defer {
+    store.deinit();
+    allocator.destroy(store);
+}
+
+var filesystem = try fs.Mem.init(allocator);
+defer filesystem.deinit();
+
+var repository = try repo.init(store, &filesystem);
+var wt = try repository.worktree();
+
+var file = try filesystem.create("hello.txt");
+defer file.close() catch {};
+_ = try file.write("hello\n");
+_ = try wt.add("hello.txt");
+_ = try wt.commit("initial commit", .{
+    .author = signature,
+    .committer = signature,
+});
+
+var log = try repository.log(.{});
+defer log.deinit();
+```
 
 ## Capabilities
 
@@ -78,23 +111,11 @@ import-audit, ABI, memory, and size contracts.
 
 ## Project status
 
-gitz is under active development. The acceptance gate passes all 87 Bazel test
-targets. Evidence of progress is **behavioral goldens versus the pinned go-git
-revision** and **ownership under Zig contracts** (free companions, GPA-clean
-paths)—not package-path counts or API-name mapping ratios.
-
-| Metric | Current result |
-| --- | ---: |
-| Behavioral goldens | 81 / 81 pass |
-| Bazel acceptance test targets | 87 / 87 pass |
-| Active compatibility allowlists | 0 |
-| Ownership GPA suites (memory + FS production loaders) | 1 / 1 pass |
-
-The ownership GPA aggregator is `//src:ownership_gpa_test`: production loaders
-for walker (memory and filesystem), merge-base, isFastForward, EncodedObject
-new+discard on both backends, ObjectLru, hash pad via `fromBytes`, and
-`deinitPools`. Inventories remain package-surface hygiene and navigation aids;
-numeric API-name mapping is not a project success metric.
+gitz is under active development. The acceptance gate currently passes 87 Bazel
+test targets and 81 go-git behavioral goldens. Evidence of progress is
+behavioral match against the pinned go-git revision, not API-name mapping
+ratios. Inventories, ownership checks, and allowlists are documented in
+[`docs/GATES.md`](docs/GATES.md).
 
 Reproduce the results with:
 
@@ -102,11 +123,11 @@ Reproduce the results with:
 bazel test --cache_test_results=no //check:all
 ```
 
-Start with the documents that match your task:
-
 | Document | What it covers |
 | --- | --- |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | System boundaries and dependency direction |
 | [`docs/TESTING.md`](docs/TESTING.md) | Test layout and local verification |
 | [`docs/GATES.md`](docs/GATES.md) | Inventories, goldens, and acceptance checks |
 | [`GO_GIT_PIN.md`](GO_GIT_PIN.md) | Upstream reference and pin policy |
+
+Project-owned code is Apache-2.0. See [LICENSE](LICENSE) and [NOTICE](NOTICE).
