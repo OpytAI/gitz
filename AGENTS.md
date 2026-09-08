@@ -57,11 +57,11 @@ Do not commit a machine-specific output path or Zig compiler cache path.
 Set both in ignored `user.bazelrc`. Use absolute paths. Do not leave Bazel output or Zig caches under `/tmp` or `~/.cache/bazel`.
 
 ```bazelrc
-startup --output_user_root=/mnt/workspace/opytai/gitz/bazel-cache
-common --repo_env=RULES_ZIG_CACHE_PREFIX=/mnt/workspace/opytai/gitz/zig-cache
-common --repo_env=RULES_ZIG_CACHE_PREFIX_LINUX=/mnt/workspace/opytai/gitz/zig-cache
-build --sandbox_add_mount_pair=/mnt/workspace/opytai/gitz/zig-cache
-build --sandbox_writable_path=/mnt/workspace/opytai/gitz/zig-cache
+startup --output_user_root=/path/to/local/bazel-cache
+common --repo_env=RULES_ZIG_CACHE_PREFIX=/path/to/local/zig-cache
+common --repo_env=RULES_ZIG_CACHE_PREFIX_LINUX=/path/to/local/zig-cache
+build --sandbox_add_mount_pair=/path/to/local/zig-cache
+build --sandbox_writable_path=/path/to/local/zig-cache
 ```
 
 The tracked `.bazelrc` imports `user.bazelrc` automatically. Do not add these options to each command.
