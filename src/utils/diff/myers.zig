@@ -5,6 +5,7 @@
 //! equivalent in one step: split lines (keep `\n`), diff lines, coalesce.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 
 /// Operation kind — same numeric values as `diffmatchpatch.Operation`.
@@ -64,7 +65,9 @@ fn vIndex(k: isize, max_d: usize) usize {
 }
 
 /// Wall-clock nanoseconds (Zig 0.16 has no `std.time.nanoTimestamp`).
+/// A freestanding target has no clock, so this returns 0 and a budget never expires.
 fn nowNs() i128 {
+    if (comptime builtin.os.tag == .freestanding) return 0;
     if (@hasDecl(std.time, "nanoTimestamp")) {
         return std.time.nanoTimestamp();
     }
