@@ -15,6 +15,7 @@ const reset_mod = @import("reset.zig");
 const pull_mod = @import("pull.zig");
 const clean_mod = @import("clean.zig");
 const grep_mod = @import("grep.zig");
+const merge_mod = @import("merge");
 
 pub const Error = error_mod.Error;
 
@@ -38,6 +39,14 @@ pub const CleanOptions = options_mod.CleanOptions;
 pub const RestoreOptions = options_mod.RestoreOptions;
 pub const GrepOptions = options_mod.GrepOptions;
 pub const GrepResult = grep_mod.GrepResult;
+
+pub const Strategy = merge_mod.Strategy;
+pub const FastForward = merge_mod.FastForward;
+pub const Favor = merge_mod.Favor;
+pub const DiffAlgorithm = merge_mod.DiffAlgorithm;
+pub const ConflictStyle = merge_mod.ConflictStyle;
+pub const MergeOptions = merge_mod.MergeOptions;
+pub const MergeResult = merge_mod.MergeResult;
 pub const freeGrepResults = grep_mod.freeGrepResults;
 
 pub const Worktree = worktree_mod.Worktree;
@@ -62,6 +71,9 @@ pub const commit = commit_mod.commit;
 pub const checkout = checkout_mod.checkout;
 pub const reset = reset_mod.reset;
 pub const resetSparsely = reset_mod.resetSparsely;
+pub const merge = merge_mod.merge;
+pub const mergeAbort = merge_mod.mergeAbort;
+pub const mergeContinue = merge_mod.mergeContinue;
 pub const pull = pull_mod.pull;
 pub const pullContext = pull_mod.pullContext;
 pub const clean = clean_mod.clean;

@@ -107,7 +107,9 @@ pub const Encoder = struct {
     }
 
     fn encodeEntries(self: *Encoder, idx: *Index) EncodeError!void {
-        // go-git `sort.Sort(byName(idx.Entries))` — name only, ascending bytes.
+        // Name ascending, then stage ascending. Git's on-disk index is a total
+        // order on (name, stage). go-git sorted by name only, so same-path
+        // stages were an unstable tie.
         std.mem.sort(Entry, idx.entries.items, {}, entryNameLess);
 
         for (idx.entries.items) |*entry| {
@@ -348,7 +350,9 @@ pub const Encoder = struct {
 // ---------------------------------------------------------------------------
 
 fn entryNameLess(_: void, a: Entry, b: Entry) bool {
-    return std.mem.order(u8, a.name, b.name) == .lt;
+    const name_order = std.mem.order(u8, a.name, b.name);
+    if (name_order != .eq) return name_order == .lt;
+    return a.stage < b.stage;
 }
 
 /// go-git `timeToUint32`.
@@ -828,6 +832,55 @@ test "encode merge conflict stages round-trip stage flags" {
     try std.testing.expect((try out.entry("a")).hash.eql(h1));
     try std.testing.expect((try out.entry("b")).hash.eql(h2));
     try std.testing.expect((try out.entry("c")).hash.eql(h3));
+}
+
+test "encode sorts same-path stages by stage" {
+    const allocator = std.testing.allocator;
+    var idx = Index.init(allocator);
+    defer idx.deinit();
+    idx.version = 2;
+
+    const h1 = plumbing.newHash("1111111111111111111111111111111111111111");
+    const h2 = plumbing.newHash("2222222222222222222222222222222222222222");
+    const h3 = plumbing.newHash("3333333333333333333333333333333333333333");
+    const input = [_]struct { stage: Stage, hash: plumbing.Hash }{
+        .{ .stage = 3, .hash = h3 },
+        .{ .stage = 1, .hash = h1 },
+        .{ .stage = 2, .hash = h2 },
+    };
+    for (input) |s| {
+        const owned = try allocator.dupe(u8, "f.txt");
+        try idx.entries.append(allocator, .{
+            .name = owned,
+            .stage = s.stage,
+            .hash = s.hash,
+            .mode = 0o100644,
+        });
+    }
+
+    var storage: [1024]u8 = undefined;
+    var w: Writer = .fixed(&storage);
+    var enc = Encoder.init(&w);
+    try enc.encode(&idx);
+
+    try std.testing.expectEqual(@as(i32, 1), idx.entries.items[0].stage);
+    try std.testing.expectEqual(@as(i32, 2), idx.entries.items[1].stage);
+    try std.testing.expectEqual(@as(i32, 3), idx.entries.items[2].stage);
+
+    const decoder_mod = @import("decoder.zig");
+    var r: std.Io.Reader = .fixed(w.buffered());
+    var dec = decoder_mod.Decoder.init(&r);
+    var out = Index.init(allocator);
+    defer out.deinit();
+    try dec.decode(&out);
+
+    try std.testing.expectEqual(@as(usize, 3), out.entries.items.len);
+    try std.testing.expectEqual(@as(i32, 1), out.entries.items[0].stage);
+    try std.testing.expectEqual(@as(i32, 2), out.entries.items[1].stage);
+    try std.testing.expectEqual(@as(i32, 3), out.entries.items[2].stage);
+    try std.testing.expect(out.entries.items[0].hash.eql(h1));
+    try std.testing.expect(out.entries.items[1].hash.eql(h2));
+    try std.testing.expect(out.entries.items[2].hash.eql(h3));
 }
 
 test "encode REUC resolve undo round-trip" {

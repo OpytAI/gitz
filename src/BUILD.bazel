@@ -64,6 +64,7 @@ zig_library(
         "//src/submodule",
         "//src/blame",
         "//src/prune",
+        "//src/merge",
     ],
 )
 
@@ -129,6 +130,7 @@ zig_test(
         "//src/submodule",
         "//src/blame",
         "//src/prune",
+        "//src/merge",
     ],
 )
 
@@ -218,6 +220,7 @@ filegroup(
         "//src/submodule:package_srcs",
         "//src/blame:package_srcs",
         "//src/prune:package_srcs",
+        "//src/merge:package_srcs",
     ],
     visibility = ["//visibility:public"],
 )

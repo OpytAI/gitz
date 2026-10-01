@@ -21,6 +21,7 @@ const reset_mod = @import("reset.zig");
 const pull_mod = @import("pull.zig");
 const clean_mod = @import("clean.zig");
 const grep_mod = @import("grep.zig");
+const merge_mod = @import("merge");
 
 const Allocator = std.mem.Allocator;
 const Hash = plumbing.Hash;
@@ -97,6 +98,27 @@ pub fn WorktreeFor(comptime Storage: type, comptime Fs: type) type {
 
         pub fn resetSparsely(self: *Self, o: options_mod.ResetOptions, dirs: []const []const u8) !void {
             return reset_mod.resetSparsely(self, o, dirs);
+        }
+
+        /// Merge `heads` into HEAD.
+        ///
+        /// `conflict_style` comes from `opts`. Repository config does not store
+        /// `merge.conflictStyle`. A path whose `merge` attribute names a custom
+        /// driver is left conflicted; the driver is not run. rerere, mergetools,
+        /// and hooks are not run. The index and every tracked worktree path must
+        /// already match HEAD. A conflict leaves stages and `MERGE_HEAD` and
+        /// returns `clean == false`. An error leaves HEAD, the index, and the
+        /// worktree unchanged.
+        pub fn merge(self: *Self, heads: []const Hash, opts: merge_mod.MergeOptions) !merge_mod.MergeResult {
+            return merge_mod.merge(self, heads, opts);
+        }
+
+        pub fn mergeAbort(self: *Self) !void {
+            return merge_mod.mergeAbort(self);
+        }
+
+        pub fn mergeContinue(self: *Self) !Hash {
+            return merge_mod.mergeContinue(self);
         }
 
         pub fn pull(self: *Self, o: *options_mod.PullOptions) !void {

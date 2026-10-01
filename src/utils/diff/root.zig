@@ -7,12 +7,38 @@
 
 const std = @import("std");
 const myers = @import("myers.zig");
+const histogram = @import("histogram.zig");
+const patience = @import("patience.zig");
+const diff3 = @import("diff3.zig");
 
 const Allocator = std.mem.Allocator;
 
 pub const Operation = myers.Operation;
 pub const Diff = myers.Diff;
 pub const freeDiffs = myers.freeDiffs;
+
+/// Line-diff algorithm selected by `git merge -X diff-algorithm`.
+/// `minimal` runs the same complete Myers search as `myers` (no deadline).
+pub const LineAlgorithm = diff3.Algorithm;
+
+pub const ConflictStyle = diff3.ConflictStyle;
+pub const Favor = diff3.Favor;
+pub const TextMerge = diff3.TextMerge;
+pub const mergeText = diff3.mergeText;
+
+/// Line diff with an explicit algorithm. Caller frees with `freeDiffs`.
+pub fn doAlgorithm(
+    allocator: Allocator,
+    algorithm: LineAlgorithm,
+    src_text: []const u8,
+    dst_text: []const u8,
+) Allocator.Error![]Diff {
+    return switch (algorithm) {
+        .myers, .minimal => myers.lineDiff(allocator, src_text, dst_text, null),
+        .histogram => histogram.lineDiff(allocator, src_text, dst_text),
+        .patience => patience.lineDiff(allocator, src_text, dst_text),
+    };
+}
 
 /// Default timeout for `do` — go-git uses `time.Hour` (large under load).
 /// Nanoseconds: 3600 seconds.
@@ -73,6 +99,9 @@ fn joinFiltered(allocator: Allocator, diffs: []const Diff, skip: Operation) Allo
 
 test {
     _ = @import("myers.zig");
+    _ = @import("histogram.zig");
+    _ = @import("patience.zig");
+    _ = @import("diff3.zig");
 }
 
 test "diff.Do Src/Dst round-trip (suiteCommon.TestAll)" {

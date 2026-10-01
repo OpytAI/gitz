@@ -7,6 +7,9 @@ zig_library(
     main = "root.zig",
     srcs = [
         "myers.zig",
+        "histogram.zig",
+        "patience.zig",
+        "diff3.zig",
     ],
     visibility = ["//visibility:public"],
 )
@@ -17,6 +20,9 @@ zig_test(
     main = "root.zig",
     srcs = [
         "myers.zig",
+        "histogram.zig",
+        "patience.zig",
+        "diff3.zig",
     ],
 )
 

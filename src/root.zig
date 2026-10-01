@@ -83,6 +83,7 @@ pub const serverinfo = @import("serverinfo");
 pub const submodule = @import("submodule");
 pub const blame = @import("blame");
 pub const prune = @import("prune");
+pub const merge = @import("merge");
 
 test "identity" {
     try std.testing.expectEqualStrings("gitz", name);
@@ -259,4 +260,5 @@ test "transport and extra package surface" {
     _ = submodule.Submodule;
     _ = blame.blame;
     _ = prune.prune;
+    _ = merge.merge;
 }

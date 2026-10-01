@@ -1,0 +1,27 @@
+package: gitz/merge
+require:
+  types:
+    - Strategy
+    - FastForward
+    - MergeOptions
+    - MergeResult
+  functions:
+    - merge
+    - mergeAbort
+    - mergeContinue
+  semantic:
+    - Strategy
+    - FastForward
+    - MergeOptions
+    - MergeResult
+    - merge
+    - mergeAbort
+    - mergeContinue
+zig_map:
+  Strategy: Strategy
+  FastForward: FastForward
+  MergeOptions: MergeOptions
+  MergeResult: MergeResult
+  merge: merge
+  mergeAbort: mergeAbort
+  mergeContinue: mergeContinue

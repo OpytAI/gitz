@@ -93,6 +93,13 @@ pub fn commit(w: anytype, msg: []const u8, o: CommitOptions) !Hash {
 
     const idx = try w.storer.index();
 
+    // Stage 1–3 entries are an in-progress merge. Skipping them would drop
+    // conflicts and look like a clean tree; writing them would store a corrupt
+    // tree. Refuse before any object is written.
+    for (idx.entries.items) |*e| {
+        if (e.stage != 0) return error_mod.Error.UnmergedPaths;
+    }
+
     // First commit with empty index is empty (go-git early check).
     if (parents.len == 0 and idx.entries.items.len == 0 and !o.allow_empty_commits) {
         return error_mod.Error.EmptyCommit;
@@ -555,6 +562,32 @@ test "commit initial: object fields and HEAD branch" {
     try std.testing.expectEqualStrings("foo\n", c.message);
     try std.testing.expectEqual(@as(usize, 0), c.parent_hashes.len);
     try std.testing.expect(!c.tree_hash.isZero());
+}
+
+test "commit rejects an index that still has merge stages" {
+    const gpa = std.testing.allocator;
+    var sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+    var mem_fs = try fs_pkg.Mem.init(gpa);
+    defer mem_fs.deinit();
+    try sto.setReference(Reference.newSymbolicReference(plumbing.HEAD, plumbing.master));
+
+    var w = worktree_mod.newWorktree(gpa, sto, &mem_fs);
+    try stageFile(&w, "f.txt", "ours\n", filemode.Regular);
+    const idx = try sto.index();
+    const staged = try idx.add("f.txt");
+    staged.stage = 2;
+    staged.mode = filemode.Regular;
+    staged.hash = plumbing.newHash("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+    try std.testing.expectError(
+        error_mod.Error.UnmergedPaths,
+        commit(&w, "should not land\n", .{ .author = defaultSignature() }),
+    );
+    try std.testing.expectError(error.ReferenceNotFound, sto.reference(plumbing.master));
 }
 
 test "commit empty tree without allow_empty fails" {

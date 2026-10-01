@@ -40,6 +40,7 @@ _DEPS = [
     "//src/internal/pathutil",
     "//src/plumbing/transport/server",
     "//src/plumbing/transport",
+    "//src/merge",
 ]
 
 zig_library(
@@ -59,6 +60,7 @@ zig_test(
         "root.zig",
         "tests.zig",
         "test_root.zig",
+        "merge_test.zig",
     ],
     deps = _DEPS + [
         "//src/plumbing/transport/test:fixtures",

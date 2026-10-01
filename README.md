@@ -111,8 +111,8 @@ import-audit, ABI, memory, and size contracts.
 
 ## Project status
 
-gitz is under active development. The acceptance gate currently passes 87 Bazel
-test targets and 81 go-git behavioral goldens. Evidence of progress is
+gitz is under active development. The acceptance gate currently passes 89 Bazel
+test targets and 82 behavioral goldens. Evidence of progress is
 behavioral match against the pinned go-git revision, not API-name mapping
 ratios. Inventories, ownership checks, and allowlists are documented in
 [`docs/GATES.md`](docs/GATES.md).

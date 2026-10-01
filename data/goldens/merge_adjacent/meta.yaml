@@ -1,0 +1,5 @@
+name: merge_adjacent
+type: file_equals
+actual: actual.txt
+expected: expected.txt
+note: "Git 2.55.0 merge -s ort of adjacent line edits. Markers use the branch label side. gitz labels the same span with the full commit hash."

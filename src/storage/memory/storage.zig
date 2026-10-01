@@ -131,6 +131,9 @@ pub const Storage = struct {
     module_storage: ModuleStorage,
     /// Per-repo object hash algorithm (SHA-1 / SHA-256). Owned by this storage.
     hash_algo: Algorithm = .sha1,
+    /// Pseudorefs that are files in `.git`, not refs (`MERGE_HEAD`, `ORIG_HEAD`).
+    /// Keys and values are owned by this storage.
+    git_files: std.StringHashMapUnmanaged([]u8) = .empty,
 
     /// Same capability flags as package-level constants (per-type discovery).
     pub const implements_transactioner = true;
@@ -186,6 +189,12 @@ pub const Storage = struct {
     }
 
     pub fn deinit(self: *Storage) void {
+        var git_it = self.git_files.iterator();
+        while (git_it.next()) |e| {
+            self.allocator.free(e.key_ptr.*);
+            self.allocator.free(e.value_ptr.*);
+        }
+        self.git_files.deinit(self.allocator);
         self.module_storage.deinit();
         self.reference_storage.deinit();
         self.index_storage.deinit();
@@ -346,7 +355,45 @@ pub const Storage = struct {
     pub fn module(self: *Storage, name: []const u8) Allocator.Error!*Storage {
         return self.module_storage.module(name);
     }
+
+    /// Write a single-component file under the git directory.
+    /// `name` must not contain a slash, backslash, or NUL, and must be 1..=64 bytes.
+    pub fn writeGitFile(self: *Storage, name: []const u8, data: []const u8) !void {
+        try checkGitFileName(name);
+        if (self.git_files.getPtr(name)) |slot| {
+            const copy = try self.allocator.dupe(u8, data);
+            self.allocator.free(slot.*);
+            slot.* = copy;
+            return;
+        }
+        const key = try self.allocator.dupe(u8, name);
+        errdefer self.allocator.free(key);
+        const copy = try self.allocator.dupe(u8, data);
+        errdefer self.allocator.free(copy);
+        try self.git_files.put(self.allocator, key, copy);
+    }
+
+    /// Read a git file. Returns null when it is absent. Caller frees the bytes.
+    pub fn readGitFile(self: *const Storage, allocator: Allocator, name: []const u8) !?[]u8 {
+        try checkGitFileName(name);
+        const data = self.git_files.get(name) orelse return null;
+        return try allocator.dupe(u8, data);
+    }
+
+    /// Remove a git file. Missing names are not an error.
+    pub fn removeGitFile(self: *Storage, name: []const u8) !void {
+        try checkGitFileName(name);
+        if (self.git_files.fetchRemove(name)) |kv| {
+            self.allocator.free(kv.key);
+            self.allocator.free(kv.value);
+        }
+    }
 };
+
+fn checkGitFileName(name: []const u8) !void {
+    if (name.len == 0 or name.len > 64) return error.InvalidGitFileName;
+    if (std.mem.indexOfAny(u8, name, "/\\\x00") != null) return error.InvalidGitFileName;
+}
 
 /// go-git `NewStorage` — heap-allocated storage; free with `deinit` + `destroy`.
 pub fn newStorage(allocator: Allocator) Allocator.Error!*Storage {

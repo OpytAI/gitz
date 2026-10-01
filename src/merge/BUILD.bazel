@@ -1,0 +1,48 @@
+load("@rules_zig//zig:defs.bzl", "zig_library", "zig_test")
+
+# Git merge strategies. Not a go-git package.
+_SRCS = [
+    "root.zig",
+    "error.zig",
+    "options.zig",
+    "model.zig",
+    "engine.zig",
+    "apply.zig",
+]
+
+_DEPS = [
+    "//src/plumbing",
+    "//src/plumbing/filemode",
+    "//src/plumbing/object",
+    "//src/plumbing/format/index",
+    "//src/plumbing/format/gitattributes",
+    "//src/utils/diff",
+]
+
+zig_library(
+    name = "merge",
+    main = "root.zig",
+    srcs = _SRCS,
+    import_name = "merge",
+    visibility = ["//visibility:public"],
+    deps = _DEPS,
+)
+
+zig_test(
+    name = "merge_test",
+    size = "medium",
+    main = "tests.zig",
+    srcs = _SRCS + ["tests.zig"],
+    deps = _DEPS + [
+        "//src/storage/memory",
+        "//src/storage/filesystem",
+        "//src/fs",
+        "//src/utils/sync",
+    ],
+)
+
+filegroup(
+    name = "package_srcs",
+    srcs = glob(["**/*"]),
+    visibility = ["//visibility:public"],
+)

@@ -48,4 +48,7 @@ pub const Error = error{
     HashOrReference,
     /// Grep pattern failed to compile (pure-Zig regex; go-git panics on MustCompile).
     InvalidRegex,
+    /// Index still has a merge stage (1–3). `commit` refuses rather than
+    /// writing those stages into a tree object.
+    UnmergedPaths,
 };

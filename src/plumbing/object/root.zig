@@ -155,6 +155,9 @@ pub const changePatch = patch_mod.changePatch;
 
 pub const FileIter = tree_mod.FileIter;
 
+/// jgit similarity table used by rename scoring (go-git `similarityIndex`).
+pub const SimilarityIndex = similarity_mod.SimilarityIndex;
+
 test {
     _ = error_mod;
     _ = signature_mod;

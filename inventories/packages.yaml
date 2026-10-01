@@ -222,6 +222,10 @@ packages:
     zig: src/prune
     status: required
     notes: "prune + object_walker as go-git implements"
+  - go: gitz/merge
+    zig: src/merge
+    status: required
+    notes: "Git merge strategies. Not a go-git package. Goldens come from Git."
 
   # --- Excluded from port inventory ---
   - go: _examples

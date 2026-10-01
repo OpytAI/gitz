@@ -177,6 +177,48 @@ pub fn Storage(comptime Fs: type) type {
             return self.fs;
         }
 
+        /// Write a single-component file in the git directory (`MERGE_HEAD` and the like).
+        pub fn writeGitFile(self: *Self, name: []const u8, data: []const u8) !void {
+            try checkGitFileName(name);
+            var file = try self.fs.create(name);
+            errdefer file.close() catch {};
+            var off: usize = 0;
+            while (off < data.len) {
+                const n = try file.write(data[off..]);
+                if (n == 0) return error.ShortGitFileWrite;
+                off += n;
+            }
+            try file.close();
+        }
+
+        /// Read a git-directory file. Returns null when it is absent. Caller frees the bytes.
+        pub fn readGitFile(self: *Self, allocator: Allocator, name: []const u8) !?[]u8 {
+            try checkGitFileName(name);
+            var file = self.fs.open(name) catch |err| switch (err) {
+                error.NotExist => return null,
+                else => return err,
+            };
+            defer file.close() catch {};
+            var buf: std.ArrayList(u8) = .empty;
+            errdefer buf.deinit(allocator);
+            var tmp: [4096]u8 = undefined;
+            while (true) {
+                const n = try file.read(&tmp);
+                if (n == 0) break;
+                try buf.appendSlice(allocator, tmp[0..n]);
+            }
+            return try buf.toOwnedSlice(allocator);
+        }
+
+        /// Remove a git-directory file. A missing file is not an error.
+        pub fn removeGitFile(self: *Self, name: []const u8) !void {
+            try checkGitFileName(name);
+            self.fs.remove(name) catch |err| switch (err) {
+                error.NotExist => {},
+                else => return err,
+            };
+        }
+
         /// go-git `Init` — create .git scaffolding.
         pub fn initLayout(self: *Self) (Allocator.Error || fs_pkg.Error)!void {
             try self.dir.initialize();
@@ -544,4 +586,9 @@ pub fn newStorageWithOptionsFor(
     s.config_storage = ConfigStorageT.init(allocator, dir);
     s.module_storage = StorageT.ModuleStorage.init(allocator, dir, ops.clock);
     return s;
+}
+
+fn checkGitFileName(name: []const u8) !void {
+    if (name.len == 0 or name.len > 64) return error.InvalidGitFileName;
+    if (std.mem.indexOfAny(u8, name, "/\\\x00") != null) return error.InvalidGitFileName;
 }
