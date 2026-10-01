@@ -117,8 +117,8 @@ pub fn WorktreeFor(comptime Storage: type, comptime Fs: type) type {
             return merge_mod.mergeAbort(self);
         }
 
-        pub fn mergeContinue(self: *Self) !Hash {
-            return merge_mod.mergeContinue(self);
+        pub fn mergeContinue(self: *Self, opts: merge_mod.ContinueOptions) !Hash {
+            return merge_mod.mergeContinue(self, opts);
         }
 
         pub fn pull(self: *Self, o: *options_mod.PullOptions) !void {

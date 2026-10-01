@@ -1,7 +1,8 @@
 //! Versioned opaque image for a memory storer plus `fs.Mem` worktree.
 //!
 //! The image owns Git objects, refs, shallow state, index bytes (including
-//! sparse flags), local config, nested module storers, and filesystem entries.
+//! sparse flags), local config, git-directory files such as `MERGE_HEAD`,
+//! nested module storers, and filesystem entries. The version stays 1.
 
 const std = @import("std");
 const fs = @import("fs");
@@ -108,6 +109,7 @@ fn writeStorage(writer: *ImageWriter, store: *memory.Storage) !void {
     try writer.bytes(index_writer.written());
 
     try writeConfig(writer, try store.config());
+    try writeGitFiles(writer, store);
 
     try writer.int(u32, @intCast(store.module_storage.modules.count()));
     var modules = store.module_storage.modules.iterator();
@@ -175,11 +177,38 @@ fn readStorage(reader: *ImageReader, store: *memory.Storage) !void {
     store.setIndex(idx);
 
     try readConfig(reader, try store.config());
+    try readGitFiles(reader, store);
 
     const module_count = try reader.int(u32);
     for (0..module_count) |_| {
         const name = try reader.bytes();
         try readStorage(reader, try store.module(name));
+    }
+}
+
+fn writeGitFiles(writer: *ImageWriter, store: *memory.Storage) !void {
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(writer.allocator);
+    var it = store.git_files.iterator();
+    while (it.next()) |entry| try names.append(writer.allocator, entry.key_ptr.*);
+    std.mem.sort([]const u8, names.items, {}, struct {
+        fn less(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.order(u8, a, b) == .lt;
+        }
+    }.less);
+    try writer.int(u32, @intCast(names.items.len));
+    for (names.items) |name| {
+        try writer.bytes(name);
+        try writer.bytes(store.git_files.get(name).?);
+    }
+}
+
+fn readGitFiles(reader: *ImageReader, store: *memory.Storage) !void {
+    const count = try reader.int(u32);
+    for (0..count) |_| {
+        const name = try reader.bytes();
+        const data = try reader.bytes();
+        try store.writeGitFile(name, data);
     }
 }
 
@@ -433,4 +462,28 @@ test "empty image round trip" {
     var restored = try restoreImage(allocator, memory.Clock.fixedClock(.{}), image);
     defer restored.deinit(allocator);
     try std.testing.expectEqual(@as(usize, 0), restored.store.countLooseRefs());
+}
+
+test "git files round trip inside a version 1 image" {
+    const allocator = std.testing.allocator;
+    const store = try memory.newStorageWithClock(allocator, memory.Clock.fixedClock(.{}));
+    defer {
+        store.deinit();
+        allocator.destroy(store);
+    }
+    try store.writeGitFile("MERGE_HEAD", "abc\n");
+    try store.writeGitFile("ORIG_HEAD", "def\n");
+    var filesystem = try fs.Mem.init(allocator);
+    defer filesystem.deinit();
+    const image = try exportImage(allocator, store, &filesystem);
+    defer allocator.free(image);
+    var restored = try restoreImage(allocator, memory.Clock.fixedClock(.{}), image);
+    defer restored.deinit(allocator);
+    const head = (try restored.store.readGitFile(allocator, "MERGE_HEAD")).?;
+    defer allocator.free(head);
+    const orig = (try restored.store.readGitFile(allocator, "ORIG_HEAD")).?;
+    defer allocator.free(orig);
+    try std.testing.expectEqualStrings("abc\n", head);
+    try std.testing.expectEqualStrings("def\n", orig);
+    try std.testing.expect((try restored.store.readGitFile(allocator, "MERGE_MSG")) == null);
 }

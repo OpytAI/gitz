@@ -318,6 +318,41 @@ pub const Index = struct {
         return Error.EntryNotFound;
     }
 
+    /// True when `path` has an entry whose stage is not 0.
+    pub fn hasConflictStage(self: *const Index, path: []const u8) bool {
+        for (self.entries.items) |*e| {
+            if (e.stage != 0 and pathEqualSlash(e.name, path)) return true;
+        }
+        return false;
+    }
+
+    /// Remove every stage of `path`. The returned hash is stage 0 when that
+    /// stage exists, otherwise the first matching entry.
+    pub fn removePath(self: *Index, path: []const u8) Error!Hash {
+        var found = false;
+        var prefer_resolved = false;
+        var hash: Hash = .{};
+        for (self.entries.items) |*e| {
+            if (!pathEqualSlash(e.name, path)) continue;
+            if (!found or (e.stage == 0 and !prefer_resolved)) {
+                hash = e.hash;
+                found = true;
+                if (e.stage == 0) prefer_resolved = true;
+            }
+        }
+        if (!found) return Error.EntryNotFound;
+        var i: usize = 0;
+        while (i < self.entries.items.len) {
+            if (pathEqualSlash(self.entries.items[i].name, path)) {
+                var removed = self.entries.orderedRemove(i);
+                removed.deinit(self.allocator);
+            } else {
+                i += 1;
+            }
+        }
+        return hash;
+    }
+
     /// All entries matching `pattern`, or empty slice if none (go-git `Glob`).
     ///
     /// Pattern syntax matches `filepath.Glob`. Returned slice holds pointers

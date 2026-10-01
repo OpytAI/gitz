@@ -45,7 +45,9 @@ pub const FastForward = merge_mod.FastForward;
 pub const Favor = merge_mod.Favor;
 pub const DiffAlgorithm = merge_mod.DiffAlgorithm;
 pub const ConflictStyle = merge_mod.ConflictStyle;
+pub const Identity = merge_mod.Identity;
 pub const MergeOptions = merge_mod.MergeOptions;
+pub const ContinueOptions = merge_mod.ContinueOptions;
 pub const MergeResult = merge_mod.MergeResult;
 pub const freeGrepResults = grep_mod.freeGrepResults;
 

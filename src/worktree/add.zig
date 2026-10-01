@@ -300,6 +300,10 @@ pub fn copyFileToStorage(w: anytype, path: []const u8) !Hash {
 /// go-git `addOrUpdateFileToIndex`.
 pub fn addOrUpdateFileToIndex(w: anytype, idx: *Index, filename: []const u8, h: Hash) !void {
     try pathutil.validTreePath(filename);
+    if (idx.hasConflictStage(filename)) {
+        _ = try idx.removePath(filename);
+        return doAddFileToIndex(w, idx, filename, h);
+    }
     const e = idx.entry(filename) catch |err| {
         if (err == index_fmt.Error.EntryNotFound) {
             return doAddFileToIndex(w, idx, filename, h);
@@ -394,10 +398,7 @@ fn doRemoveFile(w: anytype, idx: *Index, path: []const u8) !Hash {
 }
 
 fn deleteFromIndex(idx: *Index, path: []const u8) !Hash {
-    var e = try idx.remove(path);
-    const h = e.hash;
-    e.deinit(idx.allocator);
-    return h;
+    return idx.removePath(path);
 }
 
 fn deleteFromFilesystem(w: anytype, path: []const u8) !void {
@@ -619,6 +620,54 @@ test "add file stages blob and index entry" {
     // Blob is in object storage.
     const obj = try sto.encodedObject(.blob, e.hash);
     try std.testing.expectEqualStrings("FOO", obj.readerBytes());
+}
+
+test "add replaces conflict stages with one resolved entry" {
+    const gpa = std.testing.allocator;
+    var sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+    var mem = try fs_pkg.Mem.init(gpa);
+    defer mem.deinit();
+    var wt = worktree_mod.newWorktree(gpa, sto, &mem);
+    try writeFile(&mem, "f.txt", "resolved\n");
+
+    const idx = try sto.index();
+    for ([_]i32{ 1, 2, 3 }) |stage| {
+        const entry = try idx.add("f.txt");
+        entry.stage = stage;
+        entry.mode = filemode.Regular;
+        entry.hash = ZeroHash;
+    }
+
+    try addWithOptions(&wt, .{ .path = "f.txt", .skip_status = true });
+    const after = try sto.index();
+    try std.testing.expectEqual(@as(usize, 1), after.entries.items.len);
+    try std.testing.expectEqual(@as(i32, 0), after.entries.items[0].stage);
+    try std.testing.expectEqualStrings("f.txt", after.entries.items[0].name);
+    const obj = try sto.encodedObject(.blob, after.entries.items[0].hash);
+    try std.testing.expectEqualStrings("resolved\n", obj.readerBytes());
+}
+
+test "remove of a conflicted path drops every stage" {
+    const gpa = std.testing.allocator;
+    var sto = try memory.newStorage(gpa);
+    defer {
+        sto.deinit();
+        gpa.destroy(sto);
+    }
+    const idx = try sto.index();
+    for ([_]i32{ 1, 2, 3 }) |stage| {
+        const entry = try idx.add("f.txt");
+        entry.stage = stage;
+        entry.mode = filemode.Regular;
+        entry.hash = ZeroHash;
+    }
+    _ = try deleteFromIndex(idx, "f.txt");
+    try std.testing.expectEqual(@as(usize, 0), idx.entries.items.len);
+    try std.testing.expectError(index_fmt.Error.EntryNotFound, deleteFromIndex(idx, "f.txt"));
 }
 
 test "add returns blob hash for file" {

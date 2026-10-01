@@ -3,7 +3,9 @@ require:
   types:
     - Strategy
     - FastForward
+    - Identity
     - MergeOptions
+    - ContinueOptions
     - MergeResult
   functions:
     - merge
@@ -12,7 +14,9 @@ require:
   semantic:
     - Strategy
     - FastForward
+    - Identity
     - MergeOptions
+    - ContinueOptions
     - MergeResult
     - merge
     - mergeAbort
@@ -20,7 +24,9 @@ require:
 zig_map:
   Strategy: Strategy
   FastForward: FastForward
+  Identity: Identity
   MergeOptions: MergeOptions
+  ContinueOptions: ContinueOptions
   MergeResult: MergeResult
   merge: merge
   mergeAbort: mergeAbort

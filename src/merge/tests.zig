@@ -655,7 +655,7 @@ test "mergeContinue commits a resolved index and mergeAbort restores ORIG_HEAD" 
     entry.mode = filemode.Regular;
     entry.stage = 0;
     repo.storer.setIndex(idx);
-    const id = try merge.mergeContinue(&repo);
+    const id = try merge.mergeContinue(&repo, .{});
     const commit = try obj.getCommit(gpa, repo.storer, id);
     defer obj.freeCommit(gpa, commit);
     try std.testing.expectEqual(@as(usize, 2), commit.parent_hashes.len);
@@ -910,6 +910,46 @@ test "a binary attribute skips the text merge and keeps ours" {
     const body = try readFile(&repo, "f.txt");
     defer gpa.free(body);
     try std.testing.expectEqualStrings("a\nX\n", body);
+}
+
+test "a provided identity and label are recorded on the merge" {
+    const gpa = std.testing.allocator;
+    var repo = try initRepo(gpa);
+    defer repo.deinit();
+    const base = try commitFiles(&repo, &.{}, &.{.{ .path = "f.txt", .body = "a\nb\nc\nd\n" }});
+    try setHead(&repo, base);
+    const ours = try commitFiles(&repo, &.{base}, &.{.{ .path = "f.txt", .body = "a\nX\nc\nd\n" }});
+    try setHead(&repo, ours);
+    const side = try commitFiles(&repo, &.{base}, &.{.{ .path = "f.txt", .body = "a\nb\nc\nY\n" }});
+    const who = merge.Identity{ .name = "Ada", .email = "ada@example.test", .when = 1_700_000_000, .tz_offset_minutes = 60 };
+    const result = try merge.merge(&repo, &.{side}, .{
+        .message = "m\n",
+        .author = who,
+        .committer = who,
+    });
+    const commit = try obj.getCommit(gpa, repo.storer, result.commit.?);
+    defer obj.freeCommit(gpa, commit);
+    try std.testing.expectEqualStrings("Ada", commit.author.name);
+    try std.testing.expectEqualStrings("ada@example.test", commit.author.email);
+    try std.testing.expectEqual(@as(i64, 1_700_000_000), commit.author.when);
+    try std.testing.expectEqual(@as(i16, 60), commit.author.tz_offset_minutes);
+    try std.testing.expectEqual(@as(i64, 1_700_000_000), commit.committer.when);
+
+    var marked = try initRepo(gpa);
+    defer marked.deinit();
+    const marked_base = try commitFiles(&marked, &.{}, &.{.{ .path = "f.txt", .body = "a\nb\nc\n" }});
+    try setHead(&marked, marked_base);
+    const marked_ours = try commitFiles(&marked, &.{marked_base}, &.{.{ .path = "f.txt", .body = "a\nX\nc\n" }});
+    try setHead(&marked, marked_ours);
+    const marked_side = try commitFiles(&marked, &.{marked_base}, &.{.{ .path = "f.txt", .body = "a\nb\nY\n" }});
+    const conflicted = try merge.merge(&marked, &.{marked_side}, .{
+        .message = "m\n",
+        .theirs_label = "side",
+    });
+    try std.testing.expect(!conflicted.clean);
+    const body = try readFile(&marked, "f.txt");
+    defer gpa.free(body);
+    try std.testing.expectEqualStrings("a\n<<<<<<< HEAD\nX\nc\n=======\nb\nY\n>>>>>>> side\n", body);
 }
 
 test "file and symlink stay on different paths" {

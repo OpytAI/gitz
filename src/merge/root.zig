@@ -14,7 +14,9 @@ pub const FastForward = options_mod.FastForward;
 pub const Favor = options_mod.Favor;
 pub const DiffAlgorithm = options_mod.DiffAlgorithm;
 pub const ConflictStyle = options_mod.ConflictStyle;
+pub const Identity = options_mod.Identity;
 pub const MergeOptions = options_mod.MergeOptions;
+pub const ContinueOptions = options_mod.ContinueOptions;
 pub const MergeResult = options_mod.MergeResult;
 
 pub const merge = apply_mod.merge;

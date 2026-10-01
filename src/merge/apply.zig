@@ -95,10 +95,11 @@ pub fn mergeAbort(w: anytype) !void {
     try removeMergeFiles(w, true);
 }
 
-pub fn mergeContinue(w: anytype) !Hash {
+pub fn mergeContinue(w: anytype, opts: options.ContinueOptions) !Hash {
     if (!try gitPresent(w, "MERGE_HEAD")) return error.MergeNotInProgress;
-    const msg = (try w.storer.readGitFile(w.allocator, "MERGE_MSG")) orelse return error.CorruptMergeState;
-    defer w.allocator.free(msg);
+    const stored = (try w.storer.readGitFile(w.allocator, "MERGE_MSG")) orelse return error.CorruptMergeState;
+    defer w.allocator.free(stored);
+    const msg = opts.message orelse stored;
     const merged = (try w.storer.readGitFile(w.allocator, "MERGE_HEAD")) orelse return error.CorruptMergeState;
     defer w.allocator.free(merged);
 
@@ -129,7 +130,10 @@ pub fn mergeContinue(w: anytype) !Hash {
     }
     if (parents.items.len < 2) return error.CorruptMergeState;
 
-    const id = try writeCommit(w, msg, parents.items, tree);
+    const id = try writeCommit(w, msg, parents.items, tree, .{
+        .author = opts.author,
+        .committer = opts.committer,
+    });
     try updateHead(w, id);
     try removeMergeFiles(w, false);
     return id;
@@ -205,13 +209,15 @@ fn computeAndApply(
     skip_shift: bool,
 ) !options.MergeResult {
     var theirs_buf: [plumbing.MaxHexSize]u8 = undefined;
-    const theirs_label = if (others.len == 1) others[0].hash.string(&theirs_buf) else "theirs";
+    const default_theirs = if (others.len == 1) others[0].hash.string(&theirs_buf) else "theirs";
+    const theirs_label = opts.theirs_label orelse default_theirs;
+    const ours_label = opts.ours_label orelse "HEAD";
     var base_raw: [7]u8 = undefined;
     const base_label = if (others.len == 1)
         try shortBaseLabel(w.allocator, w.storer, head_c, others[0], &base_raw)
     else
         "base";
-    const spec = makeSpec(opts, strategy, "HEAD", theirs_label, base_label);
+    const spec = makeSpec(opts, strategy, ours_label, theirs_label, base_label);
 
     var tm = switch (strategy) {
         .ours => try engine.takeTree(w.allocator, w.storer, head_c.tree_hash),
@@ -268,7 +274,10 @@ fn computeAndApply(
         return .{ .clean = true, .commit = null };
     }
 
-    const id = try writeCommit(w, message.text, parents.items, tm.tree_hash);
+    const id = try writeCommit(w, message.text, parents.items, tm.tree_hash, .{
+        .author = opts.author,
+        .committer = opts.committer,
+    });
     try materialize(w, &tm);
     try writeOrig(w, head_hash);
     try updateHead(w, id);
@@ -583,26 +592,13 @@ fn updateHead(w: anytype, commit_hash: Hash) !void {
     try w.storer.setReference(ref);
 }
 
-fn writeCommit(w: anytype, message: []const u8, parents: []const Hash, tree: Hash) !Hash {
-    const cfg = try w.storer.config();
-    const when = w.storer.now().sec;
-    const author_name = if (cfg.author_name.len != 0 and cfg.author_email.len != 0) cfg.author_name else cfg.user_name;
-    const author_email = if (cfg.author_name.len != 0 and cfg.author_email.len != 0) cfg.author_email else cfg.user_email;
-    if (author_name.len == 0 or author_email.len == 0) return error.MissingAuthor;
-    const committer_name = if (cfg.committer_name.len != 0 and cfg.committer_email.len != 0) cfg.committer_name else author_name;
-    const committer_email = if (cfg.committer_name.len != 0 and cfg.committer_email.len != 0) cfg.committer_email else author_email;
-    const author = obj.Signature{
-        .name = author_name,
-        .email = author_email,
-        .when = when,
-        .tz_offset_minutes = 0,
-    };
-    const committer = obj.Signature{
-        .name = committer_name,
-        .email = committer_email,
-        .when = when,
-        .tz_offset_minutes = 0,
-    };
+const Who = struct {
+    author: ?options.Identity = null,
+    committer: ?options.Identity = null,
+};
+
+fn writeCommit(w: anytype, message: []const u8, parents: []const Hash, tree: Hash, who: Who) !Hash {
+    const author, const committer = try commitIdentities(w, who);
 
     var c = obj.Commit.init(w.allocator);
     c.tree_hash = tree;
@@ -620,6 +616,66 @@ fn writeCommit(w: anytype, message: []const u8, parents: []const Hash, tree: Has
     c.author = .{};
     c.committer = .{};
     return try w.storer.setEncodedObject(enc);
+}
+
+fn commitIdentities(w: anytype, who: Who) !struct { obj.Signature, obj.Signature } {
+    if (who.author) |author| {
+        if (author.name.len == 0 or author.email.len == 0) return error.MissingAuthor;
+        const committer = who.committer orelse author;
+        if (committer.name.len == 0 or committer.email.len == 0) return error.MissingAuthor;
+        return .{
+            .{
+                .name = author.name,
+                .email = author.email,
+                .when = author.when,
+                .tz_offset_minutes = author.tz_offset_minutes,
+            },
+            .{
+                .name = committer.name,
+                .email = committer.email,
+                .when = committer.when,
+                .tz_offset_minutes = committer.tz_offset_minutes,
+            },
+        };
+    }
+    const cfg = try w.storer.config();
+    const when = w.storer.now().sec;
+    const author_name = if (cfg.author_name.len != 0 and cfg.author_email.len != 0) cfg.author_name else cfg.user_name;
+    const author_email = if (cfg.author_name.len != 0 and cfg.author_email.len != 0) cfg.author_email else cfg.user_email;
+    if (author_name.len == 0 or author_email.len == 0) return error.MissingAuthor;
+    if (who.committer) |committer| {
+        if (committer.name.len == 0 or committer.email.len == 0) return error.MissingAuthor;
+        return .{
+            .{
+                .name = author_name,
+                .email = author_email,
+                .when = when,
+                .tz_offset_minutes = 0,
+            },
+            .{
+                .name = committer.name,
+                .email = committer.email,
+                .when = committer.when,
+                .tz_offset_minutes = committer.tz_offset_minutes,
+            },
+        };
+    }
+    const committer_name = if (cfg.committer_name.len != 0 and cfg.committer_email.len != 0) cfg.committer_name else author_name;
+    const committer_email = if (cfg.committer_name.len != 0 and cfg.committer_email.len != 0) cfg.committer_email else author_email;
+    return .{
+        .{
+            .name = author_name,
+            .email = author_email,
+            .when = when,
+            .tz_offset_minutes = 0,
+        },
+        .{
+            .name = committer_name,
+            .email = committer_email,
+            .when = when,
+            .tz_offset_minutes = 0,
+        },
+    };
 }
 
 fn writeOrig(w: anytype, hash: Hash) !void {

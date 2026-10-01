@@ -20,6 +20,16 @@ pub const DiffAlgorithm = enum { histogram, myers, minimal, patience };
 /// Conflict marker style. Taken from this struct, not from stored config.
 pub const ConflictStyle = enum { merge, diff3, zdiff3 };
 
+/// Author or committer recorded on a merge commit.
+///
+/// When this is set, the merge does not read repository config or the storage clock.
+pub const Identity = struct {
+    name: []const u8,
+    email: []const u8,
+    when: i64,
+    tz_offset_minutes: i16 = 0,
+};
+
 pub const MergeOptions = struct {
     strategy: ?Strategy = null,
     fast_forward: FastForward = .ff,
@@ -33,6 +43,20 @@ pub const MergeOptions = struct {
     conflict_style: ConflictStyle = .merge,
     /// `subtree` shift prefix. Null asks the engine to pick one root directory.
     subtree_path: ?[]const u8 = null,
+    /// Null keeps the label `HEAD`.
+    ours_label: ?[]const u8 = null,
+    /// Null keeps the full commit hash, or `theirs` when more than one head is merged.
+    theirs_label: ?[]const u8 = null,
+    author: ?Identity = null,
+    committer: ?Identity = null,
+};
+
+/// Options for finishing a merge that already has `MERGE_HEAD`.
+pub const ContinueOptions = struct {
+    /// Null keeps the stored `MERGE_MSG`.
+    message: ?[]const u8 = null,
+    author: ?Identity = null,
+    committer: ?Identity = null,
 };
 
 pub const MergeResult = struct {
