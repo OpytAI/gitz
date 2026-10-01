@@ -3,6 +3,16 @@ load("@rules_zig//zig:defs.bzl", "zig_binary", "zig_configure_binary")
 
 package(default_visibility = ["//visibility:public"])
 
+# These modules export functions and have no main. The unconfigured binaries
+# stay manual and wasm-only. `zig_configure_binary` builds them for
+# wasm32-freestanding. A host build of the raw target has no entry point and
+# writes the same `*.wasm` path as the configured symlink.
+_WASM_ONLY = [
+    "@platforms//cpu:wasm32",
+    "@platforms//os:none",
+    "@rules_zig//zig/platforms/abi:none",
+]
+
 test_suite(
     name = "all",
     tests = [
@@ -44,6 +54,8 @@ test_suite(
 zig_binary(
     name = "probe.wasm",
     main = "probe.zig",
+    tags = ["manual"],
+    target_compatible_with = _WASM_ONLY,
     zigopts = [
         "-fno-entry",
         "-rdynamic",
@@ -63,6 +75,8 @@ zig_binary(
     name = "local_repo.wasm",
     main = "local_repo.zig",
     srcs = ["abi.zig"],
+    tags = ["manual"],
+    target_compatible_with = _WASM_ONLY,
     zigopts = [
         "-fno-entry",
         "-rdynamic",
@@ -97,6 +111,8 @@ zig_binary(
     name = "pack_build.wasm",
     main = "pack_build.zig",
     srcs = ["abi.zig"],
+    tags = ["manual"],
+    target_compatible_with = _WASM_ONLY,
     zigopts = [
         "-fno-entry",
         "-rdynamic",
@@ -153,6 +169,8 @@ zig_binary(
     name = "pack_import.wasm",
     main = "pack_import.zig",
     srcs = ["abi.zig"],
+    tags = ["manual"],
+    target_compatible_with = _WASM_ONLY,
     zigopts = [
         "-fno-entry",
         "-rdynamic",
@@ -212,6 +230,8 @@ zig_binary(
     name = "persistence.wasm",
     main = "persistence.zig",
     srcs = ["abi.zig"],
+    tags = ["manual"],
+    target_compatible_with = _WASM_ONLY,
     zigopts = [
         "-fno-entry",
         "-rdynamic",
@@ -271,6 +291,8 @@ zig_binary(
     name = "engine_smoke.wasm",
     main = "engine_smoke.zig",
     srcs = ["abi.zig"],
+    tags = ["manual"],
+    target_compatible_with = _WASM_ONLY,
     zigopts = [
         "-fno-entry",
         "-rdynamic",
